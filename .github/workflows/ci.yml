@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+
+  python-lint-test:
+    name: Python lint + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: media
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]" ruff
+
+      - name: Lint
+        run: ruff check dc/
+
+      - name: Test
+        run: pytest
+
+  js-lint-test:
+    name: JS lint + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ops
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+  smoke:
+    name: Smoke tests
+    runs-on: ubuntu-latest
+    needs: [python-lint-test, js-lint-test]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Python CLI
+        run: pip install -e media/
+
+      - name: Install JS CLI
+        run: npm install --prefix ops
+
+      - name: dc --help
+        run: dc --help
+
+      - name: argonath --help
+        run: node ops/bin/argonath.js --help

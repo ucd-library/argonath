@@ -1,0 +1,11 @@
+services:
+
+  dc:
+    volumes:
+      - ./media/dc:/app/dc
+    command: ["bash", "-c", "tail -f /dev/null"]
+
+  dagster-argonath:
+    volumes:
+      - ./dagster:/dagster
+    command: ["dagster", "dev", "-h", "0.0.0.0", "-p", "3002", "-w", "/dagster/workspace.yaml"]

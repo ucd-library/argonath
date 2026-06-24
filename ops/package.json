@@ -1,0 +1,19 @@
+{
+  "name": "@ucd-lib/argonath",
+  "version": "0.1.0",
+  "description": "Argonath operations CLI — digital collections pipeline control",
+  "type": "module",
+  "bin": {
+    "argonath": "./bin/argonath.js"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.9"
+  }
+}
