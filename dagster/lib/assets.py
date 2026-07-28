@@ -2,13 +2,14 @@
 Dagster asset definitions for the Argonath pipeline.
 
 Each asset corresponds to one pipeline phase and calls the dc CLI via exec().
-Assets are partitioned by ARK — one partition per item.
+Per-item assets are partitioned by (collection, item) — see lib.configs.items_partitions.
 """
 import dagster as dg
 
 from lib.configs import (
     items_partitions,
     IngestItemConfig,
+    ReconcileCollectionConfig,
     DerivativesConfig,
     OcrConfig,
     SearchIndexConfig,
@@ -17,16 +18,69 @@ from lib.utils import exec
 
 
 @dg.asset(
+    group_name="ingest",
+)
+def reconcile_collection_items(context: dg.AssetExecutionContext, config: ReconcileCollectionConfig):
+    """Reconcile a collection's bronze item list and register/delete partitions to match.
+
+    Calls the dc CLI to (re)ingest from the collection's source, then diffs the
+    returned item list + content hashes against the collection's previous
+    bronze state (its `latest`, or most recent dated/keyed, manifest). Newly
+    discovered items are registered as dynamic partitions in this same run;
+    for website/db-dump sources, items no longer present are pruned (partition
+    deleted). Digital-collection sources are additive-only — nothing is ever
+    auto-deleted for them.
+
+    Not partitioned itself: this asset expands into partitions, it doesn't run
+    within one. Upstream of ingest_item and friends, which then run per (collection, item).
+
+    :param context: Dagster asset execution context.
+    :param config: ReconcileCollectionConfig with group, collection, source_type, source_uri.
+    :returns: Dict with the collection key and added/removed/changed ARK lists.
+    """
+    collection_key = f"{config.group}/{config.collection}"
+
+    cmd_map = {
+        "website": ["dc", "ingest", "crawl", config.source_uri],
+        "db-dump": ["dc", "ingest", "db-dump", config.source_uri],
+        "digital-collection": ["dc", "ingest", "batch", config.source_uri],
+    }
+    cmd = cmd_map[config.source_type] + ["--collection", config.collection, "--group", config.group]
+    result = exec(cmd)
+
+    added = result.get("added", [])
+    removed = result.get("removed", [])
+    changed = result.get("changed", [])
+
+    if added:
+        context.instance.add_dynamic_partitions("collections", [collection_key])
+        context.instance.add_dynamic_partitions("items", added)
+
+    if removed and config.source_type != "digital-collection":
+        for ark in removed:
+            context.instance.delete_dynamic_partition("items", ark)
+
+    context.log.info(
+        f"Reconciled {collection_key}: +{len(added)} added, -{len(removed)} removed, ~{len(changed)} changed"
+    )
+    return dg.Output({"collection": collection_key, "added": added, "removed": removed, "changed": changed})
+
+
+@dg.asset(
     partitions_def=items_partitions,
     group_name="ingest",
 )
 def ingest_item(context: dg.AssetExecutionContext, config: IngestItemConfig):
-    """Ingest a single item into CaskFS, mint its ARK, write initial sidecar.
+    """Perform per-item ingest bookkeeping for an already-discovered bronze item.
 
-    Partition key is the ARK assigned at ingest.
+    The item's ARK is minted and its partition registered upstream, by
+    reconcile_collection_items — by the time this asset runs for a given
+    partition, the ARK and its bronze location already exist. This asset
+    covers any per-item ingest-time work beyond that initial bronze write
+    (exact scope TBD in phase 0.3).
 
     :param context: Dagster asset execution context.
-    :param config: IngestItemConfig with collection and space.
+    :param config: IngestItemConfig with group and collection.
     """
     raise NotImplementedError("phase 0.3")
 
@@ -42,7 +96,7 @@ def generate_derivatives(context: dg.AssetExecutionContext, config: DerivativesC
     :param context: Dagster asset execution context.
     :param config: DerivativesConfig with thumbnail widths.
     """
-    ark = context.partition_key
+    ark = context.partition_key.keys_by_dimension["item"]
     result = exec(["dc", "image", "thumbnail", ark, "--widths", config.widths])
     context.log.info(f"Derivatives result: {result}")
     return dg.Output(result)
@@ -61,7 +115,7 @@ def run_ocr(context: dg.AssetExecutionContext, config: OcrConfig):
     :param context: Dagster asset execution context.
     :param config: OcrConfig with lang, psm, oem.
     """
-    ark = context.partition_key
+    ark = context.partition_key.keys_by_dimension["item"]
     result = exec(["dc", "ocr", "tesseract", ark,
                    "--lang", config.lang,
                    "--psm",  str(config.psm),
@@ -82,7 +136,7 @@ def generate_metadata(context: dg.AssetExecutionContext):
 
     :param context: Dagster asset execution context.
     """
-    ark = context.partition_key
+    ark = context.partition_key.keys_by_dimension["item"]
     result = exec(["dc", "metadata", "generate", ark])
     context.log.info(f"Metadata result: {result}")
     return dg.Output(result)
@@ -97,6 +151,6 @@ def index_for_rag(context: dg.AssetExecutionContext, config: SearchIndexConfig):
     """Index an item's OCR text and metadata into the pgvector RAG store.
 
     :param context: Dagster asset execution context.
-    :param config: SearchIndexConfig with target space.
+    :param config: SearchIndexConfig with target gold app.
     """
     raise NotImplementedError("phase 0.7")

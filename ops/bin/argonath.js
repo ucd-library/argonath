@@ -4,14 +4,14 @@
  *
  * Commands:
  *   process collection <name>  — trigger a Dagster pipeline job for a collection
- *   process item <ark>         — trigger a Dagster pipeline job for a single item
+ *   process item <ark>         — trigger a Dagster pipeline job for a single item (requires --collection)
  *   status <run-id>            — poll a Dagster run until terminal state
- *   list collections           — list collections in an app space
+ *   list collections           — list collections in a group
  *   list items <collection>    — list items in a collection
- *   publish <collection>       — copy a collection between app spaces
+ *   publish <collection>       — promote a collection into a gold app
  */
 import { Command } from 'commander';
-import { triggerJob, pollRun } from '../lib/dagster.js';
+import { triggerJob, pollRun, encodePartitionKey } from '../lib/dagster.js';
 import { listCollections, listItems, publishCollection } from '../lib/collections.js';
 
 const program = new Command();
@@ -54,6 +54,7 @@ processCmd
 processCmd
   .command('item <ark>')
   .description('Trigger a pipeline job for a single item by ARK.')
+  .requiredOption('--collection <collection>', 'Collection key, format "[group]/[collection]".')
   .option('--job <job>', 'Job name: full, derivatives, ocr, metadata, rag.', 'full')
   .action(async (ark, opts) => {
     const jobMap = {
@@ -65,7 +66,9 @@ processCmd
     };
     const jobName = jobMap[opts.job] || opts.job;
     try {
-      const run = await triggerJob(jobName, { partitionKeys: [ark] });
+      const run = await triggerJob(jobName, {
+        partitionKeys: [{ collection: opts.collection, item: ark }],
+      });
       console.log(`Run started: ${run.runId}`);
     } catch (err) {
       console.error(`Error: ${err.message}`);
@@ -103,12 +106,12 @@ const listCmd = program.command('list').description('List collections or items.'
 
 listCmd
   .command('collections')
-  .description('List all collections in an app space.')
-  .option('--space <space>', 'App space.', 'digital-dev')
+  .description('List all bronze collections in a group.')
+  .requiredOption('--group <group>', 'Group namespace to list within.')
   .option('--format <format>', 'Output format: table or json.', 'table')
   .action(async (opts) => {
     try {
-      const collections = await listCollections(opts.space);
+      const collections = await listCollections(opts.group);
       if (opts.format === 'json') {
         console.log(JSON.stringify(collections, null, 2));
       } else {
@@ -122,12 +125,12 @@ listCmd
 
 listCmd
   .command('items <collection>')
-  .description('List all items in a collection.')
-  .option('--space <space>', 'App space.', 'digital-dev')
+  .description("List all items in a bronze collection's latest (or most recent) snapshot.")
+  .requiredOption('--group <group>', 'Group namespace the collection belongs to.')
   .option('--format <format>', 'Output format: table or json.', 'table')
   .action(async (collection, opts) => {
     try {
-      const items = await listItems(opts.space, collection);
+      const items = await listItems(opts.group, collection);
       if (opts.format === 'json') {
         console.log(JSON.stringify(items, null, 2));
       } else {
@@ -146,14 +149,13 @@ listCmd
 
 program
   .command('publish <collection>')
-  .description('Copy a collection from one app space to another.')
-  .requiredOption('--from <space>', 'Source app space.')
-  .requiredOption('--to <space>',   'Destination app space.')
+  .description('Promote a bronze/silver collection into a gold app.')
+  .requiredOption('--group <group>', 'Group namespace the collection belongs to.')
+  .requiredOption('--to <app>',      'Destination gold app (e.g. digital-dev, digital-prod, arda).')
   .action(async (collection, opts) => {
     try {
-      const result = await publishCollection(collection, opts.from, opts.to);
-      console.log(`Published ${collection}: ${result.itemCount} items copied from ${opts.from} → ${opts.to}`);
-      console.log('You may now delete your working copy with: argonath delete-local <collection>');
+      const result = await publishCollection(collection, opts.group, opts.to);
+      console.log(`Published ${collection}: ${result.itemCount} items promoted from ${opts.group}/${collection} → gold/${opts.to}`);
     } catch (err) {
       console.error(`Error: ${err.message}`);
       process.exit(1);

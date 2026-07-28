@@ -17,6 +17,7 @@ the installed dagster package.
 import dagster as dg
 
 from lib.assets import (
+    reconcile_collection_items,
     ingest_item,
     generate_derivatives,
     run_ocr,
@@ -24,6 +25,7 @@ from lib.assets import (
     index_for_rag,
 )
 from lib.jobs import (
+    reconcile_collection_job,
     ingest_collection_job,
     derivatives_job,
     ocr_job,
@@ -43,6 +45,7 @@ from lib.schedules import (
 
 defs = dg.Definitions(
     assets=[
+        reconcile_collection_items,
         ingest_item,
         generate_derivatives,
         run_ocr,
@@ -50,6 +53,7 @@ defs = dg.Definitions(
         index_for_rag,
     ],
     jobs=[
+        reconcile_collection_job,
         ingest_collection_job,
         derivatives_job,
         ocr_job,

@@ -1,8 +1,10 @@
 """
 Dagster config schemas and partition definitions for the Argonath pipeline.
 
-Partitions use DynamicPartitionsDefinition keyed by ARK — one partition per item.
-This allows granular per-item re-runs without reprocessing an entire collection.
+Partitions are two-dimensional: one partition per (collection, item) pair.
+This allows granular per-item re-runs (via the item dimension) as well as
+collection-scoped bulk operations (via the collection dimension) without
+reprocessing unrelated collections.
 """
 import dagster as dg
 from dagster import Config
@@ -14,37 +16,76 @@ from typing import Literal
 # Partition definitions
 # ---------------------------------------------------------------------------
 
-# One partition per item, keyed by ARK (e.g. "ark:/87287/d7abc1234")
-items_partitions = dg.DynamicPartitionsDefinition(name="items")
+# Collection dimension — keyed "[group]/[collection]" (e.g. "digital-collections/ucd-photos").
+# Group is folded into the key so identically-named collections in different
+# groups (e.g. a "website-harvests" collection and a "digital-collections"
+# collection that happen to share a name) don't collide.
+collections_partitions = dg.DynamicPartitionsDefinition(name="collections")
+
+# Item dimension — keyed by the item's ARK (e.g. "ark:/87287/d7abc1234").
+items_partitions_dim = dg.DynamicPartitionsDefinition(name="items")
+
+# Combined multi-partition — every downstream asset keyed by (collection, item)
+# uses this. `context.partition_key.keys_by_dimension["collection" | "item"]`
+# retrieves each half.
+items_partitions = dg.MultiPartitionsDefinition({
+    "collection": collections_partitions,
+    "item": items_partitions_dim,
+})
 
 
 # ---------------------------------------------------------------------------
 # Config schemas
 # ---------------------------------------------------------------------------
 
-APP_SPACES = Literal["arda", "digital-dev", "digital-prod"]
+# Gold app targets — used by promotion/indexing configs, not by ingest (ingest
+# always lands in bronze; an item only reaches a gold app once promoted).
+GOLD_APPS = Literal["arda", "digital-dev", "digital-prod"]
 
 
 class IngestItemConfig(Config):
     """Config for the ingest_item asset.
 
+    :param str group: Group namespace the collection belongs to (bronze path segment).
     :param str collection: Collection name.
-    :param str space: Target app space.
     """
+    group: str = Field(..., description="Group namespace the collection belongs to.")
     collection: str = Field(..., description="Collection name.")
-    space: APP_SPACES = Field("digital-dev", description="Target app space.")
 
 
 class IngestCollectionConfig(Config):
     """Config for batch collection ingestion.
 
+    :param str group: Group namespace the collection belongs to (bronze path segment).
     :param str collection: Collection name.
-    :param str space: Target app space.
     :param str directory: Source directory of files to ingest.
     """
+    group: str = Field(..., description="Group namespace the collection belongs to.")
     collection: str = Field(..., description="Collection name.")
-    space: APP_SPACES = Field("digital-dev", description="Target app space.")
     directory: str = Field(..., description="Source directory for batch ingest.")
+
+
+class ReconcileCollectionConfig(Config):
+    """Config for the reconcile_collection_items asset.
+
+    Triggers a source-specific ingest (website crawl, DB dump, or a one-shot
+    digital-collection batch) and reconciles the returned bronze item list
+    against the collection's previous state, registering or deleting Dagster
+    dynamic partitions to match. Digital-collection sources are additive-only —
+    items missing from a re-run are never auto-deleted; website and db-dump
+    sources are fully reconciled, so missing items are pruned.
+
+    :param str group: Group namespace the collection belongs to.
+    :param str collection: Collection name.
+    :param str source_type: Ingestion source — "website", "db-dump", or "digital-collection".
+    :param str source_uri: Crawl root URL or DB connection string, depending on source_type.
+    """
+    group: str = Field(..., description="Group namespace the collection belongs to.")
+    collection: str = Field(..., description="Collection name.")
+    source_type: Literal["website", "db-dump", "digital-collection"] = Field(
+        ..., description="Ingestion source type."
+    )
+    source_uri: str = Field(..., description="Crawl root URL or DB connection string.")
 
 
 class DerivativesConfig(Config):
@@ -70,6 +111,6 @@ class OcrConfig(Config):
 class SearchIndexConfig(Config):
     """Config for the index_for_rag asset.
 
-    :param str space: App space to read from when indexing.
+    :param str app: Gold app to read from when indexing.
     """
-    space: APP_SPACES = Field("arda", description="App space to index from.")
+    app: GOLD_APPS = Field("arda", description="Gold app to index from.")

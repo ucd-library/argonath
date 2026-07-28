@@ -6,11 +6,18 @@ Jobs group assets for per-phase and full-pipeline runs.
 import dagster as dg
 
 from lib.assets import (
+    reconcile_collection_items,
     ingest_item,
     generate_derivatives,
     run_ocr,
     generate_metadata,
     index_for_rag,
+)
+
+reconcile_collection_job = dg.define_asset_job(
+    name="reconcile_collection_job",
+    selection=[reconcile_collection_items],
+    description="Reconcile a collection's bronze item list against its source and register/prune partitions.",
 )
 
 ingest_collection_job = dg.define_asset_job(

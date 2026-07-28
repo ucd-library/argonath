@@ -8,13 +8,27 @@
 const DEFAULT_URL = process.env.DAGSTER_URL || 'http://localhost:3000';
 
 /**
+ * Encode a (collection, item) pair as a Dagster MultiPartitionKey string.
+ * Dagster joins dimension keys sorted by dimension name with "|" — "collection" < "item"
+ * alphabetically, so the encoding is `${collection}|${item}`. Verify against the installed
+ * Dagster version once this bridge is actually implemented (phase 0.8).
+ *
+ * @param {string} collection - Collection partition key (format "[group]/[collection]").
+ * @param {string} item - Item partition key (the item's ARK).
+ * @returns {string} Encoded multi-partition key.
+ */
+function encodePartitionKey(collection, item) {
+  return `${collection}|${item}`;
+}
+
+/**
  * Trigger a Dagster job run.
  *
  * @param {string} jobName - Name of the Dagster job to run.
  * @param {Object} [opts={}] - Options.
  * @param {string} [opts.baseUrl] - Dagster base URL override.
  * @param {Object} [opts.config] - Dagster run config to pass to the job.
- * @param {string[]} [opts.partitionKeys] - Optional partition keys to run.
+ * @param {{collection: string, item: string}[]} [opts.partitionKeys] - Optional (collection, item) partition pairs to run.
  * @returns {Promise<Object>} Run object with at minimum a `runId` field.
  */
 async function triggerJob(jobName, opts = {}) {
@@ -25,6 +39,9 @@ async function triggerJob(jobName, opts = {}) {
     jobName,
     runConfigData: opts.config || {},
   };
+  // TODO(phase 0.8): wire opts.partitionKeys into the launchRun mutation once the
+  // Dagster GraphQL partition-run contract is confirmed against the installed version —
+  // see encodePartitionKey() above for the key-encoding half of this.
 
   const res = await fetch(`${baseUrl}/graphql`, {
     method: 'POST',
@@ -109,4 +126,4 @@ async function listRuns(jobName, opts = {}) {
   return data?.data?.runsOrError?.results || [];
 }
 
-export { triggerJob, pollRun, listRuns };
+export { triggerJob, pollRun, listRuns, encodePartitionKey };
