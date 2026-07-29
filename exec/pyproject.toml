@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dc"
+name = "digtk"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
@@ -26,16 +26,16 @@ dev = [
 ]
 
 [project.scripts]
-dc = "dc.main:app"
+digtk = "digtk.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["dc*"]
+include = ["digtk*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=dc --cov-report=term-missing"
+addopts = "--cov=digtk --cov-report=term-missing"
 asyncio_mode = "auto"
 
 [tool.coverage.run]
-source = ["dc"]
+source = ["digtk"]

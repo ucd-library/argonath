@@ -1,7 +1,7 @@
 """
 Shared utilities: database connection, subprocess exec() helper, and manifest writer.
 
-The exec() helper runs dc CLI commands, streams output to Dagster logs,
+The exec() helper runs digtk CLI commands, streams output to Dagster logs,
 and returns the last stdout line parsed as JSON — matching the aggie-experts pattern.
 """
 import os
@@ -33,13 +33,13 @@ conn = psycopg2.connect(
 # ---------------------------------------------------------------------------
 
 def exec(cmd, opts={}):
-    """Run a dc CLI command, stream output to stdout, and return the last line as JSON.
+    """Run a digtk CLI command, stream output to stdout, and return the last line as JSON.
 
-    The dc CLI prints progress lines to stdout and emits a JSON object as its
+    The digtk CLI prints progress lines to stdout and emits a JSON object as its
     final line. This function captures that stream so all output appears in
     Dagster's run logs, then returns the parsed JSON result.
 
-    :param list cmd: Command and arguments (e.g. ['dc', 'ingest', 'file', path]).
+    :param list cmd: Command and arguments (e.g. ['digtk', 'ingest', 'file', path]).
     :param dict opts: Options: check (bool, default True), no_json_parse (bool).
     :returns: Parsed JSON result dict, or the raw last line string if no_json_parse=True.
     :rtype: dict | str

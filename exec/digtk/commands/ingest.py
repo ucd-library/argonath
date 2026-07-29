@@ -1,5 +1,5 @@
 """
-dc ingest — ingest commands.
+digtk ingest — ingest commands.
 
 All subcommands write into bronze/[group]/[collection]/[time]/[item] and print
 a last-line JSON result of the form {"added": [...], "removed": [...], "changed": [...]}
@@ -24,8 +24,6 @@ def file(
     path: Annotated[str, typer.Argument(help="Path to the source file.")],
     collection: Annotated[str, typer.Option(help="Collection name.")],
     group: Annotated[str, typer.Option(help="Group namespace the collection belongs to.")],
-    local_root: Annotated[str | None, typer.Option("--local-root")] = None,
-    cask_root:  Annotated[str | None, typer.Option("--cask-root")]  = None,
 ):
     """Ingest a single file, mint an ARK, write the initial schema.org sidecar to bronze."""
     raise NotImplementedError("phase 0.3")
@@ -36,8 +34,6 @@ def batch(
     directory: Annotated[str, typer.Argument(help="Directory of source files to ingest.")],
     collection: Annotated[str, typer.Option(help="Collection name.")],
     group: Annotated[str, typer.Option(help="Group namespace the collection belongs to.")],
-    local_root: Annotated[str | None, typer.Option("--local-root")] = None,
-    cask_root:  Annotated[str | None, typer.Option("--cask-root")]  = None,
 ):
     """Ingest all files in a directory as a batch. Digital collections are additive-only —
     items missing from a re-run are never treated as removed."""
@@ -49,8 +45,6 @@ def crawl(
     url: Annotated[str, typer.Argument(help="Root URL to crawl.")],
     collection: Annotated[str, typer.Option(help="Collection name.")],
     group: Annotated[str, typer.Option(help="Group namespace the collection belongs to.")],
-    local_root: Annotated[str | None, typer.Option("--local-root")] = None,
-    cask_root:  Annotated[str | None, typer.Option("--cask-root")]  = None,
 ):
     """Crawl a website, writing each page as a bronze item under a new time-dated snapshot.
     Pages no longer found are reported as removed for downstream pruning."""
@@ -62,8 +56,6 @@ def db_dump(
     connection: Annotated[str, typer.Argument(help="Source database connection string.")],
     collection: Annotated[str, typer.Option(help="Collection name.")],
     group: Annotated[str, typer.Option(help="Group namespace the collection belongs to.")],
-    local_root: Annotated[str | None, typer.Option("--local-root")] = None,
-    cask_root:  Annotated[str | None, typer.Option("--cask-root")]  = None,
 ):
     """Ingest rows from a database dump, writing each row as a bronze item under a new
     year-week-dated snapshot. Rows no longer present are reported as removed for downstream pruning."""

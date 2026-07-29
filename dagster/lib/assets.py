@@ -1,7 +1,7 @@
 """
 Dagster asset definitions for the Argonath pipeline.
 
-Each asset corresponds to one pipeline phase and calls the dc CLI via exec().
+Each asset corresponds to one pipeline phase and calls the digtk CLI via exec().
 Per-item assets are partitioned by (collection, item) — see lib.configs.items_partitions.
 """
 import dagster as dg
@@ -23,7 +23,7 @@ from lib.utils import exec
 def reconcile_collection_items(context: dg.AssetExecutionContext, config: ReconcileCollectionConfig):
     """Reconcile a collection's bronze item list and register/delete partitions to match.
 
-    Calls the dc CLI to (re)ingest from the collection's source, then diffs the
+    Calls the digtk CLI to (re)ingest from the collection's source, then diffs the
     returned item list + content hashes against the collection's previous
     bronze state (its `latest`, or most recent dated/keyed, manifest). Newly
     discovered items are registered as dynamic partitions in this same run;
@@ -41,9 +41,9 @@ def reconcile_collection_items(context: dg.AssetExecutionContext, config: Reconc
     collection_key = f"{config.group}/{config.collection}"
 
     cmd_map = {
-        "website": ["dc", "ingest", "crawl", config.source_uri],
-        "db-dump": ["dc", "ingest", "db-dump", config.source_uri],
-        "digital-collection": ["dc", "ingest", "batch", config.source_uri],
+        "website": ["digtk", "ingest", "crawl", config.source_uri],
+        "db-dump": ["digtk", "ingest", "db-dump", config.source_uri],
+        "digital-collection": ["digtk", "ingest", "batch", config.source_uri],
     }
     cmd = cmd_map[config.source_type] + ["--collection", config.collection, "--group", config.group]
     result = exec(cmd)
@@ -97,7 +97,7 @@ def generate_derivatives(context: dg.AssetExecutionContext, config: DerivativesC
     :param config: DerivativesConfig with thumbnail widths.
     """
     ark = context.partition_key.keys_by_dimension["item"]
-    result = exec(["dc", "image", "thumbnail", ark, "--widths", config.widths])
+    result = exec(["digtk", "image", "thumbnail", ark, "--widths", config.widths])
     context.log.info(f"Derivatives result: {result}")
     return dg.Output(result)
 
@@ -116,7 +116,7 @@ def run_ocr(context: dg.AssetExecutionContext, config: OcrConfig):
     :param config: OcrConfig with lang, psm, oem.
     """
     ark = context.partition_key.keys_by_dimension["item"]
-    result = exec(["dc", "ocr", "tesseract", ark,
+    result = exec(["digtk", "ocr", "tesseract", ark,
                    "--lang", config.lang,
                    "--psm",  str(config.psm),
                    "--oem",  str(config.oem)])
@@ -137,7 +137,7 @@ def generate_metadata(context: dg.AssetExecutionContext):
     :param context: Dagster asset execution context.
     """
     ark = context.partition_key.keys_by_dimension["item"]
-    result = exec(["dc", "metadata", "generate", ark])
+    result = exec(["digtk", "metadata", "generate", ark])
     context.log.info(f"Metadata result: {result}")
     return dg.Output(result)
 

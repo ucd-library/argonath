@@ -23,7 +23,7 @@ reconcile_collection_job = dg.define_asset_job(
 ingest_collection_job = dg.define_asset_job(
     name="ingest_collection_job",
     selection=[ingest_item],
-    description="Ingest all items in a collection (batch mode via dc ingest batch).",
+    description="Ingest all items in a collection (batch mode via digtk ingest batch).",
 )
 
 derivatives_job = dg.define_asset_job(

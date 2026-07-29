@@ -43,7 +43,7 @@ WORKDIR /opt/argonath
 COPY exec/pyproject.toml exec/pyproject.toml
 RUN cd exec && uv pip install --system --no-cache-dir -r pyproject.toml
 
-COPY exec/dc exec/dc
+COPY exec/digtk exec/digtk
 RUN cd exec && uv pip install --system --no-cache-dir --no-deps -e .
 
 # Install dagster configuration files

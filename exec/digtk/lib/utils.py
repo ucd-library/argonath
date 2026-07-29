@@ -1,8 +1,8 @@
 """
 Shared CLI utilities: JSON result output and progress logging.
 
-All dc commands stream progress lines to stdout and print a JSON object
-as the final line. Dagster assets call exec(["dc", ...]) and read that
+All digtk commands stream progress lines to stdout and print a JSON object
+as the final line. Dagster assets call exec(["digtk", ...]) and read that
 last line as the structured result.
 """
 import json

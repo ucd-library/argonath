@@ -1,5 +1,5 @@
 """
-dc metadata — metadata generation commands.
+digtk metadata — metadata generation commands.
 
 Subcommands:
   generate  — generate AI metadata draft via Samwise/Qwen
@@ -9,14 +9,15 @@ from typing import Annotated
 
 import typer
 
+from digtk.lib.options import SamwiseApiUrlOption
+
 app = typer.Typer(help="Metadata generation and merge commands.", no_args_is_help=True)
 
 
 @app.command()
 def generate(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
-    local_root: Annotated[str | None, typer.Option("--local-root")] = None,
-    cask_root:  Annotated[str | None, typer.Option("--cask-root")]  = None,
+    samwise_api_url: SamwiseApiUrlOption = None,
 ):
     """Generate AI metadata draft using Samwise (Qwen) with vision + OCR context.
 
@@ -29,8 +30,6 @@ def generate(
 @app.command()
 def update(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
-    local_root: Annotated[str | None, typer.Option("--local-root")] = None,
-    cask_root:  Annotated[str | None, typer.Option("--cask-root")]  = None,
 ):
     """Merge ai-metadata and human-metadata into the canonical item sidecar.
 

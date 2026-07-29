@@ -184,7 +184,7 @@ directory:
 {
   "written_at": "2026-06-24T10:00:00Z",
   "status": "success",
-  "command": ["dc", "image", "thumbnail", "ark:/87287/d7abc1234", "--widths", "256,512,1024"],
+  "command": ["digtk", "image", "thumbnail", "ark:/87287/d7abc1234", "--widths", "256,512,1024"],
   "params": { "widths": [256, 512, 1024] },
   "outputs": ["thumb-256.jpg", "thumb-512.jpg", "web-1024.jpg"],
   "duration_s": 1.4

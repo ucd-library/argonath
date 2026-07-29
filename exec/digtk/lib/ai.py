@@ -16,17 +16,21 @@ LLM_MODEL = "qwen3.6-fast:35b"
 EMBED_MODEL = "qwen3-embed:8b"
 
 
-def get_client():
+def get_client(opts={}):
     """Create and return an OpenAI client pointed at Samwise.
 
+    :param dict opts: Optional overrides. 'base_url' overrides SAMWISE_API_URL (e.g. from
+        a --samwise-api-url CLI flag). 'api_key' overrides SAMWISE_API_KEY — accepted for
+        internal/test callers only; deliberately not exposed as a CLI flag, since a bearer
+        token passed as a CLI argument leaks into shell history and process listings.
     :returns: Configured OpenAI client.
     :rtype: openai.OpenAI
-    :raises RuntimeError: If SAMWISE_API_KEY is not set.
+    :raises RuntimeError: If SAMWISE_API_KEY is not set and opts['api_key'] is not given.
     """
-    api_key = os.getenv("SAMWISE_API_KEY")
+    api_key = opts.get("api_key") or os.getenv("SAMWISE_API_KEY")
     if not api_key:
         raise RuntimeError("SAMWISE_API_KEY environment variable is not set.")
-    base_url = os.getenv("SAMWISE_API_URL", "http://samwise.library.ucdavis.edu/api")
+    base_url = opts.get("base_url") or os.getenv("SAMWISE_API_URL", "http://samwise.library.ucdavis.edu/api")
     return OpenAI(api_key=api_key, base_url=base_url)
 
 
