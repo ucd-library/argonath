@@ -14,7 +14,7 @@ from dc.commands import image, ocr, metadata, ingest, search
 
 app = typer.Typer(
     name="dc",
-    help="Digital collections media processing CLI.",
+    help="Digital collections media processing CLI",
     no_args_is_help=True,
 )
 

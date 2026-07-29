@@ -19,6 +19,8 @@ RUN apt-get update && \
     postgresql-client-16 && \
     rm -rf /var/lib/apt/lists/*
 
+RUN pip install --no-cache-dir uv
+
 # Allow ImageMagick to read/write all formats (default policy restricts PDF etc.)
 RUN sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/' \
     /etc/ImageMagick-6/policy.xml 2>/dev/null || true
@@ -35,12 +37,14 @@ COPY --from=caskfs /cork-build-info/caskfs.json /cork-build-info/caskfs.json
 
 # Install argonath
 RUN mkdir -p /opt/argonath/dagster
+RUN mkdir -p /opt/argonath/exec
 WORKDIR /opt/argonath
 
-COPY media/pyproject.toml .
-RUN pip install --no-cache-dir -e .
+COPY exec/pyproject.toml exec/pyproject.toml
+RUN cd exec && uv pip install --system --no-cache-dir -r pyproject.toml
 
-COPY media/dc/ dc/
+COPY exec/dc exec/dc
+RUN cd exec && uv pip install --system --no-cache-dir --no-deps -e .
 
 # Install dagster configuration files
 COPY dagster/lib dagster/lib
