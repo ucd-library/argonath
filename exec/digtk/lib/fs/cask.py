@@ -15,9 +15,10 @@ from contextlib import contextmanager
 
 import httpx
 
+from digtk.lib.config import CONFIG
 from digtk.lib.fs.paths import DirEntry
 
-CHUNK_SIZE = 65536
+CHUNK_SIZE = CONFIG["fs"]["chunk_size"]
 
 
 class CaskFsError(RuntimeError):

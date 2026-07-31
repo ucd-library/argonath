@@ -11,10 +11,12 @@ import os
 import stat
 from pathlib import Path
 
-CREDENTIALS_PATH = Path.home() / ".digtk" / "credentials.json"
+from digtk.lib.config import CONFIG
 
-API_URL_ENV = "CASK_API_URL"
-API_KEY_ENV = "CASK_API_KEY"
+CREDENTIALS_PATH = Path(CONFIG["auth"]["credentials_path"])
+
+API_URL_ENV = CONFIG["auth"]["api_url_env"]
+API_KEY_ENV = CONFIG["auth"]["api_key_env"]
 
 
 def load_stored():

@@ -9,7 +9,7 @@ from typing import Annotated
 
 import typer
 
-from digtk.lib.options import SamwiseApiUrlOption
+from digtk.lib.config import SamwiseApiUrlOption
 
 app = typer.Typer(help="Metadata generation and merge commands.", no_args_is_help=True)
 

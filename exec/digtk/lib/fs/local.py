@@ -10,9 +10,10 @@ import os
 import shutil
 from contextlib import contextmanager
 
+from digtk.lib.config import CONFIG
 from digtk.lib.fs.paths import DirEntry
 
-CHUNK_SIZE = 65536
+CHUNK_SIZE = CONFIG["fs"]["chunk_size"]
 
 
 def read_bytes(path):

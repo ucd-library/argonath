@@ -6,9 +6,11 @@ NAAN: 87287 (UC Davis Library)
 Shoulder: d7
 """
 
-NAAN = "87287"
-SHOULDER = "d7"
-NOID_ALPHABET = "0123456789bcdfghjkmnpqrstvwxz"
+from digtk.lib.config import CONFIG
+
+NAAN = CONFIG["ark"]["naan"]
+SHOULDER = CONFIG["ark"]["shoulder"]
+NOID_ALPHABET = CONFIG["ark"]["noid_alphabet"]
 
 
 def mint(opts={}):

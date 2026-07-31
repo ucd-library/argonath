@@ -11,13 +11,15 @@ from typing import Annotated
 
 import typer
 
+from digtk.lib.config import CONFIG, ImageConvertFormatOption, ImageThumbnailWidthsOption
+
 app = typer.Typer(help="Image processing commands.", no_args_is_help=True)
 
 
 @app.command()
 def thumbnail(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
-    widths: Annotated[str, typer.Option(help="Comma-separated widths in pixels.")] = "256,512,1024",
+    widths: ImageThumbnailWidthsOption = CONFIG["image"]["thumbnail_widths"],
 ):
     """Generate thumbnail JPEGs at each requested width."""
     raise NotImplementedError("phase 0.4")
@@ -26,7 +28,7 @@ def thumbnail(
 @app.command()
 def convert(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
-    format: Annotated[str, typer.Option(help="Target format (e.g. jpeg, png).")] = "jpeg",
+    format: ImageConvertFormatOption = CONFIG["image"]["convert_format"],
 ):
     """Convert source binary to the specified format."""
     raise NotImplementedError("phase 0.4")

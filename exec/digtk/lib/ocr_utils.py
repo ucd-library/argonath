@@ -4,7 +4,9 @@ Tesseract is the baseline; ML OCR (surya or docTR) is the fallback
 when Tesseract confidence falls below threshold.
 """
 
-CONFIDENCE_THRESHOLD = 60.0
+from digtk.lib.config import CONFIG
+
+CONFIDENCE_THRESHOLD = CONFIG["ocr"]["confidence_threshold"]
 
 
 def run_tesseract(image_path, output_base, opts={}):

@@ -7,46 +7,74 @@ and embedding generation (qwen3-embed:8b for RAG indexing).
 
 Environment variables required:
   SAMWISE_API_KEY  — bearer token for Samwise API access
-  SAMWISE_API_URL  — Samwise API base URL (default: http://samwise.library.ucdavis.edu/api)
+  SAMWISE_API_URL  — Samwise API base URL (default: see digtk.lib.config CONFIG["samwise"])
 """
 import os
+import base64
 from openai import OpenAI
 
-LLM_MODEL = "qwen3.6-fast:35b"
-EMBED_MODEL = "qwen3-embed:8b"
+from digtk.lib.config import CONFIG
 
+LLM_MODEL = CONFIG["samwise"]["llm_model"]
+EMBED_MODEL = CONFIG["samwise"]["embed_model"]
+_clients = {}
 
 def get_client(opts={}):
     """Create and return an OpenAI client pointed at Samwise.
 
-    :param dict opts: Optional overrides. 'base_url' overrides SAMWISE_API_URL (e.g. from
-        a --samwise-api-url CLI flag). 'api_key' overrides SAMWISE_API_KEY — accepted for
-        internal/test callers only; deliberately not exposed as a CLI flag, since a bearer
-        token passed as a CLI argument leaks into shell history and process listings.
+    :param dict opts: Optional overrides. 'base_url' overrides CONFIG["samwise"]["api_url"]
+        (e.g. from a --samwise-api-url CLI flag). 'api_key' overrides SAMWISE_API_KEY —
+        accepted for internal/test callers only; deliberately not exposed as a CLI flag,
+        since a bearer token passed as a CLI argument leaks into shell history and process
+        listings.
     :returns: Configured OpenAI client.
     :rtype: openai.OpenAI
     :raises RuntimeError: If SAMWISE_API_KEY is not set and opts['api_key'] is not given.
     """
-    api_key = opts.get("api_key") or os.getenv("SAMWISE_API_KEY")
+    global _clients
+    base_url = opts.get("base_url") or CONFIG["samwise"]["api_url"]
+    if base_url in _clients:
+        return _clients[base_url]
+
+    api_key = opts.get("api_key") or os.getenv(CONFIG["samwise"]["api_key_env"])
     if not api_key:
-        raise RuntimeError("SAMWISE_API_KEY environment variable is not set.")
-    base_url = opts.get("base_url") or os.getenv("SAMWISE_API_URL", "http://samwise.library.ucdavis.edu/api")
-    return OpenAI(api_key=api_key, base_url=base_url)
+        raise RuntimeError(f"{CONFIG['samwise']['api_key_env']} environment variable is not set and no override provided.")
+
+    _clients[base_url] = OpenAI(api_key=api_key, base_url=base_url)
+    return _clients[base_url]
 
 
-def generate_metadata(image_path, ocr_text=None, opts={}):
-    """Generate schema.org metadata fields from an image and optional OCR text.
+def chat_completion(message, opts={}):
+    """Generate a chat completion.
 
-    Sends the image (vision) and OCR text to Samwise (qwen3.6-fast:35b)
-    and extracts structured metadata via tool use.
-
-    :param str image_path: Path to the image file.
-    :param str ocr_text: Optional OCR text to include as context.
-    :param dict opts: Additional options (model override, etc.).
-    :returns: Dict of schema.org field values.
-    :rtype: dict
+    :param str message: The user's message.
+    :param dict opts: Additional options
+        Supported keys:
+            - model: Override the default model
+            - image: Optional image to include in the message (base64-encoded or URL)
+    :returns: The model's response text.
+    :rtype: str
     """
-    raise NotImplementedError("phase 0.6")
+    client = get_client(opts)
+    model = opts.get("model") or LLM_MODEL
+
+    if isinstance(message, str):
+        if 'image' in opts:
+            # check if image is buffer, if so, convert to base64
+            if isinstance(opts['image'], bytes):
+                opts['image'] = base64.b64encode(opts['image']).decode('utf-8')
+            message = [
+                {"role": "user", "content": message, "image": opts['image']}
+            ]
+        else:
+            message = [{"role": "user", "content": message}]
+
+    response = client.chat.completions.create(model=model, messages=message)
+
+    if( opts.get('full_response', False) ):
+        return response
+
+    return response.choices[0].message.content
 
 
 def embed(texts, opts={}):
@@ -57,4 +85,11 @@ def embed(texts, opts={}):
     :returns: List of embedding vectors (list of floats).
     :rtype: list[list[float]]
     """
-    raise NotImplementedError("phase 0.7")
+    client = get_client(opts)
+    model = opts.get("model") or EMBED_MODEL
+
+    response = client.embeddings.create(model=model, input=texts)
+    if opts.get('full_response', False):
+        return response
+
+    return [item.embedding for item in response.data]
