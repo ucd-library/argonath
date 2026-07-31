@@ -3,6 +3,8 @@ Entry point for the `digtk` media processing CLI.
 
 Subcommands mirror the pipeline phases:
   digtk auth      — manage the CaskFS connection (login/whoami/logout)
+  digtk config    — manage persistent digtk settings (set/show)
+  digtk ai        — ad hoc Samwise AI queries, for testing (chat/embed)
   digtk image     — image derivatives (thumbnails, conversion, deskew, OCR prep)
   digtk ocr       — OCR via Tesseract or ML fallback
   digtk metadata  — AI and human metadata generation
@@ -13,7 +15,7 @@ import sys
 
 import typer
 
-from digtk.commands import auth, image, ocr, metadata, ingest, search
+from digtk.commands import ai, auth, config, image, ocr, metadata, ingest, search
 from digtk.lib.banner import print_banner
 
 app = typer.Typer(
@@ -23,6 +25,8 @@ app = typer.Typer(
 )
 
 app.add_typer(auth.app,     name="auth")
+app.add_typer(config.app,   name="config")
+app.add_typer(ai.app,       name="ai")
 app.add_typer(image.app,    name="image")
 app.add_typer(ocr.app,      name="ocr")
 app.add_typer(metadata.app, name="metadata")
