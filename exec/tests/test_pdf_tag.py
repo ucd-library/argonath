@@ -174,3 +174,21 @@ def test_parent_tree_covers_every_mcid(tmp_path):
         for page in pdf.pages:
             assert int(page.obj.StructParents) in (0, 1)
             assert str(page.obj.Tabs) == "/S"
+
+
+# --- validate_ua --------------------------------------------------------------
+
+def test_validate_ua_missing_binary_raises(tmp_path):
+    with pytest.raises(RuntimeError, match="veraPDF not found"):
+        pdf_tag.validate_ua("any.pdf", opts={"verapdf": "definitely-not-installed"})
+
+
+@pytest.mark.skipif(__import__("shutil").which("verapdf") is None, reason="veraPDF not installed")
+def test_validate_ua_passes_tagged_output(tmp_path):
+    src = _build(tmp_path, [PROSE_WORDS])
+    dest = tmp_path / "tagged.pdf"
+    pdf_tag.tag_scan_pdf(src, str(dest), "Validation Sample", opts={"alt": "A typed page"})
+    result = pdf_tag.validate_ua(str(dest))
+    assert result["compliant"] is True
+    assert result["failed_rules"] == 0
+    assert result["passed_rules"] > 50

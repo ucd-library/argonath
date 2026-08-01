@@ -31,6 +31,7 @@ per word). Anything unrecognized passes through untouched. Verify claims
 with `verapdf --flavour ua1`.
 """
 import re
+import subprocess
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -551,3 +552,42 @@ def tag_scan_pdf(src_path, dest_path, title, opts={}):
     pdf.save(dest_path)
     pdf.close()
     return stats
+
+
+def validate_ua(pdf_path, opts={}):
+    """Validate a tagged PDF against PDF/UA-1 with veraPDF.
+
+    veraPDF exits 0 for compliant and 1 for non-compliant — both produce a
+    report; any other exit means the tool itself failed.
+
+    :param str pdf_path: PDF to validate.
+    :param dict opts: 'verapdf' (binary path/name, default 'verapdf' on PATH),
+        'flavour' (veraPDF flavour, default 'ua1').
+    :returns: Dict with 'compliant' (bool), 'passed_rules' (int), 'failed_rules' (int).
+    :rtype: dict
+    :raises RuntimeError: If veraPDF is not installed or fails to produce a report.
+    """
+    binary = opts.get("verapdf", "verapdf")
+    flavour = opts.get("flavour", "ua1")
+    try:
+        proc = subprocess.run(
+            [binary, "--flavour", flavour, pdf_path], capture_output=True
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            f"veraPDF not found ({binary!r}) — install it or pass opts['verapdf']"
+        ) from e
+    report = proc.stdout.decode("utf-8", errors="replace")
+    m = re.search(r'isCompliant="(true|false)"', report)
+    if proc.returncode not in (0, 1) or m is None:
+        stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"veraPDF failed ({proc.returncode}) on {pdf_path}: {stderr[:500]}"
+        )
+    passed = re.search(r'passedRules="(\d+)"', report)
+    failed = re.search(r'failedRules="(\d+)"', report)
+    return {
+        "compliant": m.group(1) == "true",
+        "passed_rules": int(passed.group(1)) if passed else 0,
+        "failed_rules": int(failed.group(1)) if failed else 0,
+    }
