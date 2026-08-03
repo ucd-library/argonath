@@ -161,3 +161,36 @@ def test_prep_ocr_never_upscales(tmp_path):
 def test_missing_source_raises_runtime_error(tmp_path):
     with pytest.raises(RuntimeError, match="convert failed"):
         image_utils.thumbnail(str(tmp_path / "nope.tiff"), str(tmp_path / "t.jpg"), 32)
+
+
+def test_prep_ocr_enhance_gray_flags(captured_args, tmp_path):
+    image_utils.prep_ocr("src.tiff", str(tmp_path / "p.tiff"), opts={"enhance": "gray"})
+    args = captured_args[0]
+    assert args[args.index("-colorspace") + 1] == "Gray"
+    assert args[args.index("-contrast-stretch") + 1] == "2%x2%"
+
+
+def test_prep_ocr_enhance_auto_keeps_color(captured_args, tmp_path):
+    image_utils.prep_ocr("src.tiff", str(tmp_path / "p.tiff"), opts={"enhance": "auto"})
+    args = captured_args[0]
+    assert "-contrast-stretch" in args
+    assert "-colorspace" not in args
+
+
+def test_prep_ocr_no_enhance_by_default(captured_args, tmp_path):
+    image_utils.prep_ocr("src.tiff", str(tmp_path / "p.tiff"))
+    assert "-contrast-stretch" not in captured_args[0]
+
+
+def test_prep_ocr_bad_enhance_raises(captured_args, tmp_path):
+    with pytest.raises(ValueError, match="unknown enhance mode"):
+        image_utils.prep_ocr("src.tiff", str(tmp_path / "p.tiff"), opts={"enhance": "sharpen"})
+
+
+@needs_imagemagick
+def test_prep_ocr_enhance_gray_end_to_end(tmp_path):
+    src = tmp_path / "src.tiff"
+    _make_image(src, size="64x48")
+    dest = tmp_path / "prep.tiff"
+    image_utils.prep_ocr(str(src), str(dest), opts={"enhance": "gray"})
+    assert _identify(dest, "%[colorspace]") == "Gray"

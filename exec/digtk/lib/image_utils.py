@@ -136,13 +136,24 @@ def prep_ocr(src_path, dest_path, opts={}):
     :param str src_path: Source image path.
     :param str dest_path: Output path for the OCR-ready image.
     :param dict opts: 'fuzz' (str, default '10%' — how near white a pixel must
-        be to be whitened).
+        be to be whitened); 'enhance' (None|'auto'|'gray') — contrast
+        enhancement for faded originals (hectograph/mimeo print, pale
+        typescript): 'auto' stretches contrast keeping color, 'gray' also
+        converts to grayscale for maximum OCR legibility.
     :raises RuntimeError: If ImageMagick fails.
+    :raises ValueError: On an unknown 'enhance' mode.
     """
     _prepare_dest(dest_path)
     args = [src_path + "[0]", "-auto-orient"]
     if _bit_depth(src_path) > 8:
         args += ["-auto-level"]
+    enhance = opts.get("enhance")
+    if enhance == "gray":
+        args += ["-colorspace", "Gray", "-contrast-stretch", "2%x2%"]
+    elif enhance == "auto":
+        args += ["-contrast-stretch", "2%x2%"]
+    elif enhance:
+        raise ValueError(f"unknown enhance mode: {enhance!r} (use 'auto' or 'gray')")
     args += [
         "-resize", f"{PREP_LONG_EDGE}x{PREP_LONG_EDGE}>",
         "-units", "PixelsPerInch",
