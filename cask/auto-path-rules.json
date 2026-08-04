@@ -1,0 +1,39 @@
+{
+  "partition" :[
+    {
+      "name" : "medallion-layer",
+      "index" : 0
+    },{
+      "name" : "group",
+      "index" : 1,
+      "fullRegex" : "^/(bronze|silver)/"
+    },{
+      "name" : "application",
+      "index" : 1,
+      "fullRegex" : "^/gold/"
+    },
+    {
+      "name" : "user",
+      "index" : 1,
+      "fullRegex" : "^/workspace/"
+    },
+    {
+      "name" : "group",
+      "index" : 1
+    },
+    {
+      "name" : "collection-file",
+      "index" : 2,
+      "fullRegex" : "/[\\w-_.]+/[\\w-_.]+/[\\w-_.]+/manifest.*.json$",
+      "getValue" : "return name"
+    },
+    {
+      "name" : "collection",
+      "index" : 2
+    },
+    {
+      "name" : "time",
+      "index" : 3
+    }
+  ]
+}
