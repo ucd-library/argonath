@@ -7,15 +7,16 @@ Subcommands mirror the pipeline phases:
   digtk ai        — ad hoc Samwise AI queries, for testing (chat/embed)
   digtk image     — image derivatives (thumbnails, conversion, deskew, OCR prep)
   digtk ocr       — OCR via Tesseract or ML fallback
-  digtk metadata  — AI and human metadata generation
-  digtk ingest    — ingest files into CaskFS
-  digtk search    — LlamaIndex RAG indexing and querying
+  digtk metadata    — AI and human metadata generation
+  digtk ingest      — ingest files into CaskFS
+  digtk collection  — manage CaskFS collections (add/sync)
+  digtk search      — LlamaIndex RAG indexing and querying
 """
 import sys
 
 import typer
 
-from digtk.commands import ai, auth, config, image, ocr, metadata, ingest, search
+from digtk.commands import ai, auth, collection, config, image, ocr, metadata, ingest, search
 from digtk.lib.banner import print_banner
 
 app = typer.Typer(
@@ -24,14 +25,15 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-app.add_typer(auth.app,     name="auth")
-app.add_typer(config.app,   name="config")
-app.add_typer(ai.app,       name="ai")
-app.add_typer(image.app,    name="image")
-app.add_typer(ocr.app,      name="ocr")
-app.add_typer(metadata.app, name="metadata")
-app.add_typer(ingest.app,   name="ingest")
-app.add_typer(search.app,   name="search")
+app.add_typer(auth.app,       name="auth")
+app.add_typer(config.app,     name="config")
+app.add_typer(ai.app,         name="ai")
+app.add_typer(image.app,      name="image")
+app.add_typer(ocr.app,        name="ocr")
+app.add_typer(metadata.app,   name="metadata")
+app.add_typer(ingest.app,     name="ingest")
+app.add_typer(collection.app, name="collection")
+app.add_typer(search.app,     name="search")
 
 
 def main():

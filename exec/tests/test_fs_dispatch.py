@@ -10,6 +10,7 @@ class FakeCaskBackend:
     def __init__(self):
         self.files = {}
         self.write_calls = []
+        self.link_calls = []
 
     def read_bytes(self, path):
         if path not in self.files:
@@ -42,6 +43,10 @@ class FakeCaskBackend:
         def cm():
             yield iter([self.files[path]])
         return cm()
+
+    def add_derivative_link(self, path, source_path, opts={}):
+        self.link_calls.append((path, source_path, opts))
+        return {"from_filepath": path, "to_filepath": source_path}
 
 
 @pytest.fixture
@@ -103,6 +108,19 @@ def test_exists_and_delete_local(tmp_path):
     assert fs.exists(path) is True
     fs.delete(path)
     assert fs.exists(path) is False
+
+
+def test_add_derivative_link_uses_cask_backend(fake_cask):
+    result = fs.add_derivative_link("cask:/silver/x.jpg", "cask:/bronze/x.tiff", opts={"relation": "r"})
+    assert result == {"from_filepath": "/silver/x.jpg", "to_filepath": "/bronze/x.tiff"}
+    assert fake_cask.link_calls == [("/silver/x.jpg", "/bronze/x.tiff", {"relation": "r"})]
+
+
+def test_add_derivative_link_rejects_local_path(tmp_path, fake_cask):
+    with pytest.raises(ValueError, match="cask:/"):
+        fs.add_derivative_link(str(tmp_path / "x.jpg"), "cask:/bronze/x.tiff")
+    with pytest.raises(ValueError, match="cask:/"):
+        fs.add_derivative_link("cask:/silver/x.jpg", str(tmp_path / "x.tiff"))
 
 
 def test_get_cask_backend_raises_without_configured_connection(monkeypatch):

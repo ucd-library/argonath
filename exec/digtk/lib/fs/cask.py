@@ -240,3 +240,30 @@ class CaskBackend:
         res = self._client.request("DELETE", f"{self.base_url}/fs{path}", params=params)
         self._raise_for_status(res)
         return res.json()
+
+    def add_derivative_link(self, path, source_path, opts={}):
+        """Record CaskFS derivative-link lineage: `path` was derived from `source_path`.
+
+        Wraps CaskFS's lineage API (POST /lineage/add) — structural metadata recording
+        file-to-file provenance (e.g. a silver derivative produced from a bronze
+        original), kept separate from the file bytes themselves. Upserts on repeat
+        calls for the same (path, source_path, relation) triple.
+
+        :param str path: CaskFS-absolute path of the derivative file.
+        :param str source_path: CaskFS-absolute path of the source file it was derived from.
+        :param dict opts: 'relation' (str, defaults server-side to schema:source),
+            'metadata' (str, free-form text carried alongside the link).
+        :returns: The created/updated derivative_link record.
+        :rtype: dict
+        :raises FileNotFoundError: If `path` or `source_path` does not exist in CaskFS.
+        :raises PermissionError: If the caller lacks write access to `path` or read
+            access to `source_path`.
+        """
+        body = {"fromPath": path, "sourcePath": source_path}
+        if opts.get("relation"):
+            body["relation"] = opts["relation"]
+        if opts.get("metadata"):
+            body["metadata"] = opts["metadata"]
+        res = self._client.post(f"{self.base_url}/lineage/add", json=body)
+        self._raise_for_status(res)
+        return res.json()

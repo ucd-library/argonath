@@ -220,3 +220,49 @@ def test_unexpected_server_error_raises_caskfs_error():
     with pytest.raises(CaskFsError) as exc_info:
         b.read_bytes("/x")
     assert exc_info.value.status == 500
+
+
+def test_add_derivative_link_posts_from_and_source_path():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.read())
+        return httpx.Response(200, json={"derivative_link_id": "abc", "from_filepath": "/silver/x.jpg"})
+
+    b = backend(handler)
+    result = b.add_derivative_link("/silver/x.jpg", "/bronze/x.tiff")
+    assert seen["method"] == "POST"
+    assert seen["url"] == f"{BASE_URL}/lineage/add"
+    assert seen["body"] == {"fromPath": "/silver/x.jpg", "sourcePath": "/bronze/x.tiff"}
+    assert result == {"derivative_link_id": "abc", "from_filepath": "/silver/x.jpg"}
+
+
+def test_add_derivative_link_sends_relation_and_metadata():
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.read())
+        return httpx.Response(200, json={})
+
+    b = backend(handler)
+    b.add_derivative_link(
+        "/silver/x.jpg", "/bronze/x.tiff",
+        opts={"relation": "http://schema.org/isBasedOn", "metadata": "note"},
+    )
+    assert seen["body"] == {
+        "fromPath": "/silver/x.jpg",
+        "sourcePath": "/bronze/x.tiff",
+        "relation": "http://schema.org/isBasedOn",
+        "metadata": "note",
+    }
+
+
+def test_add_derivative_link_missing_source_raises_file_not_found():
+    def handler(request):
+        return httpx.Response(404, json={"error": "not found"})
+
+    b = backend(handler)
+    with pytest.raises(FileNotFoundError):
+        b.add_derivative_link("/silver/x.jpg", "/bronze/nope.tiff")
