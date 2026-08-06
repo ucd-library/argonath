@@ -267,3 +267,55 @@ class CaskBackend:
         res = self._client.post(f"{self.base_url}/lineage/add", json=body)
         self._raise_for_status(res)
         return res.json()
+
+    def find_by_subject(self, subject, opts={}):
+        """Find files whose RDF graph contains a triple with the given subject,
+        via CaskFS's Layer-3 search (see caskfs's docs/ld-rest-api.md, '/cask/find').
+
+        `predicate` is a required parameter of the underlying API even though
+        this method's callers only care about `subject` — every argonath
+        sidecar's `ark` property expands to the predicate
+        'https://schema.org/ark' under its '@vocab': 'https://schema.org/'
+        JSON-LD context (see docs/cask-conventions.md), so that's used as the
+        default; digtk.lib.items relies on this to resolve an ARK to its
+        bronze sidecar file.
+
+        The response is paginated (confirmed against a real CaskFS instance:
+        {"totalCount": int, "results": [{"filepath": str, ...}], "offset": int,
+        "limit": int} — same shape as /cask/dir's, server defaults limit to 20).
+        This method transparently walks every page and returns the flat list of
+        matching filepaths — callers resolving "every part of this item" need
+        the complete set regardless of how many pages that takes (a multi-page
+        item can easily have more matches than the default page size).
+
+        :param str subject: Subject URI to search for (e.g. an ARK).
+        :param dict opts: 'predicate' (str, default 'https://schema.org/ark'),
+            'object' (str), 'graph' (str), 'partition_keys' (list[str]),
+            'page_size' (int, default 100 — pagination page size for the
+            underlying requests, not a cap on the total results returned).
+        :returns: Every matching file's CaskFS-absolute path.
+        :rtype: list[str]
+        """
+        params = {"subject": subject, "predicate": opts.get("predicate", "https://schema.org/ark")}
+        if opts.get("object") is not None:
+            params["object"] = opts["object"]
+        if opts.get("graph") is not None:
+            params["graph"] = opts["graph"]
+        if opts.get("partition_keys"):
+            params["partitionKeys"] = ",".join(opts["partition_keys"])
+
+        page_size = opts.get("page_size", 100)
+        offset = 0
+        filepaths = []
+        while True:
+            res = self._client.get(f"{self.base_url}/find", params={**params, "limit": page_size, "offset": offset})
+            self._raise_for_status(res)
+            body = res.json()
+            results = body.get("results", [])
+            if not results:
+                break
+            filepaths += [r["filepath"] for r in results]
+            offset += len(results)
+            if offset >= body.get("totalCount", offset):
+                break
+        return filepaths

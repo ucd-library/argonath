@@ -73,6 +73,7 @@ Mirrors the bronze path exactly (`[group]/[collection]/[time]/[item]/`) but hold
 
 ```
 silver/[group]/[collection]/[time]/[item]/
+├── item.jsonld.json            # domain: associatedMedia refs to the derivatives below
 ├── derivatives/
 │   ├── manifest.json
 │   ├── thumb-256.jpg
@@ -80,7 +81,10 @@ silver/[group]/[collection]/[time]/[item]/
 │   └── web-1024.jpg
 ├── ocr/
 │   ├── manifest.json
-│   ├── prep.tiff              # intermediate: deskewed + contrast-normalized
+│   ├── prep.jpg                # OCR-ready image: resized, 300 DPI, fuzz-whitened.
+│   │                           # Named prep-deskew.jpg instead if the derivatives
+│   │                           # pipeline's OCR-driven orientation check (below)
+│   │                           # selected the deskewed candidate.
 │   ├── output.hocr
 │   └── output.txt
 ├── metadata/
@@ -91,6 +95,24 @@ silver/[group]/[collection]/[time]/[item]/
     ├── manifest.json
     └── chunks.json                # text chunks + embedding IDs
 ```
+
+### Scan Orientation
+
+`digtk image derivatives` (the command `derivatives_job` runs) decides an item's
+scan orientation once, using a real OCR comparison rather than a fixed rule: it
+generates both a deskewed and non-deskewed OCR-prep candidate, runs Tesseract
+against each, and keeps whichever has both a higher word count and a higher (or
+equal) median confidence. That single decision is then applied consistently to
+every thumbnail width and to the published OCR-prep image, so an item is never
+right-side-up in one derivative and skewed in another. The decision and the
+comparison stats that drove it are recorded in `derivatives/manifest.json`'s
+`params` (`deskew_selected`, `orientation_stats`) for auditability.
+
+This comparison logic lives in `digtk.lib.ocr_utils` and is deliberately shared,
+not derivatives-specific: the (separate, later) OCR phase's own `digtk ocr
+tesseract` command calls the same underlying Tesseract-invocation primitive
+independently to produce `output.hocr`/`output.txt`, with no dependency on
+anything the derivatives step did.
 
 ## Gold Layout
 
@@ -131,6 +153,7 @@ kinds of file, never merged into one:
 |---|---|---|
 | `manifest.json` | Structural/system: CaskFS layout facts, pipeline run records, item lists + hashes, promotion status | schema.org / descriptive fields |
 | `metadata.jsonld.json` / `<item>.jsonld.json` | Domain: schema.org descriptive metadata about the collection or item | Pipeline state, run history, promotion status |
+| `silver/.../[item]/item.jsonld.json` | Domain: `schema:associatedMedia` `ImageObject` refs to that item's derivatives, referencing the bronze original via `cask://` rather than copying it | Pipeline state, run history — and never the bronze sidecar's own fields, since bronze is immutable/append-only and this file lives in silver instead of amending it |
 
 This is a deliberate reaction against LDP's convention of mixing container/structural
 triples with a resource's own descriptive triples in one graph — CaskFS keeps them as

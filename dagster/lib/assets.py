@@ -91,13 +91,19 @@ def ingest_item(context: dg.AssetExecutionContext, config: IngestItemConfig):
     group_name="derivatives",
 )
 def generate_derivatives(context: dg.AssetExecutionContext, config: DerivativesConfig):
-    """Generate image derivatives (thumbnails, web JPEG) for an ingested item.
+    """Generate the full image-derivative set for an ingested item: thumbnails,
+    a web JPEG, and an OCR-prep image, sharing one scan-orientation decision.
+
+    `digtk image derivatives` auto-detects orientation via a real Tesseract
+    comparison (deskewed vs. non-deskewed) rather than a fixed rule, and
+    applies that single decision consistently across every output — see
+    docs/cask-conventions.md's "Scan Orientation" section.
 
     :param context: Dagster asset execution context.
     :param config: DerivativesConfig with thumbnail widths.
     """
     ark = context.partition_key.keys_by_dimension["item"]
-    result = exec(["digtk", "image", "thumbnail", ark, "--widths", config.widths])
+    result = exec(["digtk", "image", "derivatives", ark, "--widths", config.widths])
     context.log.info(f"Derivatives result: {result}")
     return dg.Output(result)
 

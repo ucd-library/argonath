@@ -1,0 +1,64 @@
+import json
+
+from digtk.lib import derivative, utils
+
+
+def test_write_manifest_writes_expected_shape(monkeypatch):
+    calls = []
+    monkeypatch.setattr(derivative, "write", lambda **kwargs: calls.append(kwargs))
+
+    manifest = utils.write_manifest(
+        "my-coll",
+        "box-1/folder-3/derivatives",
+        command=["digtk", "image", "derivatives", "ark:/87287/d7abc1234"],
+        params={"widths": [256, 512, 1024]},
+        outputs=["thumb-256.jpg", "thumb-512.jpg", "web-1024.jpg"],
+        source_files=["cask:/bronze/g/my-coll/latest/box-1/folder-3/photo.tiff"],
+        opts={"group": "g", "duration_s": 1.4},
+    )
+
+    assert manifest["status"] == "success"
+    assert manifest["command"] == ["digtk", "image", "derivatives", "ark:/87287/d7abc1234"]
+    assert manifest["params"] == {"widths": [256, 512, 1024]}
+    assert manifest["outputs"] == ["thumb-256.jpg", "thumb-512.jpg", "web-1024.jpg"]
+    assert manifest["duration_s"] == 1.4
+    assert manifest["written_at"].endswith("Z")
+
+    written = calls[0]
+    assert written["type"] == "silver"
+    assert written["collection"] == "my-coll"
+    assert written["rel_path"] == "box-1/folder-3/derivatives/manifest.json"
+    assert written["source_files"] == ["cask:/bronze/g/my-coll/latest/box-1/folder-3/photo.tiff"]
+    assert written["opts"] == {"group": "g", "time": None, "replace": True}
+    assert json.loads(written["data"]) == manifest
+
+
+def test_write_manifest_strips_trailing_slash_from_rel_path(monkeypatch):
+    calls = []
+    monkeypatch.setattr(derivative, "write", lambda **kwargs: calls.append(kwargs))
+    utils.write_manifest("c", "box-1/ocr/", [], {}, [], source_files=["cask:/bronze/g/c/latest/box-1/x.tiff"], opts={"group": "g"})
+    assert calls[0]["rel_path"] == "box-1/ocr/manifest.json"
+
+
+def test_write_manifest_defaults_status_to_success(monkeypatch):
+    monkeypatch.setattr(derivative, "write", lambda **kwargs: None)
+    manifest = utils.write_manifest("c", "x", [], {}, [], source_files=["cask:/bronze/g/c/latest/x/y.tiff"], opts={"group": "g"})
+    assert manifest["status"] == "success"
+    assert "error" not in manifest
+
+
+def test_write_manifest_records_error_status(monkeypatch):
+    monkeypatch.setattr(derivative, "write", lambda **kwargs: None)
+    manifest = utils.write_manifest(
+        "c", "x", [], {}, [], source_files=["cask:/bronze/g/c/latest/x/y.tiff"],
+        opts={"group": "g", "status": "error", "error": "convert failed"},
+    )
+    assert manifest["status"] == "error"
+    assert manifest["error"] == "convert failed"
+
+
+def test_write_manifest_passes_time_through_to_derivative_write(monkeypatch):
+    calls = []
+    monkeypatch.setattr(derivative, "write", lambda **kwargs: calls.append(kwargs))
+    utils.write_manifest("c", "x", [], {}, [], source_files=["cask:/bronze/g/c/2026-01-01/x/y.tiff"], opts={"group": "g", "time": "2026-01-01"})
+    assert calls[0]["opts"]["time"] == "2026-01-01"

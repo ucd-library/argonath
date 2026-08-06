@@ -49,6 +49,11 @@ OCR_LANG_ENV = "DIGTK_OCR_LANG"
 OCR_PSM_ENV = "DIGTK_OCR_PSM"
 OCR_OEM_ENV = "DIGTK_OCR_OEM"
 OCR_CONFIDENCE_THRESHOLD_ENV = "DIGTK_OCR_CONFIDENCE_THRESHOLD"
+# Distinct from OCR_CONFIDENCE_THRESHOLD_ENV, which gates the Tesseract->ML fallback
+# (phase 0.5): these two govern the image-derivatives orientation comparison (phase
+# 0.4), which picks the deskewed vs. non-deskewed candidate by word count/confidence.
+OCR_ORIENTATION_WORD_COUNT_THRESHOLD_ENV = "DIGTK_OCR_ORIENTATION_WORD_COUNT_THRESHOLD"
+OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV = "DIGTK_OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD"
 
 SAMWISE_API_URL_ENV = "SAMWISE_API_URL"
 SAMWISE_API_KEY_ENV = "SAMWISE_API_KEY"
@@ -73,6 +78,14 @@ SEARCH_EMBED_MODEL_ENV = "DIGTK_SEARCH_EMBED_MODEL"
 
 IMAGE_THUMBNAIL_WIDTHS_ENV = "DIGTK_IMAGE_THUMBNAIL_WIDTHS"
 IMAGE_CONVERT_FORMAT_ENV = "DIGTK_IMAGE_CONVERT_FORMAT"
+IMAGE_DPI_ENV = "DIGTK_IMAGE_DPI"
+IMAGE_DESKEW_THRESHOLD_ENV = "DIGTK_IMAGE_DESKEW_THRESHOLD"
+IMAGE_FUZZ_THRESHOLD_ENV = "DIGTK_IMAGE_FUZZ_THRESHOLD"
+IMAGE_THUMBNAIL_QUALITY_ENV = "DIGTK_IMAGE_THUMBNAIL_QUALITY"
+IMAGE_OCR_PREP_QUALITY_ENV = "DIGTK_IMAGE_OCR_PREP_QUALITY"
+IMAGE_OCR_PREP_SIZE_ENV = "DIGTK_IMAGE_OCR_PREP_SIZE"
+IMAGE_DESKEW_WORKING_WIDTH_ENV = "DIGTK_IMAGE_DESKEW_WORKING_WIDTH"
+IMAGE_TIMEOUT_S_ENV = "DIGTK_IMAGE_TIMEOUT_S"
 
 CONFIG_PATH_ENV = "DIGTK_CONFIG_PATH"
 
@@ -103,6 +116,16 @@ SETTINGS = [
     {"dotpath": "search.embed_model", "env": SEARCH_EMBED_MODEL_ENV, "cast": str, "secret": False},
     {"dotpath": "image.thumbnail_widths", "env": IMAGE_THUMBNAIL_WIDTHS_ENV, "cast": str, "secret": False},
     {"dotpath": "image.convert_format", "env": IMAGE_CONVERT_FORMAT_ENV, "cast": str, "secret": False},
+    {"dotpath": "image.dpi", "env": IMAGE_DPI_ENV, "cast": int, "secret": False},
+    {"dotpath": "image.deskew_threshold", "env": IMAGE_DESKEW_THRESHOLD_ENV, "cast": int, "secret": False},
+    {"dotpath": "image.fuzz_threshold", "env": IMAGE_FUZZ_THRESHOLD_ENV, "cast": int, "secret": False},
+    {"dotpath": "image.thumbnail_quality", "env": IMAGE_THUMBNAIL_QUALITY_ENV, "cast": int, "secret": False},
+    {"dotpath": "image.ocr_prep_quality", "env": IMAGE_OCR_PREP_QUALITY_ENV, "cast": int, "secret": False},
+    {"dotpath": "image.ocr_prep_size", "env": IMAGE_OCR_PREP_SIZE_ENV, "cast": int, "secret": False},
+    {"dotpath": "image.deskew_working_width", "env": IMAGE_DESKEW_WORKING_WIDTH_ENV, "cast": int, "secret": False},
+    {"dotpath": "image.timeout_s", "env": IMAGE_TIMEOUT_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "ocr.orientation_word_count_threshold", "env": OCR_ORIENTATION_WORD_COUNT_THRESHOLD_ENV, "cast": int, "secret": False},
+    {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
 ]
 _SETTINGS_BY_DOTPATH = {setting["dotpath"]: setting for setting in SETTINGS}
 
@@ -222,6 +245,11 @@ CONFIG = {
         "psm": _env(OCR_PSM_ENV, 1, int),
         "oem": _env(OCR_OEM_ENV, 3, int),
         "confidence_threshold": _env(OCR_CONFIDENCE_THRESHOLD_ENV, 60.0, float),
+        # Orientation-comparison thresholds (phase 0.4 derivatives, not the
+        # ML-fallback trigger above): a deskewed candidate is only picked over the
+        # original if it has more words above this confidence AND a better median.
+        "orientation_word_count_threshold": _env(OCR_ORIENTATION_WORD_COUNT_THRESHOLD_ENV, 100, int),
+        "orientation_word_confidence_threshold": _env(OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, 50.0, float),
     },
     "samwise": {
         "api_url": _env(SAMWISE_API_URL_ENV, "http://samwise.library.ucdavis.edu/api"),
@@ -258,6 +286,14 @@ CONFIG = {
     "image": {
         "thumbnail_widths": _env(IMAGE_THUMBNAIL_WIDTHS_ENV, "256,512,1024"),
         "convert_format": _env(IMAGE_CONVERT_FORMAT_ENV, "jpeg"),
+        "dpi": _env(IMAGE_DPI_ENV, 300, int),
+        "deskew_threshold": _env(IMAGE_DESKEW_THRESHOLD_ENV, 40, int),
+        "fuzz_threshold": _env(IMAGE_FUZZ_THRESHOLD_ENV, 80, int),
+        "thumbnail_quality": _env(IMAGE_THUMBNAIL_QUALITY_ENV, 90, int),
+        "ocr_prep_quality": _env(IMAGE_OCR_PREP_QUALITY_ENV, 100, int),
+        "ocr_prep_size": _env(IMAGE_OCR_PREP_SIZE_ENV, 2048, int),
+        "deskew_working_width": _env(IMAGE_DESKEW_WORKING_WIDTH_ENV, 2048, int),
+        "timeout_s": _env(IMAGE_TIMEOUT_S_ENV, 120.0, float),
     },
 }
 
@@ -295,6 +331,25 @@ ImageThumbnailWidthsOption = Annotated[str, typer.Option(
 ImageConvertFormatOption = Annotated[str, typer.Option(
     "--format", envvar=IMAGE_CONVERT_FORMAT_ENV,
     help=f"Target format (e.g. jpeg, png). Env: {IMAGE_CONVERT_FORMAT_ENV}.",
+)]
+
+ImageDpiOption = Annotated[int, typer.Option(
+    "--dpi", envvar=IMAGE_DPI_ENV, help=f"OCR-prep image density (DPI). Env: {IMAGE_DPI_ENV}.",
+)]
+
+ImageDeskewThresholdOption = Annotated[int, typer.Option(
+    "--deskew-threshold", envvar=IMAGE_DESKEW_THRESHOLD_ENV,
+    help=f"Deskew angle-detection threshold, percent. Env: {IMAGE_DESKEW_THRESHOLD_ENV}.",
+)]
+
+ImageFuzzThresholdOption = Annotated[int, typer.Option(
+    "--fuzz-threshold", envvar=IMAGE_FUZZ_THRESHOLD_ENV,
+    help=f"OCR-prep fuzz-whiten tolerance, percent. Env: {IMAGE_FUZZ_THRESHOLD_ENV}.",
+)]
+
+ImageThumbnailQualityOption = Annotated[int, typer.Option(
+    "--quality", envvar=IMAGE_THUMBNAIL_QUALITY_ENV,
+    help=f"JPEG quality (1-100). Env: {IMAGE_THUMBNAIL_QUALITY_ENV}.",
 )]
 
 SearchSpaceOption = Annotated[str, typer.Option(
