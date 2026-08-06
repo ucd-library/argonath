@@ -2,37 +2,43 @@
   "partition" :[
     {
       "name" : "medallion-layer",
+      "fullRegex" : "^\/(bronze|silver|gold)\/",
+      "getValue" : "return 'medallion-'+pathValue",
       "index" : 0
     },{
       "name" : "group",
       "index" : 1,
-      "fullRegex" : "^/(bronze|silver)/"
+      "fullRegex" : "^\/(bronze|silver)\/"
     },{
       "name" : "application",
       "index" : 1,
-      "fullRegex" : "^/gold/"
+      "fullRegex" : "^\/gold\/"
     },
     {
       "name" : "user",
       "index" : 1,
-      "fullRegex" : "^/workspace/"
+      "fullRegex" : "^\/workspace\/"
     },
     {
-      "name" : "group",
-      "index" : 1
-    },
-    {
-      "name" : "collection-file",
+      "name" : "collection-manifest",
       "index" : 2,
-      "fullRegex" : "/[\\w-_.]+/[\\w-_.]+/[\\w-_.]+/manifest.*.json$",
-      "getValue" : "return name"
+      "fullRegex" : "^\/(bronze|silver|gold)\/(?:[\\w.-]+\/){3}manifest.*\\.json$",
+      "getValue" : "return 'collection-manifest'"
+    },
+    {
+      "name" : "item-manifest",
+      "index" : 2,
+      "fullRegex" : "^\/(bronze|silver|gold)\/(?:[\\w.-]+\/){3}items.*\\.csv$",
+      "getValue" : "return 'item-manifest'"
     },
     {
       "name" : "collection",
+      "fullRegex" : "^\/(bronze|silver|gold)\/",
       "index" : 2
     },
     {
       "name" : "time",
+      "fullRegex" : "^\/(bronze|silver)\/",
       "index" : 3
     }
   ]
