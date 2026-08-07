@@ -174,3 +174,18 @@ def add_derivative_link(path, source_path, opts={}):
     if ref.is_local or src_ref.is_local:
         raise ValueError("add_derivative_link() only applies to cask:/ paths")
     return _get_cask_backend().add_derivative_link(ref.path, src_ref.path, opts)
+
+
+def find_by_subject(subject, opts={}):
+    """Find files whose RDF graph contains a triple with the given subject.
+
+    CaskFS-only — there's no local-filesystem equivalent of the Layer-3 RDF
+    graph, so unlike every other function here this doesn't take a path to
+    dispatch on. Used by digtk.lib.items to resolve an ARK to its bronze sidecar.
+
+    :param str subject: Subject URI to search for (e.g. an ARK).
+    :param dict opts: See digtk.lib.fs.cask.CaskBackend.find_by_subject.
+    :returns: Matching file records.
+    :rtype: list[dict]
+    """
+    return _get_cask_backend().find_by_subject(subject, opts)

@@ -212,6 +212,86 @@ def test_bad_request_raises_value_error():
         b.write_bytes("/x", b"y")
 
 
+def test_find_by_subject_sends_default_predicate_and_unwraps_single_page():
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["params"] = dict(request.url.params)
+        # Confirmed against a real CaskFS instance: /cask/find is paginated,
+        # same envelope shape as /cask/dir — {totalCount, results: [{filepath, ...}], offset, limit}.
+        return httpx.Response(200, json={
+            "totalCount": 1,
+            "results": [{"filepath": "/bronze/g/c/latest/item/photo.tiff.jsonld.json"}],
+            "offset": 0,
+            "limit": 100,
+        })
+
+    b = backend(handler)
+    result = b.find_by_subject("ark:/87287/d7abc1234")
+    assert seen["url"].startswith(f"{BASE_URL}/find")
+    assert seen["params"]["subject"] == "ark:/87287/d7abc1234"
+    assert seen["params"]["predicate"] == "https://schema.org/ark"
+    assert result == ["/bronze/g/c/latest/item/photo.tiff.jsonld.json"]
+
+
+def test_find_by_subject_walks_every_page(monkeypatch):
+    """A 102-page multi-part item exceeds any reasonable default page size —
+    regression test for exactly this: silently returning only page 1."""
+    seen_offsets = []
+    all_paths = [f"/bronze/g/c/latest/item/photo-{i:03d}.tif.jsonld.json" for i in range(102)]
+
+    def handler(request):
+        offset = int(dict(request.url.params)["offset"])
+        limit = int(dict(request.url.params)["limit"])
+        seen_offsets.append(offset)
+        page = all_paths[offset:offset + limit]
+        return httpx.Response(200, json={
+            "totalCount": len(all_paths),
+            "results": [{"filepath": p} for p in page],
+            "offset": offset,
+            "limit": limit,
+        })
+
+    b = backend(handler)
+    result = b.find_by_subject("ark:/87287/d7abc1234", opts={"page_size": 20})
+    assert result == all_paths
+    assert seen_offsets == [0, 20, 40, 60, 80, 100]
+
+
+def test_find_by_subject_stops_on_empty_page():
+    def handler(request):
+        return httpx.Response(200, json={"totalCount": 5, "results": [], "offset": 0, "limit": 100})
+
+    b = backend(handler)
+    assert b.find_by_subject("ark:/87287/d7abc1234") == []
+
+
+def test_find_by_subject_honors_custom_predicate_and_partition_keys():
+    seen = {}
+
+    def handler(request):
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"totalCount": 0, "results": [], "offset": 0, "limit": 100})
+
+    b = backend(handler)
+    b.find_by_subject("ark:/87287/d7abc1234", opts={
+        "predicate": "http://schema.org/identifier",
+        "partition_keys": ["g", "c"],
+    })
+    assert seen["params"]["predicate"] == "http://schema.org/identifier"
+    assert seen["params"]["partitionKeys"] == "g,c"
+
+
+def test_find_by_subject_raises_on_error_status():
+    def handler(request):
+        return httpx.Response(400, json={"error": "predicate is required"})
+
+    b = backend(handler)
+    with pytest.raises(ValueError):
+        b.find_by_subject("ark:/87287/d7abc1234")
+
+
 def test_unexpected_server_error_raises_caskfs_error():
     def handler(request):
         return httpx.Response(500, text="boom")

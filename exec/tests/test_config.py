@@ -110,6 +110,28 @@ def test_resolved_settings_reports_non_secret_config_values():
     assert resolved["search.top_k"] == config.CONFIG["search"]["top_k"]
 
 
+def test_image_derivatives_defaults():
+    """Pins the phase 0.4 image-processing defaults ported from the reference
+    ImageMagick/Tesseract pipeline (dams/services/image-utils)."""
+    image = config.CONFIG["image"]
+    assert image["dpi"] == 300
+    assert image["deskew_threshold"] == 40
+    assert image["fuzz_threshold"] == 80
+    assert image["thumbnail_quality"] == 90
+    assert image["ocr_prep_quality"] == 100
+    assert image["ocr_prep_size"] == 2048
+    assert image["deskew_working_width"] == 2048
+    assert image["timeout_s"] == 120.0
+
+
+def test_ocr_orientation_defaults():
+    """Distinct from ocr.confidence_threshold (the ML-fallback trigger) — these
+    govern the derivatives-time deskew orientation comparison."""
+    ocr = config.CONFIG["ocr"]
+    assert ocr["orientation_word_count_threshold"] == 100
+    assert ocr["orientation_word_confidence_threshold"] == 50.0
+
+
 def test_rag_chunking_defaults():
     """Pins the common RAG chunking defaults (1000/200 chars) and the RAG-specific
     embedding model (distinct from samwise.embed_model) — regression test for the

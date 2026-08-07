@@ -48,6 +48,9 @@ class FakeCaskBackend:
         self.link_calls.append((path, source_path, opts))
         return {"from_filepath": path, "to_filepath": source_path}
 
+    def find_by_subject(self, subject, opts={}):
+        return [f"/bronze/{subject}.jsonld.json"]
+
 
 @pytest.fixture
 def fake_cask(monkeypatch):
@@ -121,6 +124,11 @@ def test_add_derivative_link_rejects_local_path(tmp_path, fake_cask):
         fs.add_derivative_link(str(tmp_path / "x.jpg"), "cask:/bronze/x.tiff")
     with pytest.raises(ValueError, match="cask:/"):
         fs.add_derivative_link("cask:/silver/x.jpg", str(tmp_path / "x.tiff"))
+
+
+def test_find_by_subject_dispatches_to_cask_backend(fake_cask):
+    result = fs.find_by_subject("ark:/87287/d7abc1234")
+    assert result == ["/bronze/ark:/87287/d7abc1234.jsonld.json"]
 
 
 def test_get_cask_backend_raises_without_configured_connection(monkeypatch):

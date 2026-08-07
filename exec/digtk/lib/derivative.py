@@ -114,7 +114,12 @@ def write_cask(*, type, collection, rel_path, data, source_files, opts={}):
         produced from. Must be non-empty — a derivative always has at least one source.
     :param dict opts: 'group'/'app'/'time' — see dest_path(). 'mime_type' (str, guessed
         from `rel_path` if omitted). 'replace' (bool, default False — overwrite vs. fail
-        if the destination already exists).
+        if the destination already exists). 'link_relation' (str, optional — forwarded to
+        fs.add_derivative_link() as 'relation' for every source link; defaults server-side
+        to schema:source if omitted). 'link_metadata' (str, optional — forwarded as
+        'metadata' on every source link; CaskFS stores this as an opaque, unqueried text
+        field — see caskfs's docs/structural-metadata.md — so pass a json.dumps()-encoded
+        string for structured content, not a dict).
     :returns: dict with 'path' (the cask:/ destination written) and 'links' (the
         derivative_link record per source file, in `source_files` order).
     :rtype: dict
@@ -149,7 +154,12 @@ def write_cask(*, type, collection, rel_path, data, source_files, opts={}):
         write_opts["mime_type"] = opts["mime_type"]
     fs.write(dest_cask, data=data, opts=write_opts)
 
-    links = [fs.add_derivative_link(dest_cask, source) for source in source_files]
+    link_opts = {}
+    if opts.get("link_relation"):
+        link_opts["relation"] = opts["link_relation"]
+    if opts.get("link_metadata"):
+        link_opts["metadata"] = opts["link_metadata"]
+    links = [fs.add_derivative_link(dest_cask, source, link_opts) for source in source_files]
 
     return {"path": dest_cask, "links": links}
 
