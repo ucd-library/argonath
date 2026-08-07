@@ -2,7 +2,7 @@ import fitz
 import pikepdf
 import pytest
 
-from digtk.lib import pdf_tag, pdf_utils
+from digtk.models import pdf_tag, pdf_utils
 
 # Two prose lines (y in image px, 200 dpi build default)
 PROSE_WORDS = [

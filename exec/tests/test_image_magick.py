@@ -35,6 +35,48 @@ def pin_bit_depth(monkeypatch):
     monkeypatch.setattr(image_magick, "_bit_depth", lambda path, opts={}: 8)
 
 
+# --- magick CLI opt-in / legacy binary overrides ------------------------------
+
+def test_convert_format_uses_magick_when_opted_in(fake_run):
+    calls = fake_run()
+    image_magick.convert_format("/tmp/src.jpg", "/tmp/dest.jpg", opts={"magick": True})
+    assert calls[0]["argv"][0] == "magick"
+
+
+def test_probe_dimensions_uses_magick_identify_when_opted_in(fake_run):
+    calls = fake_run(stdout="1024x768 ")
+    image_magick.probe_dimensions("/tmp/photo.jpg", opts={"magick": True})
+    assert calls[0]["argv"][:2] == ["magick", "identify"]
+
+
+def test_convert_format_honors_configured_use_magick_default(fake_run, monkeypatch):
+    monkeypatch.setitem(image_magick.CONFIG["image"], "use_magick", True)
+    calls = fake_run()
+    image_magick.convert_format("/tmp/src.jpg", "/tmp/dest.jpg")
+    assert calls[0]["argv"][0] == "magick"
+
+
+def test_convert_format_opt_overrides_configured_use_magick_default(fake_run, monkeypatch):
+    monkeypatch.setitem(image_magick.CONFIG["image"], "use_magick", True)
+    calls = fake_run()
+    image_magick.convert_format("/tmp/src.jpg", "/tmp/dest.jpg", opts={"magick": False})
+    assert calls[0]["argv"][0] == "convert"
+
+
+def test_convert_format_honors_configured_convert_bin(fake_run, monkeypatch):
+    monkeypatch.setitem(image_magick.CONFIG["image"], "convert_bin", "/opt/im6/bin/convert")
+    calls = fake_run()
+    image_magick.convert_format("/tmp/src.jpg", "/tmp/dest.jpg")
+    assert calls[0]["argv"][0] == "/opt/im6/bin/convert"
+
+
+def test_probe_dimensions_honors_configured_identify_bin(fake_run, monkeypatch):
+    monkeypatch.setitem(image_magick.CONFIG["image"], "identify_bin", "/opt/im6/bin/identify")
+    calls = fake_run(stdout="1024x768 ")
+    image_magick.probe_dimensions("/tmp/photo.jpg")
+    assert calls[0]["argv"][0] == "/opt/im6/bin/identify"
+
+
 def test_probe_dimensions_parses_identify_output(fake_run):
     calls = fake_run(stdout="1024x768 ")
     result = image_magick.probe_dimensions("/tmp/photo.jpg")

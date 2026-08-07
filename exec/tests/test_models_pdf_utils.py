@@ -1,7 +1,7 @@
 import fitz
 import pytest
 
-from digtk.lib import pdf_utils
+from digtk.models import pdf_utils
 
 HOCR_SAMPLE = """
 <div class='ocr_page' title='bbox 0 0 800 600'>

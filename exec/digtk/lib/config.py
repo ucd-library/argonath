@@ -43,6 +43,16 @@ def _env(name, default, cast=str):
     return cast(raw) if raw is not None else default
 
 
+def _cast_bool(raw):
+    """Cast an env var / home-config string to bool.
+
+    :param str raw: Raw value, e.g. "true", "1", "no".
+    :returns: True if `raw` (case-insensitive) is one of "1", "true", "yes", "on".
+    :rtype: bool
+    """
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 # Env var names, declared once and reused both to resolve CONFIG below and to wire
 # each Typer Option's `envvar=` further down.
 OCR_LANG_ENV = "DIGTK_OCR_LANG"
@@ -86,6 +96,9 @@ IMAGE_OCR_PREP_QUALITY_ENV = "DIGTK_IMAGE_OCR_PREP_QUALITY"
 IMAGE_OCR_PREP_SIZE_ENV = "DIGTK_IMAGE_OCR_PREP_SIZE"
 IMAGE_DESKEW_WORKING_WIDTH_ENV = "DIGTK_IMAGE_DESKEW_WORKING_WIDTH"
 IMAGE_TIMEOUT_S_ENV = "DIGTK_IMAGE_TIMEOUT_S"
+IMAGE_USE_MAGICK_ENV = "DIGTK_IMAGE_USE_MAGICK"
+IMAGE_CONVERT_BIN_ENV = "DIGTK_IMAGE_CONVERT_BIN"
+IMAGE_IDENTIFY_BIN_ENV = "DIGTK_IMAGE_IDENTIFY_BIN"
 
 CONFIG_PATH_ENV = "DIGTK_CONFIG_PATH"
 
@@ -124,6 +137,9 @@ SETTINGS = [
     {"dotpath": "image.ocr_prep_size", "env": IMAGE_OCR_PREP_SIZE_ENV, "cast": int, "secret": False},
     {"dotpath": "image.deskew_working_width", "env": IMAGE_DESKEW_WORKING_WIDTH_ENV, "cast": int, "secret": False},
     {"dotpath": "image.timeout_s", "env": IMAGE_TIMEOUT_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "image.use_magick", "env": IMAGE_USE_MAGICK_ENV, "cast": _cast_bool, "secret": False},
+    {"dotpath": "image.convert_bin", "env": IMAGE_CONVERT_BIN_ENV, "cast": str, "secret": False},
+    {"dotpath": "image.identify_bin", "env": IMAGE_IDENTIFY_BIN_ENV, "cast": str, "secret": False},
     {"dotpath": "ocr.orientation_word_count_threshold", "env": OCR_ORIENTATION_WORD_COUNT_THRESHOLD_ENV, "cast": int, "secret": False},
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
 ]
@@ -294,6 +310,15 @@ CONFIG = {
         "ocr_prep_size": _env(IMAGE_OCR_PREP_SIZE_ENV, 2048, int),
         "deskew_working_width": _env(IMAGE_DESKEW_WORKING_WIDTH_ENV, 2048, int),
         "timeout_s": _env(IMAGE_TIMEOUT_S_ENV, 120.0, float),
+        # ImageMagick 7 replaces the legacy `convert`/`identify` binaries with a
+        # single `magick` CLI (`magick <args>` for convert, `magick identify` for
+        # identify) — deprecated but still present as compatibility shims on most
+        # installs. use_magick opts into the unified CLI; convert_bin/identify_bin
+        # let an install where the legacy binaries are named/aliased differently
+        # override them without opting into magick.
+        "use_magick": _env(IMAGE_USE_MAGICK_ENV, False, _cast_bool),
+        "convert_bin": _env(IMAGE_CONVERT_BIN_ENV, "convert"),
+        "identify_bin": _env(IMAGE_IDENTIFY_BIN_ENV, "identify"),
     },
 }
 

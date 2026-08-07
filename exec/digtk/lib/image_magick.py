@@ -75,18 +75,60 @@ def _run(argv, opts={}):
     return result.stdout
 
 
+def _use_magick(opts):
+    """Whether this call should use ImageMagick 7's unified `magick` CLI instead
+    of the legacy `convert`/`identify` binaries.
+
+    :param dict opts: 'magick' (bool) overrides CONFIG["image"]["use_magick"].
+    :rtype: bool
+    """
+    return bool(opts.get("magick", CONFIG["image"]["use_magick"]))
+
+
+def _convert_argv(opts):
+    """Resolve the base command for a convert-style invocation.
+
+    Uses `magick` (IMv7's unified CLI, which convert-style operators run under
+    directly) when requested — see _use_magick() — else the legacy `convert`
+    binary, named "convert" by default but overridable via
+    CONFIG["image"]["convert_bin"] (DIGTK_IMAGE_CONVERT_BIN) for installs where
+    it's named or aliased differently.
+
+    :param dict opts: See _use_magick().
+    :returns: Argv prefix, e.g. ["magick"] or ["convert"].
+    :rtype: list[str]
+    """
+    return ["magick"] if _use_magick(opts) else [CONFIG["image"]["convert_bin"]]
+
+
+def _identify_argv(opts):
+    """Resolve the base command for an identify-style invocation.
+
+    Mirrors _convert_argv(): `magick identify` under IMv7's unified CLI, else
+    the legacy `identify` binary (CONFIG["image"]["identify_bin"] /
+    DIGTK_IMAGE_IDENTIFY_BIN).
+
+    :param dict opts: See _use_magick().
+    :returns: Argv prefix, e.g. ["magick", "identify"] or ["identify"].
+    :rtype: list[str]
+    """
+    return ["magick", "identify"] if _use_magick(opts) else [CONFIG["image"]["identify_bin"]]
+
+
 def probe_dimensions(path, opts={}):
     """Probe an image's pixel dimensions via `identify`.
 
     :param str path: Local image path.
     :param dict opts: 'frame' (int|None) selects a page/frame for multi-frame sources.
-        'timeout' (float) overrides the default subprocess timeout.
+        'timeout' (float) overrides the default subprocess timeout. 'magick' (bool)
+        uses ImageMagick 7's unified CLI instead of the legacy `identify` binary —
+        see _use_magick().
     :returns: {"width": int, "height": int}
     :rtype: dict
     :raises ImageMagickError: If `identify` fails or times out.
     """
     src = _frame_suffix(path, opts.get("frame"))
-    stdout = _run(["identify", "-format", "%wx%h ", src], opts)
+    stdout = _run(_identify_argv(opts) + ["-format", "%wx%h ", src], opts)
     width, height = stdout.strip().split()[0].split("x")
     return {"width": int(width), "height": int(height)}
 
@@ -104,7 +146,7 @@ def _bit_depth(path, opts={}):
     """
     src = _frame_suffix(path, opts.get("frame"))
     try:
-        stdout = _run(["identify", "-format", "%[bit-depth]", src], opts)
+        stdout = _run(_identify_argv(opts) + ["-format", "%[bit-depth]", src], opts)
     except ImageMagickError:
         return 8
     try:
@@ -114,7 +156,7 @@ def _bit_depth(path, opts={}):
 
 
 def thumbnail(src_path, dest_path, width, opts={}):
-    """Generate a thumbnail JPEG at the specified width, preserving aspect ratio.
+    """Generate a thumbnail at the specified width, preserving aspect ratio.
 
     Applies EXIF orientation and auto-levels sources deeper than 8 bits per
     channel — 16-bit archival TIFF masters render flat/dark without this (a
@@ -130,7 +172,7 @@ def thumbnail(src_path, dest_path, width, opts={}):
     :param str dest_path: Local destination path (extension drives output format).
     :param int width: Target width in pixels.
     :param dict opts: 'quality' (int, default CONFIG["image"]["thumbnail_quality"]),
-        'frame' (int|None), 'timeout' (float).
+        'frame' (int|None), 'timeout' (float), 'magick' (bool) — see _use_magick().
     :returns: {"argv": list[str], "dest_path": str}
     :rtype: dict
     :raises ImageMagickError: If `convert` fails or times out.
@@ -138,7 +180,7 @@ def thumbnail(src_path, dest_path, width, opts={}):
     quality = opts.get("quality", CONFIG["image"]["thumbnail_quality"])
     src = _frame_suffix(src_path, opts.get("frame"))
 
-    argv = ["convert", src, "-auto-orient"]
+    argv = _convert_argv(opts) + [src, "-auto-orient"]
     if _bit_depth(src_path, opts) > 8:
         argv.append("-auto-level")
     argv += [
@@ -159,7 +201,7 @@ def convert_format(src_path, dest_path, opts={}):
     :param str src_path: Local source image path.
     :param str dest_path: Local destination path (extension drives output format).
     :param dict opts: 'quality' (int, default CONFIG["image"]["thumbnail_quality"]),
-        'frame' (int|None), 'timeout' (float).
+        'frame' (int|None), 'timeout' (float), 'magick' (bool) — see _use_magick().
     :returns: {"argv": list[str], "dest_path": str}
     :rtype: dict
     :raises ImageMagickError: If `convert` fails or times out.
@@ -167,8 +209,8 @@ def convert_format(src_path, dest_path, opts={}):
     quality = opts.get("quality", CONFIG["image"]["thumbnail_quality"])
     src = _frame_suffix(src_path, opts.get("frame"))
 
-    argv = [
-        "convert", src,
+    argv = _convert_argv(opts) + [
+        src,
         "-quality", str(quality), "-alpha", "remove", "-layers", "flatten",
         dest_path,
     ]
@@ -192,7 +234,8 @@ def deskew(src_path, dest_path, opts={}):
     :param dict opts: 'working_width' (int, default CONFIG["image"]["deskew_working_width"]),
         'threshold' (int, default CONFIG["image"]["deskew_threshold"], percent),
         'output_width' (int, default 1024), 'quality' (int, default
-        CONFIG["image"]["thumbnail_quality"]), 'frame' (int|None), 'timeout' (float).
+        CONFIG["image"]["thumbnail_quality"]), 'frame' (int|None), 'timeout' (float),
+        'magick' (bool) — see _use_magick().
     :returns: {"argv": list[str], "dest_path": str}
     :rtype: dict
     :raises ImageMagickError: If `convert` fails or times out.
@@ -203,8 +246,8 @@ def deskew(src_path, dest_path, opts={}):
     quality = opts.get("quality", CONFIG["image"]["thumbnail_quality"])
     src = _frame_suffix(src_path, opts.get("frame"))
 
-    argv = [
-        "convert", src,
+    argv = _convert_argv(opts) + [
+        src,
         "-resize", f"{working_width}x",
         "-deskew", f"{threshold}%",
         "-quality", str(quality),
@@ -242,7 +285,7 @@ def prep_ocr(src_path, dest_path, opts={}):
         enhancement for faded originals (hectograph/mimeo print, pale
         typescript): 'auto' stretches contrast keeping color, 'gray' also
         converts to grayscale for maximum OCR legibility, 'frame' (int|None),
-        'timeout' (float).
+        'timeout' (float), 'magick' (bool) — see _use_magick().
     :returns: {"argv": list[str], "dest_path": str}
     :rtype: dict
     :raises ImageMagickError: If `convert` fails or times out.
@@ -254,7 +297,7 @@ def prep_ocr(src_path, dest_path, opts={}):
     quality = opts.get("quality", CONFIG["image"]["ocr_prep_quality"])
     src = _frame_suffix(src_path, opts.get("frame"))
 
-    argv = ["convert", src, "-auto-orient"]
+    argv = _convert_argv(opts) + [src, "-auto-orient"]
     if _bit_depth(src_path, opts) > 8:
         argv.append("-auto-level")
     enhance = opts.get("enhance")

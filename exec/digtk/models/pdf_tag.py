@@ -1,6 +1,6 @@
 """
 PDF/UA-1 accessibility structure tagging for digtk-built searchable PDFs
-(digtk.lib.pdf_utils.build_searchable_pdf output).
+(digtk.models.pdf_utils.build_searchable_pdf output).
 
 The page scan becomes an /Artifact (standard for OCR'd documents: the text
 layer carries the semantics) or, when alt text is supplied, a /Figure with

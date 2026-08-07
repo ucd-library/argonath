@@ -1,6 +1,6 @@
 import pytest
 
-from digtk.lib import alt_utils
+from digtk.models import alt_utils
 
 
 # --- build_alt_prompt ---------------------------------------------------------
