@@ -27,6 +27,14 @@ def fake_run(monkeypatch):
     return _install
 
 
+@pytest.fixture(autouse=True)
+def pin_bit_depth(monkeypatch):
+    """Pins _bit_depth to 8 so thumbnail()/prep_ocr() tests don't need to account
+    for the extra `identify` subprocess call fake_run would otherwise also record.
+    Tests exercising the >8bit auto-level path override this explicitly."""
+    monkeypatch.setattr(image_magick, "_bit_depth", lambda path, opts={}: 8)
+
+
 def test_probe_dimensions_parses_identify_output(fake_run):
     calls = fake_run(stdout="1024x768 ")
     result = image_magick.probe_dimensions("/tmp/photo.jpg")
@@ -57,12 +65,32 @@ def test_thumbnail_includes_resize_flag(fake_run):
     result = image_magick.thumbnail("/tmp/src.jpg", "/tmp/thumb-256.jpg", 256)
     argv = calls[0]["argv"]
     assert argv == [
-        "convert", "/tmp/src.jpg",
-        "-resize", "256x",
+        "convert", "/tmp/src.jpg", "-auto-orient",
+        "-resize", "256x>",
         "-quality", "90", "-alpha", "remove", "-layers", "flatten",
         "/tmp/thumb-256.jpg",
     ]
     assert result == {"argv": argv, "dest_path": "/tmp/thumb-256.jpg"}
+
+
+def test_thumbnail_never_upscales_narrow_sources(fake_run):
+    calls = fake_run()
+    image_magick.thumbnail("/tmp/src.jpg", "/tmp/dest.jpg", 500)
+    argv = calls[0]["argv"]
+    assert argv[argv.index("-resize") + 1] == "500x>"
+
+
+def test_thumbnail_auto_levels_deep_sources(fake_run, monkeypatch):
+    monkeypatch.setattr(image_magick, "_bit_depth", lambda path, opts={}: 16)
+    calls = fake_run()
+    image_magick.thumbnail("/tmp/src.jpg", "/tmp/dest.jpg", 256)
+    assert "-auto-level" in calls[0]["argv"]
+
+
+def test_thumbnail_no_auto_level_for_8bit(fake_run):
+    calls = fake_run()
+    image_magick.thumbnail("/tmp/src.jpg", "/tmp/dest.jpg", 256)
+    assert "-auto-level" not in calls[0]["argv"]
 
 
 def test_thumbnail_frame_indexes_tiff_sources(fake_run):
@@ -125,7 +153,7 @@ def test_prep_ocr_without_deskew(fake_run):
     calls = fake_run()
     result = image_magick.prep_ocr("/tmp/src.jpg", "/tmp/ocr.jpg")
     assert calls[0]["argv"] == [
-        "convert", "/tmp/src.jpg",
+        "convert", "/tmp/src.jpg", "-auto-orient",
         "-resize", "2048x",
         "-density", "300",
         "-alpha", "remove",
@@ -145,7 +173,7 @@ def test_prep_ocr_with_deskew_inserts_deskew_flag_after_resize(fake_run):
     image_magick.prep_ocr("/tmp/src.jpg", "/tmp/ocr-deskew.jpg", opts={"deskew": True})
     argv = calls[0]["argv"]
     assert argv == [
-        "convert", "/tmp/src.jpg",
+        "convert", "/tmp/src.jpg", "-auto-orient",
         "-resize", "2048x",
         "-deskew", "40%",
         "-density", "300",
@@ -158,6 +186,41 @@ def test_prep_ocr_with_deskew_inserts_deskew_flag_after_resize(fake_run):
         "-quality", "100",
         "/tmp/ocr-deskew.jpg",
     ]
+
+
+def test_prep_ocr_auto_levels_deep_sources(fake_run, monkeypatch):
+    monkeypatch.setattr(image_magick, "_bit_depth", lambda path, opts={}: 16)
+    calls = fake_run()
+    image_magick.prep_ocr("/tmp/src.jpg", "/tmp/dest.jpg")
+    assert "-auto-level" in calls[0]["argv"]
+
+
+def test_prep_ocr_enhance_gray_flags(fake_run):
+    calls = fake_run()
+    image_magick.prep_ocr("/tmp/src.jpg", "/tmp/dest.jpg", opts={"enhance": "gray"})
+    argv = calls[0]["argv"]
+    assert argv[argv.index("-colorspace") + 1] == "Gray"
+    assert argv[argv.index("-contrast-stretch") + 1] == "2%x2%"
+
+
+def test_prep_ocr_enhance_auto_keeps_color(fake_run):
+    calls = fake_run()
+    image_magick.prep_ocr("/tmp/src.jpg", "/tmp/dest.jpg", opts={"enhance": "auto"})
+    argv = calls[0]["argv"]
+    assert "-contrast-stretch" in argv
+    assert "-colorspace" not in argv
+
+
+def test_prep_ocr_no_enhance_by_default(fake_run):
+    calls = fake_run()
+    image_magick.prep_ocr("/tmp/src.jpg", "/tmp/dest.jpg")
+    assert "-contrast-stretch" not in calls[0]["argv"]
+
+
+def test_prep_ocr_bad_enhance_raises(fake_run):
+    fake_run()
+    with pytest.raises(ValueError, match="unknown enhance mode"):
+        image_magick.prep_ocr("/tmp/src.jpg", "/tmp/dest.jpg", opts={"enhance": "sharpen"})
 
 
 def test_prep_ocr_honors_custom_fuzz_and_dpi(fake_run):

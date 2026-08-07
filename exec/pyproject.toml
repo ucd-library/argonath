@@ -16,6 +16,8 @@ dependencies = [
     "llama-index-embeddings-openai>=0.2",
     "psycopg2-binary>=2.9",
     "rdflib>=7.0",
+    "pymupdf>=1.24",
+    "pikepdf>=9.0",
 ]
 
 [project.optional-dependencies]

@@ -18,11 +18,13 @@ from digtk.lib.config import CONFIG
 
 CONFIDENCE_THRESHOLD = CONFIG["ocr"]["confidence_threshold"]
 
-_X_WCONF_RE = re.compile(r"x_wconf (\d+)")
+# hOCR word spans carry title='bbox ...; x_wconf NN' — x_wconf appears nowhere else.
+_X_WCONF_RE = re.compile(r"x_wconf\s+(\d+)")
 
 
 class TesseractError(RuntimeError):
-    """Raised when a Tesseract subprocess invocation fails or times out.
+    """Raised when a Tesseract subprocess invocation fails, times out, or exits
+    0 without writing its output files.
 
     :param list[str] argv: The command that was run.
     :param int|None returncode: Process exit code, or None if it timed out.
@@ -43,7 +45,9 @@ def run_tesseract(image_path, output_base, opts={}):
     """Run Tesseract OCR on an image, producing .hocr and .txt outputs.
 
     `tesseract <image_path> <output_base> --dpi {dpi} -l {lang} --psm {psm}
-    --oem {oem} hocr txt`.
+    --oem {oem} hocr txt`. Output is captured as bytes and decoded with
+    errors="replace" — Tesseract can emit non-UTF-8 bytes on stderr, and a
+    strict text-mode decode would turn that into an uncaught UnicodeDecodeError.
 
     :param str image_path: Path to the prepared (deskewed, high-DPI) image.
     :param str output_base: Base output path (Tesseract appends .hocr / .txt).
@@ -54,7 +58,8 @@ def run_tesseract(image_path, output_base, opts={}):
         (forwarded when computing 'confidence').
     :returns: {"hocr_path": str, "txt_path": str, "confidence": float}
     :rtype: dict
-    :raises TesseractError: If `tesseract` fails or times out.
+    :raises TesseractError: If `tesseract` fails, times out, or exits 0
+        without writing its output files.
     """
     lang = opts.get("lang", CONFIG["ocr"]["lang"])
     psm = opts.get("psm", CONFIG["ocr"]["psm"])
@@ -62,20 +67,27 @@ def run_tesseract(image_path, output_base, opts={}):
     dpi = opts.get("dpi", CONFIG["image"]["dpi"])
     timeout = opts.get("timeout", CONFIG["image"]["timeout_s"])
 
+    os.makedirs(os.path.dirname(os.path.abspath(output_base)), exist_ok=True)
+
     argv = [
         "tesseract", image_path, output_base,
         "--dpi", str(dpi), "-l", lang, "--psm", str(psm), "--oem", str(oem),
         "hocr", "txt",
     ]
     try:
-        subprocess.run(argv, shell=False, check=True, timeout=timeout, capture_output=True, text=True)
+        result = subprocess.run(argv, shell=False, check=True, timeout=timeout, capture_output=True)
     except subprocess.CalledProcessError as e:
-        raise TesseractError(argv, e.returncode, e.stderr) from e
+        stderr = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else e.stderr
+        raise TesseractError(argv, e.returncode, stderr) from e
     except subprocess.TimeoutExpired as e:
         raise TesseractError(argv, None, "", timed_out=True) from e
 
     hocr_path = f"{output_base}.hocr"
     txt_path = f"{output_base}.txt"
+    for path in (hocr_path, txt_path):
+        if not os.path.exists(path):
+            raise TesseractError(argv, result.returncode, f"tesseract exited 0 but did not write {path}")
+
     return {"hocr_path": hocr_path, "txt_path": txt_path, "confidence": extract_confidence(hocr_path)}
 
 
@@ -86,19 +98,24 @@ def _word_confidences(hocr_path):
     attribute via regex rather than a full XML/DOM parse — hOCR's structure is
     simple enough that this is robust and avoids an extra XML dependency (see
     the phase 0.4 migration notes on skipping the reference implementation's
-    djvu-XML intermediate format).
+    djvu-XML intermediate format). Decoded with errors="replace" since
+    Tesseract can emit non-UTF-8 bytes.
 
     :param str hocr_path: Path to the hOCR output file.
     :returns: Word confidence values (0.0-100.0), in document order.
     :rtype: list[float]
     """
-    with open(hocr_path, "r", encoding="utf-8") as f:
+    with open(hocr_path, "r", encoding="utf-8", errors="replace") as f:
         text = f.read()
     return [float(m) for m in _X_WCONF_RE.findall(text)]
 
 
 def extract_confidence(hocr_path):
     """Parse a Tesseract hOCR file and return the mean word confidence score.
+
+    A page with no recognized words scores 0.0 — downstream that reads as
+    "below threshold", which is the right signal for both genuinely unreadable
+    pages and blank ones.
 
     :param str hocr_path: Path to the hOCR output file.
     :returns: Mean confidence score (0.0-100.0), or 0.0 if the file has no words.

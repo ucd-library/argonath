@@ -91,11 +91,40 @@ def probe_dimensions(path, opts={}):
     return {"width": int(width), "height": int(height)}
 
 
+def _bit_depth(path, opts={}):
+    """Read an image's bits-per-channel via `identify`.
+
+    Defaults to 8 if the probe itself fails, rather than raising — the
+    subsequent `convert` call will surface any real error against the source.
+
+    :param str path: Local image path.
+    :param dict opts: 'frame' (int|None), 'timeout' (float) — see probe_dimensions().
+    :returns: Bit depth of the selected frame.
+    :rtype: int
+    """
+    src = _frame_suffix(path, opts.get("frame"))
+    try:
+        stdout = _run(["identify", "-format", "%[bit-depth]", src], opts)
+    except ImageMagickError:
+        return 8
+    try:
+        return int(stdout.strip())
+    except ValueError:
+        return 8
+
+
 def thumbnail(src_path, dest_path, width, opts={}):
     """Generate a thumbnail JPEG at the specified width, preserving aspect ratio.
 
-    `convert <src>[frame] -resize {width}x -quality {quality} -alpha remove
-    -layers flatten <dest>`.
+    Applies EXIF orientation and auto-levels sources deeper than 8 bits per
+    channel — 16-bit archival TIFF masters render flat/dark without this (a
+    linear 16->8 scale leaves scans that only use a narrow band of the tonal
+    range looking washed out, so the tonal range is stretched to full scale
+    first; same for float/32-bit sources). Never upscales a source narrower
+    than the target width.
+
+    `convert <src>[frame] -auto-orient [-auto-level] -resize {width}x>
+    -quality {quality} -alpha remove -layers flatten <dest>`.
 
     :param str src_path: Local source image path.
     :param str dest_path: Local destination path (extension drives output format).
@@ -109,9 +138,11 @@ def thumbnail(src_path, dest_path, width, opts={}):
     quality = opts.get("quality", CONFIG["image"]["thumbnail_quality"])
     src = _frame_suffix(src_path, opts.get("frame"))
 
-    argv = [
-        "convert", src,
-        "-resize", f"{width}x",
+    argv = ["convert", src, "-auto-orient"]
+    if _bit_depth(src_path, opts) > 8:
+        argv.append("-auto-level")
+    argv += [
+        "-resize", f"{width}x>",
         "-quality", str(quality), "-alpha", "remove", "-layers", "flatten",
         dest_path,
     ]
@@ -189,11 +220,15 @@ def deskew(src_path, dest_path, opts={}):
 def prep_ocr(src_path, dest_path, opts={}):
     """Prepare an image for OCR: resize, set DPI, and fuzz-whiten the background.
 
-    `convert <src>[frame] -resize {size}x [-deskew {threshold}%] -density {dpi}
-    -alpha remove -fill black -fuzz {fuzz}% +opaque "#FFFFFF" -filter catrom
-    -layers flatten -quality {quality} <dest>`. Fuzz-whitening recolors every
-    pixel not within `fuzz`% color-distance of white to black, binarizing the
-    page to improve OCR contrast.
+    Applies EXIF orientation and auto-levels sources deeper than 8 bits per
+    channel, same as thumbnail(). Fuzz-whitening recolors every pixel not
+    within `fuzz`% color-distance of white to black, binarizing the page to
+    improve OCR contrast.
+
+    `convert <src>[frame] -auto-orient [-auto-level] [enhance flags] -resize
+    {size}x [-deskew {threshold}%] -density {dpi} -alpha remove -fill black
+    -fuzz {fuzz}% +opaque "#FFFFFF" -filter catrom -layers flatten -quality
+    {quality} <dest>`.
 
     :param str src_path: Local source image path.
     :param str dest_path: Local destination path.
@@ -203,10 +238,15 @@ def prep_ocr(src_path, dest_path, opts={}):
         CONFIG["image"]["ocr_prep_quality"]), 'deskew' (bool, default False) —
         whether to include the -deskew step, 'threshold' (int, default
         CONFIG["image"]["deskew_threshold"], only used if deskew=True),
-        'frame' (int|None), 'timeout' (float).
+        'enhance' (None|'auto'|'gray', default None) — extra contrast
+        enhancement for faded originals (hectograph/mimeo print, pale
+        typescript): 'auto' stretches contrast keeping color, 'gray' also
+        converts to grayscale for maximum OCR legibility, 'frame' (int|None),
+        'timeout' (float).
     :returns: {"argv": list[str], "dest_path": str}
     :rtype: dict
     :raises ImageMagickError: If `convert` fails or times out.
+    :raises ValueError: On an unknown 'enhance' mode.
     """
     size = opts.get("size", CONFIG["image"]["ocr_prep_size"])
     dpi = opts.get("dpi", CONFIG["image"]["dpi"])
@@ -214,7 +254,18 @@ def prep_ocr(src_path, dest_path, opts={}):
     quality = opts.get("quality", CONFIG["image"]["ocr_prep_quality"])
     src = _frame_suffix(src_path, opts.get("frame"))
 
-    argv = ["convert", src, "-resize", f"{size}x"]
+    argv = ["convert", src, "-auto-orient"]
+    if _bit_depth(src_path, opts) > 8:
+        argv.append("-auto-level")
+    enhance = opts.get("enhance")
+    if enhance == "gray":
+        argv += ["-colorspace", "Gray", "-contrast-stretch", "2%x2%"]
+    elif enhance == "auto":
+        argv += ["-contrast-stretch", "2%x2%"]
+    elif enhance:
+        raise ValueError(f"unknown enhance mode: {enhance!r} (use 'auto' or 'gray')")
+
+    argv += ["-resize", f"{size}x"]
     if opts.get("deskew"):
         threshold = opts.get("threshold", CONFIG["image"]["deskew_threshold"])
         argv += ["-deskew", f"{threshold}%"]

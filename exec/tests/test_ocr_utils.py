@@ -1,8 +1,15 @@
+import os
+import shutil
 import subprocess
 
 import pytest
 
 from digtk.lib import ocr_utils
+
+needs_tesseract = pytest.mark.skipif(
+    shutil.which("tesseract") is None or shutil.which("convert") is None,
+    reason="tesseract or ImageMagick not installed",
+)
 
 
 def hocr_with_confidences(confidences):
@@ -15,19 +22,30 @@ def hocr_with_confidences(confidences):
 
 
 class FakeCompletedProcess:
-    def __init__(self, stdout=""):
+    def __init__(self, stdout="", returncode=0):
         self.stdout = stdout
+        self.returncode = returncode
 
 
 @pytest.fixture
 def fake_run(monkeypatch):
+    """Replaces subprocess.run with a recorder that also touches Tesseract's
+    expected .hocr/.txt outputs (without clobbering ones a test pre-wrote),
+    matching run_tesseract()'s post-exit existence check. Pass write_outputs=False
+    to simulate Tesseract exiting 0 without writing anything."""
     calls = []
 
-    def _install(raises=None):
+    def _install(raises=None, write_outputs=True):
         def fake(argv, **kwargs):
             calls.append({"argv": argv, "kwargs": kwargs})
             if raises is not None:
                 raise raises
+            if write_outputs:
+                output_base = argv[2]
+                for ext in (".hocr", ".txt"):
+                    path = output_base + ext
+                    if not os.path.exists(path):
+                        open(path, "w").close()
             return FakeCompletedProcess()
         monkeypatch.setattr(subprocess, "run", fake)
         return calls
@@ -162,3 +180,49 @@ def test_compare_orientations_honors_custom_word_count_threshold(monkeypatch):
         {"original": "/orig.jpg", "deskewed": "/deskew.jpg"}, opts={"word_count_threshold": 2}
     )
     assert result["selected"] == "deskewed"
+
+
+def test_run_tesseract_creates_parent_dirs(fake_run, tmp_path):
+    fake_run()
+    base = tmp_path / "sub" / "deeper" / "output"
+    ocr_utils.run_tesseract("page.tiff", str(base))
+    assert base.parent.is_dir()
+
+
+def test_run_tesseract_raises_on_missing_output(fake_run, tmp_path):
+    fake_run(write_outputs=False)
+    with pytest.raises(ocr_utils.TesseractError, match="did not write"):
+        ocr_utils.run_tesseract(str(tmp_path / "img.jpg"), str(tmp_path / "out"))
+
+
+def test_extract_confidence_tolerates_bad_bytes(tmp_path):
+    hocr = tmp_path / "page.hocr"
+    hocr.write_bytes(hocr_with_confidences([80, 90]).encode() + b"\xff\xfe")
+    assert ocr_utils.extract_confidence(str(hocr)) == pytest.approx(85.0)
+
+
+def test_run_ml_ocr_still_stubbed(tmp_path):
+    with pytest.raises(NotImplementedError):
+        ocr_utils.run_ml_ocr("page.tiff", str(tmp_path / "o"))
+
+
+# --- end-to-end against real tesseract ----------------------------------------
+
+@needs_tesseract
+def test_run_tesseract_reads_rendered_text(tmp_path):
+    src = tmp_path / "page.png"
+    subprocess.run(
+        ["convert", "-size", "600x150", "xc:white", "-pointsize", "48",
+         "-fill", "black", "-annotate", "+40+90", "HELLO WORLD", str(src)],
+        capture_output=True, check=True,
+    )
+    result = ocr_utils.run_tesseract(str(src), str(tmp_path / "output"))
+    text = open(result["txt_path"], encoding="utf-8", errors="replace").read()
+    assert "HELLO" in text
+    assert result["confidence"] > 50.0
+
+
+@needs_tesseract
+def test_run_tesseract_missing_image_raises(tmp_path):
+    with pytest.raises(ocr_utils.TesseractError):
+        ocr_utils.run_tesseract(str(tmp_path / "nope.png"), str(tmp_path / "o"))
