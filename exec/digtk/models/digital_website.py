@@ -5,14 +5,14 @@ Orchestrates phase 0.4 (image derivatives): resolves an ARK to its CaskFS
 bronze location (one item can hold more than one binary — e.g. an archival
 box/folder containing several photographs; see docs/cask-conventions.md and
 digtk.lib.items), stages each bronze binary to a local temp file, generates
-the derivative image set via digtk.lib.image_utils, decides scan orientation
+the derivative image set via digtk.lib.image_magick, decides scan orientation
 independently per image via digtk.lib.ocr_utils, and publishes results back
 to CaskFS through digtk.lib.derivative — the canonical way to write any
 silver/gold/workspace pipeline output and record its CaskFS lineage back to
 the source binary it came from (see CLAUDE.md).
 
 This is the only layer that knows about ARKs, CaskFS paths, and the silver
-directory layout — digtk.lib.image_utils and digtk.lib.ocr_utils only ever
+directory layout — digtk.lib.image_magick and digtk.lib.ocr_utils only ever
 see local file paths. Reads still go through digtk.lib.fs directly (its own
 'cask:/' prefix check already decides local-vs-CaskFS transparently); writes
 of pipeline outputs go through digtk.lib.derivative instead. The only reason
@@ -28,7 +28,7 @@ import os
 import tempfile
 import time
 
-from digtk.lib import derivative, fs, image_utils, items, ocr_utils, utils
+from digtk.lib import derivative, fs, image_magick, items, ocr_utils, utils
 from digtk.lib.config import CONFIG
 from digtk.lib.schema import ARGONATH_NS, SCHEMA_CONTEXT
 
@@ -91,7 +91,7 @@ def _stage_sources(item, tmp_dir):
     """Stream every one of the item's bronze binaries into local temp files.
 
     Preserves each binary's original filename (not just extension) — needed for
-    TIFF frame-select/format inference by digtk.lib.image_utils, and to derive
+    TIFF frame-select/format inference by digtk.lib.image_magick, and to derive
     the filename stem used to disambiguate outputs for multi-image items.
 
     :param digtk.lib.items.ItemLocation item: Resolved item location.
@@ -229,7 +229,7 @@ def _generate_thumbnail_set(local_src, tmp_dir, widths, stem, multi, opts={}):
     :param str stem: Source image's filename stem, for multi-image disambiguation.
     :param bool multi: True if this item has more than one source image.
     :param dict opts: 'deskew' (bool, default False) applies the deskew recipe to every
-        width instead of a plain resize; 'quality' forwarded to image_utils.
+        width instead of a plain resize; 'quality' forwarded to image_magick.
     :returns: (filename, local_path) pairs, one per width.
     :rtype: list[tuple[str, str]]
     """
@@ -240,9 +240,9 @@ def _generate_thumbnail_set(local_src, tmp_dir, widths, stem, multi, opts={}):
         filename = _output_name(stem, _thumbnail_filename(width, widths), multi)
         local_path = os.path.join(tmp_dir, filename)
         if apply_deskew:
-            image_utils.deskew(local_src, local_path, opts={**opts, "output_width": width, "quality": quality})
+            image_magick.deskew(local_src, local_path, opts={**opts, "output_width": width, "quality": quality})
         else:
-            image_utils.thumbnail(local_src, local_path, width, opts={"quality": quality})
+            image_magick.thumbnail(local_src, local_path, width, opts={"quality": quality})
         outputs.append((filename, local_path))
     return outputs
 
@@ -260,14 +260,14 @@ def _select_orientation(local_src, tmp_dir, opts={}):
 
     :param str local_src: Local path to the staged source image.
     :param str tmp_dir: Local directory to write candidate images into.
-    :param dict opts: Forwarded to image_utils.prep_ocr() and ocr_utils.compare_orientations().
+    :param dict opts: Forwarded to image_magick.prep_ocr() and ocr_utils.compare_orientations().
     :returns: {"deskew": bool, "stats": {"original": {...}, "deskewed": {...}}}
     :rtype: dict
     """
     candidates = {}
     for label, apply_deskew in (("original", False), ("deskewed", True)):
         path = os.path.join(tmp_dir, f"orientation-{label}-{os.path.basename(local_src)}.jpg")
-        image_utils.prep_ocr(local_src, path, opts={**opts, "deskew": apply_deskew})
+        image_magick.prep_ocr(local_src, path, opts={**opts, "deskew": apply_deskew})
         candidates[label] = path
 
     comparison = ocr_utils.compare_orientations(candidates, opts=opts)
@@ -336,7 +336,7 @@ def convert(ark, opts={}):
             utils.log(f"[{i}/{total}] {src['stem']}: converting to {fmt}...")
             filename = _output_name(src["stem"], f"converted{ext}", multi)
             local_dest = os.path.join(tmp_dir, filename)
-            image_utils.convert_format(src["local_path"], local_dest, opts={"quality": opts.get("quality", CONFIG["image"]["thumbnail_quality"])})
+            image_magick.convert_format(src["local_path"], local_dest, opts={"quality": opts.get("quality", CONFIG["image"]["thumbnail_quality"])})
             local_outputs.append((filename, local_dest, src["bronze_path"]))
 
         result = _publish(
@@ -356,7 +356,7 @@ def deskew(ark, opts={}):
     the published derivative set; this is a fixed single pass for manual testing.
 
     :param str ark: Item ARK identifier.
-    :param dict opts: Forwarded to image_utils.deskew() (threshold, working_width,
+    :param dict opts: Forwarded to image_magick.deskew() (threshold, working_width,
         output_width, quality).
     :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
@@ -373,7 +373,7 @@ def deskew(ark, opts={}):
             utils.log(f"[{i}/{total}] {src['stem']}: deskewing...")
             filename = _output_name(src["stem"], "deskewed.jpg", multi)
             local_dest = os.path.join(tmp_dir, filename)
-            image_utils.deskew(src["local_path"], local_dest, opts=opts)
+            image_magick.deskew(src["local_path"], local_dest, opts=opts)
             local_outputs.append((filename, local_dest, src["bronze_path"]))
 
         result = _publish(
@@ -394,7 +394,7 @@ def prep_ocr(ark, opts={}):
     manual testing.
 
     :param str ark: Item ARK identifier.
-    :param dict opts: Forwarded to image_utils.prep_ocr() (size, dpi, fuzz, quality,
+    :param dict opts: Forwarded to image_magick.prep_ocr() (size, dpi, fuzz, quality,
         deskew, threshold).
     :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
@@ -412,7 +412,7 @@ def prep_ocr(ark, opts={}):
             base_name = "prep-deskew.jpg" if opts.get("deskew") else "prep.jpg"
             filename = _output_name(src["stem"], base_name, multi)
             local_dest = os.path.join(tmp_dir, filename)
-            image_utils.prep_ocr(src["local_path"], local_dest, opts=opts)
+            image_magick.prep_ocr(src["local_path"], local_dest, opts=opts)
             local_outputs.append((filename, local_dest, src["bronze_path"]))
 
         result = _publish(
@@ -439,7 +439,7 @@ def generate(ark, opts={}):
 
     :param str ark: Item ARK identifier.
     :param dict opts: 'widths' (comma-separated str, default
-        CONFIG["image"]["thumbnail_widths"]); forwarded to image_utils/ocr_utils:
+        CONFIG["image"]["thumbnail_widths"]); forwarded to image_magick/ocr_utils:
         'quality', 'dpi', 'fuzz', 'threshold', etc.
     :returns: {"status": "success", "ark": str, "derivatives": {...}, "ocr": {...},
         "orientation": {stem: {"deskew": bool, "stats": {...}}, ...}}
@@ -476,7 +476,7 @@ def generate(ark, opts={}):
             base_prep_name = "prep-deskew.jpg" if apply_deskew else "prep.jpg"
             prep_filename = _output_name(stem, base_prep_name, multi)
             prep_path = os.path.join(tmp_dir, prep_filename)
-            image_utils.prep_ocr(src["local_path"], prep_path, opts={**opts, "deskew": apply_deskew})
+            image_magick.prep_ocr(src["local_path"], prep_path, opts={**opts, "deskew": apply_deskew})
             ocr_outputs.append((prep_filename, prep_path, src["bronze_path"]))
             utils.log(f"[{i}/{total}] {stem}: done")
 
@@ -512,7 +512,7 @@ def generate(ark, opts={}):
         utils.log("Updating associated-media sidecar...")
         image_objects = []
         for filename, local_path, _source_bronze_path in thumb_outputs:
-            dims = image_utils.probe_dimensions(local_path)
+            dims = image_magick.probe_dimensions(local_path)
             image_objects.append({
                 "@type": "ImageObject",
                 "contentUrl": _cask_public_ref(f"{derivatives_result['dir']}/{filename}"),
