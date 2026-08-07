@@ -154,3 +154,23 @@ def delete(path, opts={}):
     """
     ref = _paths.parse(path)
     return _backend_for(ref).delete(ref.path, opts)
+
+
+def add_derivative_link(path, source_path, opts={}):
+    """Record CaskFS derivative-link lineage: `path` was derived from `source_path`.
+
+    Lineage links are a CaskFS-only concept (structural metadata, not file bytes) —
+    both `path` and `source_path` must be 'cask:/' paths.
+
+    :param str path: Derivative file path. Must be a 'cask:/' path.
+    :param str source_path: Source file path. Must be a 'cask:/' path.
+    :param dict opts: 'relation', 'metadata' — see CaskBackend.add_derivative_link.
+    :returns: The created/updated derivative_link record.
+    :rtype: dict
+    :raises ValueError: If `path` or `source_path` is not a 'cask:/' path.
+    """
+    ref = _paths.parse(path)
+    src_ref = _paths.parse(source_path)
+    if ref.is_local or src_ref.is_local:
+        raise ValueError("add_derivative_link() only applies to cask:/ paths")
+    return _get_cask_backend().add_derivative_link(ref.path, src_ref.path, opts)
