@@ -11,12 +11,13 @@ Subcommands mirror the pipeline phases:
   digtk ingest      — ingest files into CaskFS
   digtk collection  — manage CaskFS collections (add/sync)
   digtk search      — LlamaIndex RAG indexing and querying
+  digtk harvest     — RAG ingest from harvested web content (sitemap/page crawl + embed)
 """
 import sys
 
 import typer
 
-from digtk.commands import ai, auth, collection, config, image, ocr, metadata, ingest, search
+from digtk.commands import ai, auth, collection, config, harvest, image, ocr, metadata, ingest, search
 from digtk.lib.banner import print_banner
 
 app = typer.Typer(
@@ -34,6 +35,7 @@ app.add_typer(metadata.app,   name="metadata")
 app.add_typer(ingest.app,     name="ingest")
 app.add_typer(collection.app, name="collection")
 app.add_typer(search.app,     name="search")
+app.add_typer(harvest.app,    name="harvest")
 
 
 def main():

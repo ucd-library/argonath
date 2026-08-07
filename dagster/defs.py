@@ -42,6 +42,9 @@ from lib.sensors import (
 from lib.schedules import (
     nightly_arda_index,
 )
+from lib.demo_fanout import (
+    argonath_demo_fanout_job,
+)
 
 defs = dg.Definitions(
     assets=[
@@ -60,6 +63,8 @@ defs = dg.Definitions(
         metadata_job,
         search_index_job,
         full_pipeline_job,
+        # demo group — static single-partition/op-fanout sample, not real pipeline
+        argonath_demo_fanout_job,
     ],
     sensors=[
         derivatives_on_ingest,

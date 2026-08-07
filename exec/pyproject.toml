@@ -16,6 +16,7 @@ dependencies = [
     "llama-index-embeddings-openai>=0.2",
     "psycopg2-binary>=2.9",
     "rdflib>=7.0",
+    "beautifulsoup4>=4.12",
 ]
 
 [project.optional-dependencies]

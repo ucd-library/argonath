@@ -74,6 +74,11 @@ SEARCH_EMBED_MODEL_ENV = "DIGTK_SEARCH_EMBED_MODEL"
 IMAGE_THUMBNAIL_WIDTHS_ENV = "DIGTK_IMAGE_THUMBNAIL_WIDTHS"
 IMAGE_CONVERT_FORMAT_ENV = "DIGTK_IMAGE_CONVERT_FORMAT"
 
+HARVEST_CONTENT_TAGS_ENV = "DIGTK_HARVEST_CONTENT_TAGS"
+HARVEST_USER_AGENT_ENV = "DIGTK_HARVEST_USER_AGENT"
+HARVEST_TIMEOUT_ENV = "DIGTK_HARVEST_TIMEOUT_S"
+HARVEST_GROUP_ENV = "DIGTK_HARVEST_GROUP"
+
 CONFIG_PATH_ENV = "DIGTK_CONFIG_PATH"
 
 
@@ -103,6 +108,10 @@ SETTINGS = [
     {"dotpath": "search.embed_model", "env": SEARCH_EMBED_MODEL_ENV, "cast": str, "secret": False},
     {"dotpath": "image.thumbnail_widths", "env": IMAGE_THUMBNAIL_WIDTHS_ENV, "cast": str, "secret": False},
     {"dotpath": "image.convert_format", "env": IMAGE_CONVERT_FORMAT_ENV, "cast": str, "secret": False},
+    {"dotpath": "harvest.content_tags", "env": HARVEST_CONTENT_TAGS_ENV, "cast": str, "secret": False},
+    {"dotpath": "harvest.user_agent", "env": HARVEST_USER_AGENT_ENV, "cast": str, "secret": False},
+    {"dotpath": "harvest.timeout_s", "env": HARVEST_TIMEOUT_ENV, "cast": float, "secret": False},
+    {"dotpath": "harvest.group", "env": HARVEST_GROUP_ENV, "cast": str, "secret": False},
 ]
 _SETTINGS_BY_DOTPATH = {setting["dotpath"]: setting for setting in SETTINGS}
 
@@ -259,6 +268,14 @@ CONFIG = {
         "thumbnail_widths": _env(IMAGE_THUMBNAIL_WIDTHS_ENV, "256,512,1024"),
         "convert_format": _env(IMAGE_CONVERT_FORMAT_ENV, "jpeg"),
     },
+    "harvest": {
+        # Comma-separated CSS selectors/tag names, parsed by digtk.lib.http_harvest.
+        "content_tags": _env(HARVEST_CONTENT_TAGS_ENV, "article,main"),
+        "user_agent": _env(HARVEST_USER_AGENT_ENV, "digtk-harvest/0.1 (+https://library.ucdavis.edu)"),
+        "timeout_s": _env(HARVEST_TIMEOUT_ENV, 30.0, float),
+        # Group namespace for structured (--output fs/cask) bronze/silver harvest writes.
+        "group": _env(HARVEST_GROUP_ENV, "rag"),
+    },
 }
 
 
@@ -319,4 +336,24 @@ SearchChunkBufferOption = Annotated[int, typer.Option(
 SearchEmbedModelOption = Annotated[str | None, typer.Option(
     "--model", envvar=SEARCH_EMBED_MODEL_ENV,
     help=f"Embedding model to chunk with. Env: {SEARCH_EMBED_MODEL_ENV}.",
+)]
+
+HarvestContentTagsOption = Annotated[str, typer.Option(
+    "--tags", envvar=HARVEST_CONTENT_TAGS_ENV,
+    help=f"Comma-separated CSS selectors/tag names to extract page content from. Env: {HARVEST_CONTENT_TAGS_ENV}.",
+)]
+
+HarvestUserAgentOption = Annotated[str, typer.Option(
+    "--user-agent", envvar=HARVEST_USER_AGENT_ENV,
+    help=f"User-Agent header sent with harvest requests. Env: {HARVEST_USER_AGENT_ENV}.",
+)]
+
+HarvestTimeoutOption = Annotated[float, typer.Option(
+    "--timeout", envvar=HARVEST_TIMEOUT_ENV,
+    help=f"HTTP request timeout in seconds. Env: {HARVEST_TIMEOUT_ENV}.",
+)]
+
+HarvestGroupOption = Annotated[str, typer.Option(
+    "--group", envvar=HARVEST_GROUP_ENV,
+    help=f"Group namespace for bronze/silver harvest paths (--output fs/cask only). Env: {HARVEST_GROUP_ENV}.",
 )]
