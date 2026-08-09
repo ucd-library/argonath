@@ -61,8 +61,9 @@ variables (never as CLI flags — see `digtk.lib.auth`/`digtk.lib.config`):
 - **Samwise** (AI chat/embeddings — `digtk ai`, `digtk metadata`, `digtk harvest page`, ...):
   `export SAMWISE_API_KEY=...` (`SAMWISE_API_URL` too, if not using the default).
 - **CaskFS** (file storage — `digtk ingest`, `digtk collection`, any `cask:/`-prefixed path):
-  `export CASK_API_URL=... CASK_API_KEY=...` (or `digtk auth login`, once implemented —
-  see `digtk auth whoami` to check what's currently resolved).
+  `digtk auth login` opens a browser to log in via the Anduin auth gateway and stores
+  the result in `~/.digtk/credentials.json` (or set `CASK_API_URL`/`CASK_API_KEY`
+  directly — see `digtk auth whoami` to check what's currently resolved).
 
 `digtk config show` prints every setting's current resolved value; `digtk config set
 <dotpath> [value]` persists a non-secret default to `~/.digtk/config.json` (omit `value`

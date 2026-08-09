@@ -59,6 +59,9 @@ CASK_API_URL_ENV = "CASK_API_URL"
 CASK_API_KEY_ENV = "CASK_API_KEY"
 CREDENTIALS_PATH_ENV = "DIGTK_CREDENTIALS_PATH"
 
+GATEWAY_URL_ENV = "DIGTK_GATEWAY_URL"
+AUTH_LOGIN_TIMEOUT_ENV = "DIGTK_AUTH_LOGIN_TIMEOUT_S"
+
 ARK_NAAN_ENV = "DIGTK_ARK_NAAN"
 ARK_SHOULDER_ENV = "DIGTK_ARK_SHOULDER"
 ARK_NOID_ALPHABET_ENV = "DIGTK_ARK_NOID_ALPHABET"
@@ -100,6 +103,8 @@ SETTINGS = [
     {"dotpath": "ark.naan", "env": ARK_NAAN_ENV, "cast": str, "secret": False},
     {"dotpath": "ark.shoulder", "env": ARK_SHOULDER_ENV, "cast": str, "secret": False},
     {"dotpath": "ark.noid_alphabet", "env": ARK_NOID_ALPHABET_ENV, "cast": str, "secret": False},
+    {"dotpath": "gateway.url", "env": GATEWAY_URL_ENV, "cast": str, "secret": False},
+    {"dotpath": "auth.login_timeout_s", "env": AUTH_LOGIN_TIMEOUT_ENV, "cast": float, "secret": False},
     {"dotpath": "fs.chunk_size", "env": FS_CHUNK_SIZE_ENV, "cast": int, "secret": False},
     {"dotpath": "search.space", "env": SEARCH_SPACE_ENV, "cast": str, "secret": False},
     {"dotpath": "search.top_k", "env": SEARCH_TOP_K_ENV, "cast": int, "secret": False},
@@ -115,7 +120,24 @@ SETTINGS = [
 ]
 _SETTINGS_BY_DOTPATH = {setting["dotpath"]: setting for setting in SETTINGS}
 
+# Short, memorable stand-ins for settings people type ad hoc on the CLI a lot. Purely
+# an input-side shorthand: resolved to the canonical dotpath before every lookup, so
+# `config.json` and `digtk config show` only ever deal in canonical dotpaths.
+ALIASES = {
+    "host": "gateway.url",
+}
+
 HOME_CONFIG_PATH = Path(_env(CONFIG_PATH_ENV, str(Path.home() / ".digtk" / "config.json")))
+
+
+def resolve_alias(dotpath):
+    """Resolve a short alias (e.g. 'host') to its canonical dotpath.
+
+    :param str dotpath: Setting name as typed on the CLI — an alias or already a canonical dotpath.
+    :returns: The canonical dotpath, unchanged if `dotpath` wasn't a registered alias.
+    :rtype: str
+    """
+    return ALIASES.get(dotpath, dotpath)
 
 
 def read_home_config(path):
@@ -151,22 +173,25 @@ def is_secret(dotpath):
     Secret settings are never displayed by `digtk config show` and are prompted for
     with hidden input by `digtk config set`.
 
-    :param str dotpath: Dotted setting name (e.g. 'samwise.api_key').
+    :param str dotpath: Dotted setting name (e.g. 'samwise.api_key') or a registered alias.
     :returns: True if the setting is registered and marked secret.
     :rtype: bool
     """
-    setting = _SETTINGS_BY_DOTPATH.get(dotpath)
+    setting = _SETTINGS_BY_DOTPATH.get(resolve_alias(dotpath))
     return bool(setting and setting["secret"])
 
 
 def set_setting(dotpath, value, path=None):
     """Persist a single setting to the home config file.
 
-    :param str dotpath: Dotted setting name, e.g. 'samwise.api_url'. Must be a key in SETTINGS.
+    :param str dotpath: Dotted setting name, e.g. 'samwise.api_url', or a registered alias
+        (e.g. 'host'). Must resolve to a key in SETTINGS. Always stored under its canonical
+        dotpath, regardless of which form was passed in.
     :param str value: Raw value to store, as typed on the CLI or entered at a prompt.
     :param Path path: Home config file to write. Defaults to HOME_CONFIG_PATH.
     :raises ValueError: If dotpath is not a recognized setting, or value fails its cast.
     """
+    dotpath = resolve_alias(dotpath)
     path = path or HOME_CONFIG_PATH
     setting = _SETTINGS_BY_DOTPATH.get(dotpath)
     if setting is None:
@@ -244,6 +269,13 @@ CONFIG = {
         ),
         "api_url_env": CASK_API_URL_ENV,
         "api_key_env": CASK_API_KEY_ENV,
+        "login_timeout_s": _env(AUTH_LOGIN_TIMEOUT_ENV, 300.0, float),
+    },
+    # Anduin auth gateway — all traffic to CaskFS, Dagster, and auth itself goes
+    # through this one host. See `digtk auth login`; the stored CaskFS api_url is
+    # gateway.url + "/cask".
+    "gateway": {
+        "url": _env(GATEWAY_URL_ENV, "https://argonath.library.ucdavis.edu"),
     },
     "ark": {
         "naan": _env(ARK_NAAN_ENV, "87287"),

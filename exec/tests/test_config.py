@@ -54,6 +54,20 @@ def test_set_setting_persists_value(home_config_path):
     assert config.read_home_config(home_config_path) == {"samwise.api_url": "https://samwise.example"}
 
 
+def test_resolve_alias():
+    assert config.resolve_alias("host") == "gateway.url"
+
+
+def test_resolve_alias_is_a_noop_for_non_aliases():
+    assert config.resolve_alias("gateway.url") == "gateway.url"
+    assert config.resolve_alias("not.a.real.setting") == "not.a.real.setting"
+
+
+def test_set_setting_accepts_alias_and_stores_under_canonical_dotpath(home_config_path):
+    config.set_setting("host", "http://localhost:4000", path=home_config_path)
+    assert config.read_home_config(home_config_path) == {"gateway.url": "http://localhost:4000"}
+
+
 def test_set_setting_preserves_other_keys(home_config_path):
     config.set_setting("samwise.api_url", "https://samwise.example", path=home_config_path)
     config.set_setting("search.top_k", "20", path=home_config_path)

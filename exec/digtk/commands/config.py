@@ -27,6 +27,7 @@ def set_setting(
     )] = None,
 ):
     """Persist a setting to the home config file (~/.digtk/config.json)."""
+    dotpath = config_lib.resolve_alias(dotpath)
     known = {setting["dotpath"] for setting in config_lib.SETTINGS}
     if dotpath not in known:
         utils.error(f"Unknown setting '{dotpath}'. Valid settings: {', '.join(sorted(known))}")
