@@ -54,16 +54,6 @@ def test_hls_defaults_to_configured_resolutions(monkeypatch):
     assert seen["opts"]["resolutions"] == "360p,480p,720p,1080p"
 
 
-def test_poster_calls_video_with_timestamp_and_width(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(video_model, "poster", lambda ark, opts={}: seen.update(opts=opts) or {"status": "success"})
-
-    result = runner.invoke(video.app, ["poster", ARK, "--timestamp", "2.5", "--width", "512"])
-
-    assert result.exit_code == 0
-    assert seen["opts"] == {"timestamp_s": 2.5, "width": 512}
-
-
 def test_derivatives_calls_video(monkeypatch):
     seen = {}
     monkeypatch.setattr(video_model, "derivatives", lambda ark, opts={}: seen.update(ark=ark, opts=opts) or {"status": "success"})

@@ -247,29 +247,37 @@ just the tile step alone would overwrite that directory's manifest with one
 describing only `tiled.tif`, so regenerating it is a `derivatives()`/`generate()`
 re-run.
 
-### Video Streaming and Poster Frames
+### Video Streaming
 
 `digtk video derivatives` transcodes a video bronze item into an HLS
-adaptive-bitrate stream (multiple resolution rungs plus a master playlist) and
-extracts a poster-frame still. The stream — many small files, not a simple
-width-keyed set like image thumbnails — gets its own `stream/` subdirectory,
-distinct from `derivatives/` (which holds the poster, a single rendered still, same
-conceptual bucket as an image thumbnail):
+adaptive-bitrate stream (multiple resolution rungs plus a master playlist) — many
+small files, not a simple width-keyed set like image thumbnails. Each source video
+gets its own directory under `public-frontend-derivatives/`, named after its own
+bronze filename (same disambiguation-for-free pattern a PDF's own directory uses),
+holding a `streaming/` subdirectory:
 
 ```
 silver/[group]/[collection]/[time]/[item]/
 ├── item.jsonld.json          # associatedMedia: one VideoObject, "identifier": <stem>
-├── derivatives/
-│   ├── manifest.json
-│   └── poster-1024.jpg
-└── stream/
-    ├── manifest.json
-    ├── playlist.m3u8          # master playlist, always written once every rung is done
-    ├── 360p.m3u8 + 360p.mp4
-    ├── 480p.m3u8 + 480p.mp4
-    ├── 720p.m3u8 + 720p.mp4
-    └── 1080p.m3u8 + 1080p.mp4
+└── public-frontend-derivatives/
+    └── movie.mp4/
+        └── streaming/
+            ├── manifest.json
+            ├── playlist.m3u8          # master playlist, always written once every rung is done
+            ├── 360p.m3u8 + 360p.mp4
+            ├── 480p.m3u8 + 480p.mp4
+            ├── 720p.m3u8 + 720p.mp4
+            └── 1080p.m3u8 + 1080p.mp4
 ```
+
+This is the only derivative `digtk video derivatives` generates — there's no
+ffmpeg-extracted poster frame. A video item's thumbnail, if it needs one, comes
+from a companion image bronze binary supplied directly by the archiving team (e.g.
+a `.jpg` alongside the `.mp4`), processed independently by `digtk image
+derivatives` under the ordinary Multi-Format Items convention (above) — its
+small/medium/large set lands at `public-frontend-derivatives/images/<that
+filename>/images/...`, same as any other image source, entirely unrelated to the
+video's own `streaming/` directory.
 
 The VideoObject's `identifier` (the source binary's filename stem) is how the same
 derivatives() run's caption-transcription step finds the right associatedMedia
@@ -279,17 +287,20 @@ meant as a public identifier.
 ### Audio Transcoding and Waveforms
 
 `digtk audio derivatives` transcodes an audio bronze item to another format and
-renders a waveform image. Both are "a rendered derivative of the source," so they
-land in the ordinary `derivatives/` subdirectory, same as image thumbnails and video
-posters:
+renders a waveform image. Each source audio file gets its own directory under
+`public-frontend-derivatives/`, named after its own bronze filename (same
+disambiguation-for-free pattern PDF/video use) — flat inside, with no further
+nested content-kind subfolder, since this is the only kind of output audio
+produces here:
 
 ```
 silver/[group]/[collection]/[time]/[item]/
 ├── item.jsonld.json          # associatedMedia: one AudioObject, "identifier": <stem>
-└── derivatives/
-    ├── manifest.json
-    ├── converted.mp3
-    └── waveform-1024x256.png
+└── public-frontend-derivatives/
+    └── interview.wav/
+        ├── manifest.json
+        ├── converted.mp3
+        └── waveform-1024x256.png
 ```
 
 ### Captions/Transcripts
@@ -297,8 +308,8 @@ silver/[group]/[collection]/[time]/[item]/
 `digtk video derivatives`/`digtk audio derivatives` run local Whisper ASR against
 every source video/audio file as part of their standard derivative set —
 `digtk.models.digital_website.captions.transcribe_sources()` is called directly
-using the sources already staged for HLS/poster or transcode/waveform generation
-(no separate staging pass), producing a WebVTT caption file per source. Shared by
+using the sources already staged for HLS or transcode/waveform generation (no
+separate staging pass), producing a WebVTT caption file per source. Shared by
 both media types (Whisper pulls audio from a video file itself via ffmpeg
 internally), captions land in their own `captions/` subdirectory:
 

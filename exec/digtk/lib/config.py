@@ -116,8 +116,6 @@ VIDEO_VIDEO_CODEC_ENV = "DIGTK_VIDEO_VIDEO_CODEC"
 VIDEO_PIX_FMT_ENV = "DIGTK_VIDEO_PIX_FMT"
 VIDEO_AUDIO_CODEC_ENV = "DIGTK_VIDEO_AUDIO_CODEC"
 VIDEO_AUDIO_SAMPLE_RATE_ENV = "DIGTK_VIDEO_AUDIO_SAMPLE_RATE"
-VIDEO_POSTER_TIMESTAMP_S_ENV = "DIGTK_VIDEO_POSTER_TIMESTAMP_S"
-VIDEO_POSTER_WIDTH_ENV = "DIGTK_VIDEO_POSTER_WIDTH"
 VIDEO_TIMEOUT_S_ENV = "DIGTK_VIDEO_TIMEOUT_S"
 VIDEO_FFMPEG_BIN_ENV = "DIGTK_VIDEO_FFMPEG_BIN"
 VIDEO_FFPROBE_BIN_ENV = "DIGTK_VIDEO_FFPROBE_BIN"
@@ -189,8 +187,6 @@ SETTINGS = [
     {"dotpath": "video.pix_fmt", "env": VIDEO_PIX_FMT_ENV, "cast": str, "secret": False},
     {"dotpath": "video.audio_codec", "env": VIDEO_AUDIO_CODEC_ENV, "cast": str, "secret": False},
     {"dotpath": "video.audio_sample_rate", "env": VIDEO_AUDIO_SAMPLE_RATE_ENV, "cast": int, "secret": False},
-    {"dotpath": "video.poster_timestamp_s", "env": VIDEO_POSTER_TIMESTAMP_S_ENV, "cast": float, "secret": False},
-    {"dotpath": "video.poster_width", "env": VIDEO_POSTER_WIDTH_ENV, "cast": int, "secret": False},
     {"dotpath": "video.timeout_s", "env": VIDEO_TIMEOUT_S_ENV, "cast": float, "secret": False},
     {"dotpath": "video.ffmpeg_bin", "env": VIDEO_FFMPEG_BIN_ENV, "cast": str, "secret": False},
     {"dotpath": "video.ffprobe_bin", "env": VIDEO_FFPROBE_BIN_ENV, "cast": str, "secret": False},
@@ -417,10 +413,6 @@ CONFIG = {
         "pix_fmt": _env(VIDEO_PIX_FMT_ENV, "yuv420p"),
         "audio_codec": _env(VIDEO_AUDIO_CODEC_ENV, "aac"),
         "audio_sample_rate": _env(VIDEO_AUDIO_SAMPLE_RATE_ENV, 48000, int),
-        # poster_timestamp_s/poster_width have no reference precedent (the reference
-        # pipeline has no poster-frame extraction at all) — reasonable new defaults.
-        "poster_timestamp_s": _env(VIDEO_POSTER_TIMESTAMP_S_ENV, 5.0, float),
-        "poster_width": _env(VIDEO_POSTER_WIDTH_ENV, 1024, int),
         "timeout_s": _env(VIDEO_TIMEOUT_S_ENV, 3600.0, float),
         "ffmpeg_bin": _env(VIDEO_FFMPEG_BIN_ENV, "ffmpeg"),
         "ffprobe_bin": _env(VIDEO_FFPROBE_BIN_ENV, "ffprobe"),
@@ -501,16 +493,6 @@ ImageThumbnailQualityOption = Annotated[int, typer.Option(
 VideoResolutionsOption = Annotated[str, typer.Option(
     "--resolutions", envvar=VIDEO_RESOLUTIONS_ENV,
     help=f"Comma-separated HLS resolution rungs (e.g. 360p,720p). Env: {VIDEO_RESOLUTIONS_ENV}.",
-)]
-
-VideoPosterTimestampOption = Annotated[float, typer.Option(
-    "--timestamp", envvar=VIDEO_POSTER_TIMESTAMP_S_ENV,
-    help=f"Poster-frame timestamp, seconds. Env: {VIDEO_POSTER_TIMESTAMP_S_ENV}.",
-)]
-
-VideoPosterWidthOption = Annotated[int, typer.Option(
-    "--width", envvar=VIDEO_POSTER_WIDTH_ENV,
-    help=f"Poster-frame width in pixels. Env: {VIDEO_POSTER_WIDTH_ENV}.",
 )]
 
 AudioTranscodeFormatOption = Annotated[str, typer.Option(

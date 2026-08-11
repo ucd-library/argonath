@@ -66,7 +66,7 @@ def fake_derivative(monkeypatch):
 
 @pytest.fixture
 def fake_ffmpeg(monkeypatch):
-    calls = {"hls_ladder": [], "extract_poster": [], "probe": []}
+    calls = {"hls_ladder": [], "probe": []}
 
     def fake_hls_ladder(src_path, dest_dir, resolutions, opts={}):
         calls["hls_ladder"].append({"src_path": src_path, "resolutions": resolutions})
@@ -84,18 +84,11 @@ def fake_ffmpeg(monkeypatch):
             f.write(b"master-data")
         return {"rungs": rungs, "master_playlist_path": master}
 
-    def fake_extract_poster(src_path, dest_path, opts={}):
-        calls["extract_poster"].append({"src_path": src_path, "dest_path": dest_path, "opts": opts})
-        with open(dest_path, "wb") as f:
-            f.write(b"poster-data")
-        return {"argv": [], "dest_path": dest_path}
-
     def fake_probe(path, opts={}):
         calls["probe"].append(path)
         return {"duration_s": 10.0, "bit_rate": 1000, "streams": []}
 
     monkeypatch.setattr(vw.ffmpeg_utils, "hls_ladder", fake_hls_ladder)
-    monkeypatch.setattr(vw.ffmpeg_utils, "extract_poster", fake_extract_poster)
     monkeypatch.setattr(vw.ffmpeg_utils, "probe", fake_probe)
     return calls
 
@@ -123,8 +116,9 @@ def test_probe_reports_per_source(fake_fs, fake_ffmpeg):
 
 def test_hls_publishes_every_rung_and_master_playlist(fake_fs, fake_derivative, fake_ffmpeg):
     result = vw.hls(ARK, opts={"resolutions": "360p,720p"})
-    assert result["dir"] == "cask:/silver/g/c/latest/item/stream"
-    assert sorted(result["outputs"]) == sorted(["360p.m3u8", "360p.mp4", "720p.m3u8", "720p.mp4", "playlist.m3u8"])
+    video_result = result["videos"]["video.mp4"]
+    assert video_result["dir"] == "cask:/silver/g/c/latest/item/public-frontend-derivatives/video.mp4/streaming"
+    assert sorted(video_result["outputs"]) == sorted(["360p.m3u8", "360p.mp4", "720p.m3u8", "720p.mp4", "playlist.m3u8"])
     write_call = fake_derivative[0]
     assert write_call["opts"]["link_relation"] == "https://lib.ucdavis.edu/argonath/ns#streamOf"
 
@@ -134,20 +128,25 @@ def test_hls_uses_configured_default_resolutions(fake_fs, fake_derivative, fake_
     assert fake_ffmpeg["hls_ladder"][0]["resolutions"] == ["360p", "480p", "720p", "1080p"]
 
 
-def test_poster_publishes_to_derivatives(fake_fs, fake_derivative, fake_ffmpeg):
-    result = vw.poster(ARK, opts={"width": 512})
-    assert result["dir"] == "cask:/silver/g/c/latest/item/derivatives"
-    assert result["outputs"] == ["poster-512.jpg"]
+def test_hls_nests_per_source_for_multi_video_item(fake_fs, fake_derivative, fake_ffmpeg, monkeypatch):
+    use_multi_item(monkeypatch)
+    result = vw.hls(ARK, opts={"resolutions": "360p"})
+    assert set(result["videos"].keys()) == {"clip-a.mp4", "clip-b.mp4"}
+    for filename in ("clip-a.mp4", "clip-b.mp4"):
+        assert result["videos"][filename]["dir"] == (
+            f"cask:/silver/g/c/latest/box-1/folder-3/public-frontend-derivatives/{filename}/streaming"
+        )
+        assert "playlist.m3u8" in result["videos"][filename]["outputs"]
 
 
-def test_derivatives_publishes_stream_and_poster_separately(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
+def test_derivatives_publishes_stream_per_source(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
     result = vw.derivatives(ARK, opts={"resolutions": "360p"})
-    assert result["stream"]["dir"] == "cask:/silver/g/c/latest/item/stream"
-    assert result["derivatives"]["dir"] == "cask:/silver/g/c/latest/item/derivatives"
-    assert result["derivatives"]["outputs"] == ["poster-1024.jpg"]  # default poster_width is 1024
+    stream_result = result["stream"]["video.mp4"]
+    assert stream_result["dir"] == "cask:/silver/g/c/latest/item/public-frontend-derivatives/video.mp4/streaming"
+    assert "playlist.m3u8" in stream_result["outputs"]
 
 
-def test_derivatives_writes_video_object_with_identifier_and_thumbnail(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
+def test_derivatives_writes_video_object_with_identifier(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
     vw.derivatives(ARK, opts={"resolutions": "360p"})
 
     sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
@@ -156,16 +155,19 @@ def test_derivatives_writes_video_object_with_identifier_and_thumbnail(fake_fs, 
     media = doc["associatedMedia"][0]
     assert media["@type"] == "VideoObject"
     assert media["identifier"] == "video"
-    assert media["contentUrl"] == "cask://silver/g/c/latest/item/stream/playlist.m3u8"
-    assert media["thumbnailUrl"] == "cask://silver/g/c/latest/item/derivatives/poster-1024.jpg"
+    assert media["contentUrl"] == "cask://silver/g/c/latest/item/public-frontend-derivatives/video.mp4/streaming/playlist.m3u8"
+    assert "thumbnailUrl" not in media
 
 
-def test_derivatives_multi_video_item_prefixes_filenames(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper, monkeypatch):
+def test_derivatives_multi_video_item_nests_by_source_filename(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper, monkeypatch):
     use_multi_item(monkeypatch)
     result = vw.derivatives(ARK, opts={"resolutions": "360p"})
-    assert sorted(result["derivatives"]["outputs"]) == ["clip-a-poster-1024.jpg", "clip-b-poster-1024.jpg"]
-    assert "clip-a-playlist.m3u8" in result["stream"]["outputs"]
-    assert "clip-b-playlist.m3u8" in result["stream"]["outputs"]
+    assert set(result["stream"].keys()) == {"clip-a.mp4", "clip-b.mp4"}
+    for filename in ("clip-a.mp4", "clip-b.mp4"):
+        assert result["stream"][filename]["dir"] == (
+            f"cask:/silver/g/c/latest/box-1/folder-3/public-frontend-derivatives/{filename}/streaming"
+        )
+        assert "playlist.m3u8" in result["stream"][filename]["outputs"]
 
 
 def test_derivatives_transcribes_captions_for_every_source(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):

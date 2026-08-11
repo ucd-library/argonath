@@ -7,7 +7,7 @@ Subcommands mirror the pipeline phases:
   digtk ai        — ad hoc Samwise AI queries, for testing (chat/embed)
   digtk image     — image derivatives (thumbnails, conversion, deskew, OCR prep)
   digtk pdf       — PDF derivatives (per-page thumbnails, conversion, deskew, OCR prep)
-  digtk video     — video derivatives (HLS stream, poster frame, captions via local Whisper)
+  digtk video     — video derivatives (HLS stream, captions via local Whisper)
   digtk audio     — audio derivatives (transcode, waveform, captions via local Whisper)
   digtk ocr       — OCR via Tesseract or ML fallback
   digtk metadata    — AI and human metadata generation

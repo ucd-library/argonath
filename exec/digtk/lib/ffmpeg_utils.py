@@ -7,10 +7,9 @@ check=True, typed error class) — see that module's docstring for the rationale
 
 hls_ladder()'s codec/bitrate ladder is ported from the reference dams/services/image-utils
 pipeline's lib/ffmpeg/convert.sh, run as one sequential pass instead of that pipeline's
-per-resolution Cloud Run Job fan-out (see hls_ladder()'s own docstring). extract_poster(),
-transcode_audio(), and waveform() have no equivalent in the reference — there is no prior
-convention to match for these, only reasonable new defaults (see digtk.lib.config's
-CONFIG["video"]/CONFIG["audio"]).
+per-resolution Cloud Run Job fan-out (see hls_ladder()'s own docstring). transcode_audio()
+and waveform() have no equivalent in the reference — there is no prior convention to
+match for these, only reasonable new defaults (see digtk.lib.config's CONFIG["audio"]).
 """
 import json
 import os
@@ -255,31 +254,6 @@ def hls_ladder(src_path, dest_dir, resolutions, opts={}):
         f.write("\n".join(lines) + "\n")
 
     return {"rungs": rungs, "master_playlist_path": master_playlist_path}
-
-
-def extract_poster(src_path, dest_path, opts={}):
-    """Extract a single poster-frame JPEG from a video at a given timestamp.
-
-    `ffmpeg -ss {timestamp} -i <src> -frames:v 1 -update 1 -vf scale={width}:-2 <dest>`.
-    `-2` rounds the computed height to the nearest even number, required by most codecs.
-
-    :param str src_path: Local source video path.
-    :param str dest_path: Local destination image path.
-    :param dict opts: 'timestamp_s' (float, default CONFIG["video"]["poster_timestamp_s"]),
-        'width' (int, default CONFIG["video"]["poster_width"]), 'ffmpeg_bin', 'timeout'.
-    :returns: {"argv": [...], "dest_path": str}
-    :rtype: dict
-    :raises FFmpegError: If `ffmpeg` fails or times out.
-    """
-    ffmpeg_bin = opts.get("ffmpeg_bin", CONFIG["video"]["ffmpeg_bin"])
-    timestamp = opts.get("timestamp_s", CONFIG["video"]["poster_timestamp_s"])
-    width = opts.get("width", CONFIG["video"]["poster_width"])
-    argv = [
-        ffmpeg_bin, "-y", "-ss", str(timestamp), "-i", src_path,
-        "-frames:v", "1", "-update", "1", "-vf", f"scale={width}:-2", dest_path,
-    ]
-    _run(argv, opts)
-    return {"argv": argv, "dest_path": dest_path}
 
 
 # No reference precedent — picked from the target container's usual codec.

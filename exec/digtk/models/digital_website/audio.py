@@ -3,14 +3,18 @@ Audio item derivative-generation workflow.
 
 Structurally parallel to digtk.models.digital_website.image, built on the same shared
 digtk.models.digital_website.pipeline staging/publishing/lineage plumbing, using
-digtk.lib.ffmpeg_utils for the actual transcoding/waveform/probing work. Both outputs
-(transcoded audio, waveform image) are "a rendered derivative of the source" and land in
-the item's ordinary 'derivatives/' silver subdirectory, same as image thumbnails.
+digtk.lib.ffmpeg_utils for the actual transcoding/waveform/probing work. Each source
+audio file's transcoded copy + waveform image publish together into their own
+directory under PUBLIC_FRONTEND_DIR, named after the source's own bronze filename
+(same disambiguation-for-free pattern digtk.models.digital_website.pdf/video use) —
+flat inside, with no further nested content-kind subfolder, since this is the only
+kind of output audio produces here.
 
 Each source audio file gets one AudioObject associatedMedia entry, tagged with its own
 filename stem as 'identifier' so derivatives()'s own captions.transcribe_sources()
 call (see digtk.models.digital_website.captions) can attach its caption to the right
-entry.
+entry. Captions themselves are unaffected by this module's layout — they still
+publish into their own flat, shared 'captions/' directory.
 """
 import os
 import tempfile
@@ -42,150 +46,159 @@ def probe(ark, opts={}):
 
 
 def transcode(ark, opts={}):
-    """Transcode every source audio file's to another format.
+    """Transcode every source audio file to another format.
 
     Ad hoc/manual use, mirroring digtk.models.digital_website.image.convert(); derivatives()
-    is what Dagster's derivatives_job actually calls.
+    is what Dagster's derivatives_job actually calls. Publishes into the same location
+    derivatives() would: `public-frontend-derivatives/<filename>/`. Note this overwrites
+    that directory's manifest with one describing only the converted file — run
+    derivatives() afterward to restore a manifest covering the full set if that matters.
 
     :param str ark: Item ARK identifier.
     :param dict opts: 'format' (str, default CONFIG["audio"]["transcode_format"]),
         'bitrate' (str, default CONFIG["audio"]["transcode_bitrate"]).
-    :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
+    :returns: {"status": "success", "ark": str, "audios": {filename: {"dir": str,
+        "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
     fmt = opts.get("format", CONFIG["audio"]["transcode_format"])
     item = items.resolve(ark)
     audio_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "audio")
     start = time.monotonic()
-    multi = len(audio_paths) > 1
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": audio_paths})
-        local_outputs = []
+        audios = {}
         for src in sources:
-            filename = pipeline.output_name(src["stem"], f"converted.{fmt}", multi)
-            local_dest = os.path.join(tmp_dir, filename)
+            filename = os.path.basename(src["bronze_path"])
+            converted_filename = f"converted.{fmt}"
+            local_dest = os.path.join(tmp_dir, f"{src['stem']}-{converted_filename}")
             ffmpeg_utils.transcode_audio(src["local_path"], local_dest, opts=opts)
-            local_outputs.append((filename, local_dest, src["bronze_path"]))
+            local_outputs = [(converted_filename, local_dest, src["bronze_path"])]
 
-        result = pipeline.publish(
-            item, "derivatives", local_outputs,
-            command=["digtk", "audio", "transcode", ark, "--format", fmt],
-            params={"format": fmt},
-            opts={
-                "manifest_opts": {"duration_s": time.monotonic() - start},
-                "link_relation": _LINK_RELATION,
-            },
-        )
+            audios[filename] = pipeline.publish(
+                item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}", local_outputs,
+                command=["digtk", "audio", "transcode", ark, "--format", fmt],
+                params={"format": fmt},
+                opts={
+                    "manifest_opts": {"duration_s": time.monotonic() - start},
+                    "link_relation": _LINK_RELATION,
+                },
+            )
 
-    return {"status": "success", "ark": ark, **result}
+    return {"status": "success", "ark": ark, "audios": audios}
 
 
 def waveform(ark, opts={}):
     """Generate a waveform image for every source audio file in the item.
 
-    Ad hoc/manual use.
+    Ad hoc/manual use. Publishes into the same location derivatives() would:
+    `public-frontend-derivatives/<filename>/`. Note this overwrites that directory's
+    manifest with one describing only the waveform — run derivatives() afterward to
+    restore a manifest covering the full set if that matters.
 
     :param str ark: Item ARK identifier.
     :param dict opts: 'width' (int, default CONFIG["audio"]["waveform_width"]), 'height'
         (int, default CONFIG["audio"]["waveform_height"]), 'color' (str, default
         CONFIG["audio"]["waveform_color"]).
-    :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
+    :returns: {"status": "success", "ark": str, "audios": {filename: {"dir": str,
+        "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
     item = items.resolve(ark)
     audio_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "audio")
     start = time.monotonic()
-    multi = len(audio_paths) > 1
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": audio_paths})
-        local_outputs = []
+        audios = {}
         for src in sources:
+            filename = os.path.basename(src["bronze_path"])
             width = opts.get("width", CONFIG["audio"]["waveform_width"])
             height = opts.get("height", CONFIG["audio"]["waveform_height"])
-            filename = pipeline.output_name(src["stem"], f"waveform-{width}x{height}.png", multi)
-            local_dest = os.path.join(tmp_dir, filename)
+            waveform_filename = f"waveform-{width}x{height}.png"
+            local_dest = os.path.join(tmp_dir, f"{src['stem']}-{waveform_filename}")
             ffmpeg_utils.waveform(src["local_path"], local_dest, opts=opts)
-            local_outputs.append((filename, local_dest, src["bronze_path"]))
+            local_outputs = [(waveform_filename, local_dest, src["bronze_path"])]
 
-        result = pipeline.publish(
-            item, "derivatives", local_outputs,
-            command=["digtk", "audio", "waveform", ark],
-            params={k: v for k, v in opts.items() if k in ("width", "height", "color")},
-            opts={
-                "manifest_opts": {"duration_s": time.monotonic() - start},
-                "link_relation": _LINK_RELATION,
-            },
-        )
+            audios[filename] = pipeline.publish(
+                item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}", local_outputs,
+                command=["digtk", "audio", "waveform", ark],
+                params={k: v for k, v in opts.items() if k in ("width", "height", "color")},
+                opts={
+                    "manifest_opts": {"duration_s": time.monotonic() - start},
+                    "link_relation": _LINK_RELATION,
+                },
+            )
 
-    return {"status": "success", "ark": ark, **result}
+    return {"status": "success", "ark": ark, "audios": audios}
 
 
 def derivatives(ark, opts={}):
     """Generate the full derivative set for every source audio file in the item —
-    the umbrella `digtk audio derivatives` calls: transcode + waveform, then
-    transcribes every source to a WebVTT caption via captions.transcribe_sources()
-    (local Whisper ASR — machine-generated and unreviewed, see
-    docs/cask-conventions.md's Captions/Transcripts section) using the same staged
-    sources, merging each caption into the AudioObject entry update_associated_media()
-    just wrote.
+    the umbrella `digtk audio derivatives` calls: transcode + waveform together into
+    one directory per source, then transcribes every source to a WebVTT caption via
+    captions.transcribe_sources() (local Whisper ASR — machine-generated and
+    unreviewed, see docs/cask-conventions.md's Captions/Transcripts section) using the
+    same staged sources, merging each caption into the AudioObject entry
+    update_associated_media() just wrote. Captions still publish into their own flat,
+    shared 'captions/' directory, unaffected by this per-source layout.
 
     :param str ark: Item ARK identifier.
     :param dict opts: 'format' (str, default CONFIG["audio"]["transcode_format"]),
         'width'/'height' (waveform dimensions); 'language'/'model' for the caption
         step (see captions.transcribe_sources()); forwarded to ffmpeg_utils.
-    :returns: {"status": "success", "ark": str, "derivatives": {...}, "captions": {...}}
+    :returns: {"status": "success", "ark": str, "derivatives": {filename: {"dir": str,
+        "outputs": [...], "manifest": {...}}}, "captions": {...}}
     :rtype: dict
     """
     fmt = opts.get("format", CONFIG["audio"]["transcode_format"])
     item = items.resolve(ark)
     audio_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "audio")
     start = time.monotonic()
-    multi = len(audio_paths) > 1
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": audio_paths})
         total = len(sources)
-        local_outputs = []
-        converted_filename_by_stem = {}
+        derivatives_results = {}
+        audio_objects = []
 
         for i, src in enumerate(sources, start=1):
             stem = src["stem"]
+            filename = os.path.basename(src["bronze_path"])
             utils.log(f"[{i}/{total}] {stem}: transcoding to {fmt}...")
-            converted_filename = pipeline.output_name(stem, f"converted.{fmt}", multi)
-            converted_path = os.path.join(tmp_dir, converted_filename)
+            converted_filename = f"converted.{fmt}"
+            converted_path = os.path.join(tmp_dir, f"{stem}-{converted_filename}")
             ffmpeg_utils.transcode_audio(src["local_path"], converted_path, opts)
-            local_outputs.append((converted_filename, converted_path, src["bronze_path"]))
-            converted_filename_by_stem[stem] = converted_filename
+            local_outputs = [(converted_filename, converted_path, src["bronze_path"])]
 
             utils.log(f"[{i}/{total}] {stem}: generating waveform...")
             width = opts.get("width", CONFIG["audio"]["waveform_width"])
             height = opts.get("height", CONFIG["audio"]["waveform_height"])
-            waveform_filename = pipeline.output_name(stem, f"waveform-{width}x{height}.png", multi)
-            waveform_path = os.path.join(tmp_dir, waveform_filename)
+            waveform_filename = f"waveform-{width}x{height}.png"
+            waveform_path = os.path.join(tmp_dir, f"{stem}-{waveform_filename}")
             ffmpeg_utils.waveform(src["local_path"], waveform_path, opts)
             local_outputs.append((waveform_filename, waveform_path, src["bronze_path"]))
+
+            derivatives_results[filename] = pipeline.publish(
+                item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}", local_outputs,
+                command=["digtk", "audio", "derivatives", ark],
+                params={"format": fmt},
+                opts={
+                    "manifest_opts": {"duration_s": time.monotonic() - start},
+                    "link_relation": _LINK_RELATION,
+                },
+            )
+
+            audio_objects.append({
+                "@type": "AudioObject",
+                "identifier": stem,
+                "contentUrl": pipeline.cask_public_ref(f"{derivatives_results[filename]['dir']}/{converted_filename}"),
+                "encodingFormat": f"audio/{fmt}",
+            })
             utils.log(f"[{i}/{total}] {stem}: done")
 
-        duration_s = time.monotonic() - start
-        result = pipeline.publish(
-            item, "derivatives", local_outputs,
-            command=["digtk", "audio", "derivatives", ark],
-            params={"format": fmt},
-            opts={"manifest_opts": {"duration_s": duration_s}, "link_relation": _LINK_RELATION},
-        )
-
         utils.log("Updating associated-media sidecar...")
-        audio_objects = [
-            {
-                "@type": "AudioObject",
-                "identifier": src["stem"],
-                "contentUrl": pipeline.cask_public_ref(f"{result['dir']}/{converted_filename_by_stem[src['stem']]}"),
-                "encodingFormat": f"audio/{fmt}",
-            }
-            for src in sources
-        ]
         pipeline.update_associated_media(item, audio_objects, [src["bronze_path"] for src in sources], "audio")
 
         utils.log("Transcribing captions...")
@@ -195,4 +208,4 @@ def derivatives(ark, opts={}):
             opts=opts,
         )
 
-    return {"status": "success", "ark": ark, "derivatives": result, "captions": captions_result}
+    return {"status": "success", "ark": ark, "derivatives": derivatives_results, "captions": captions_result}

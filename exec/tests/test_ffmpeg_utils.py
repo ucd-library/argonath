@@ -139,17 +139,7 @@ def test_hls_ladder_ensures_audio_before_transcoding(fake_run, monkeypatch, tmp_
     assert calls[0]["argv"][calls[0]["argv"].index("-i") + 1] == "/tmp/synthesized-with-audio.mp4"
 
 
-# --- extract_poster / transcode_audio / waveform ----------------------------------
-
-def test_extract_poster_builds_expected_argv(fake_run, tmp_path):
-    calls = fake_run()
-    dest = str(tmp_path / "poster.jpg")
-    result = ffmpeg_utils.extract_poster("/tmp/src.mp4", dest, opts={"timestamp_s": 2.5, "width": 512})
-    argv = calls[0]["argv"]
-    assert argv[argv.index("-ss") + 1] == "2.5"
-    assert argv[argv.index("-vf") + 1] == "scale=512:-2"
-    assert result["dest_path"] == dest
-
+# --- transcode_audio / waveform ---------------------------------------------------
 
 def test_transcode_audio_picks_codec_from_extension(fake_run, tmp_path):
     calls = fake_run()
@@ -193,7 +183,7 @@ def test_run_raises_ffmpeg_error_on_timeout(fake_run, tmp_path):
 
 def test_run_never_uses_shell(fake_run, tmp_path):
     calls = fake_run()
-    ffmpeg_utils.extract_poster("/tmp/src.mp4", str(tmp_path / "poster.jpg"))
+    ffmpeg_utils.transcode_audio("/tmp/src.wav", str(tmp_path / "out.mp3"))
     assert calls[0]["kwargs"].get("shell", False) is False
 
 
@@ -229,13 +219,3 @@ def test_hls_ladder_produces_playable_output(tmp_path):
     assert (dest_dir / "playlist.m3u8").exists()
 
 
-@needs_ffmpeg
-def test_extract_poster_writes_real_jpeg(tmp_path):
-    src = tmp_path / "src.mp4"
-    subprocess.run(
-        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x48:rate=5", str(src)],
-        capture_output=True, check=True,
-    )
-    dest = tmp_path / "poster.jpg"
-    ffmpeg_utils.extract_poster(str(src), str(dest), opts={"timestamp_s": 0.1, "width": 32})
-    assert dest.exists()
