@@ -75,6 +75,16 @@ def test_derivatives_calls_video(monkeypatch):
     assert seen["opts"]["resolutions"] == "360p"
 
 
+def test_derivatives_forwards_caption_language_and_model(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(video_model, "derivatives", lambda ark, opts={}: seen.update(opts=opts) or {"status": "success"})
+
+    runner.invoke(video.app, ["derivatives", ARK, "--language", "es", "--model", "medium"])
+
+    assert seen["opts"]["language"] == "es"
+    assert seen["opts"]["model"] == "medium"
+
+
 def test_derivatives_routes_exception_through_utils_error(monkeypatch):
     def raises(ark, opts={}):
         raise RuntimeError("ffmpeg exploded")

@@ -1,5 +1,4 @@
 import json
-from contextlib import contextmanager
 
 import pytest
 
@@ -22,30 +21,22 @@ MULTI_ITEM = ItemLocation(
     ],
 )
 
-
-@pytest.fixture(autouse=True)
-def fake_items(monkeypatch):
-    monkeypatch.setattr(captions.items, "resolve", lambda ark, opts={}: ITEM)
+COMMAND = ["digtk", "video", "derivatives", ARK]
 
 
-def use_multi_item(monkeypatch):
-    monkeypatch.setattr(captions.items, "resolve", lambda ark, opts={}: MULTI_ITEM)
+def _sources(item):
+    return [
+        {"bronze_path": path, "local_path": f"/tmp/{path.rsplit('/', 1)[-1]}", "stem": path.rsplit("/", 1)[-1].rsplit(".", 1)[0]}
+        for path in item.bronze_binary_paths
+    ]
 
 
 @pytest.fixture
 def fake_fs(monkeypatch):
-    read_stream_calls = []
     state = {"sidecar": None}
-
-    @contextmanager
-    def fake_read_stream(path, opts={}):
-        read_stream_calls.append(path)
-        yield iter([b"fake-media-bytes"])
-
-    monkeypatch.setattr(pipeline.fs, "read_stream", fake_read_stream)
     monkeypatch.setattr(captions.fs, "exists", lambda path: state["sidecar"] is not None)
     monkeypatch.setattr(captions.fs, "read", lambda path: state["sidecar"])
-    return {"read_stream_calls": read_stream_calls, "state": state}
+    return state
 
 
 @pytest.fixture
@@ -78,21 +69,21 @@ def fake_whisper(monkeypatch):
     return calls
 
 
-def test_transcribe_publishes_vtt_and_manifest(fake_fs, fake_derivative, fake_whisper):
-    result = captions.transcribe(ARK)
+def test_transcribe_sources_publishes_vtt_and_manifest(fake_fs, fake_derivative, fake_whisper, tmp_path):
+    result = captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND)
     assert result["dir"] == "cask:/silver/g/c/latest/item/captions"
     assert result["outputs"] == ["output-en.vtt"]
     write_call = fake_derivative[0]
     assert write_call["opts"]["link_relation"] == "https://lib.ucdavis.edu/argonath/ns#captionOf"
 
 
-def test_transcribe_honors_language_opt(fake_fs, fake_derivative, fake_whisper):
-    result = captions.transcribe(ARK, opts={"language": "es"})
+def test_transcribe_sources_honors_language_opt(fake_fs, fake_derivative, fake_whisper, tmp_path):
+    result = captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND, opts={"language": "es"})
     assert result["outputs"] == ["output-es.vtt"]
 
 
-def test_transcribe_creates_placeholder_sidecar_entry_when_no_existing_media(fake_fs, fake_derivative, fake_whisper):
-    captions.transcribe(ARK)
+def test_transcribe_sources_creates_placeholder_sidecar_entry_when_no_existing_media(fake_fs, fake_derivative, fake_whisper, tmp_path):
+    captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND)
     sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
     doc = json.loads(sidecar_write["data"])
     assert len(doc["associatedMedia"]) == 1
@@ -103,8 +94,8 @@ def test_transcribe_creates_placeholder_sidecar_entry_when_no_existing_media(fak
     assert doc["argonath:fieldSources"]["caption"] == "ai"
 
 
-def test_transcribe_merges_into_existing_video_object(fake_fs, fake_derivative, fake_whisper):
-    fake_fs["state"]["sidecar"] = json.dumps({
+def test_transcribe_sources_merges_into_existing_video_object(fake_fs, fake_derivative, fake_whisper, tmp_path):
+    fake_fs["sidecar"] = json.dumps({
         "@id": ARK, "ark": ARK,
         "associatedMedia": [{
             "@type": "VideoObject", "identifier": "video",
@@ -112,7 +103,7 @@ def test_transcribe_merges_into_existing_video_object(fake_fs, fake_derivative, 
         }],
     }).encode()
 
-    captions.transcribe(ARK, opts={"language": "en"})
+    captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND, opts={"language": "en"})
 
     sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
     doc = json.loads(sidecar_write["data"])
@@ -123,9 +114,8 @@ def test_transcribe_merges_into_existing_video_object(fake_fs, fake_derivative, 
     assert media["caption"]["contentUrl"] == "cask://silver/g/c/latest/item/captions/output-en.vtt"
 
 
-def test_transcribe_multi_source_matches_captions_to_correct_identifier(fake_fs, fake_derivative, fake_whisper, monkeypatch):
-    use_multi_item(monkeypatch)
-    fake_fs["state"]["sidecar"] = json.dumps({
+def test_transcribe_sources_multi_source_matches_captions_to_correct_identifier(fake_fs, fake_derivative, fake_whisper, tmp_path):
+    fake_fs["sidecar"] = json.dumps({
         "@id": ARK, "ark": ARK,
         "associatedMedia": [
             {"@type": "VideoObject", "identifier": "clip-a", "contentUrl": "cask://.../clip-a-playlist.m3u8"},
@@ -133,7 +123,7 @@ def test_transcribe_multi_source_matches_captions_to_correct_identifier(fake_fs,
         ],
     }).encode()
 
-    captions.transcribe(ARK)
+    captions.transcribe_sources(MULTI_ITEM, _sources(MULTI_ITEM), str(tmp_path), COMMAND)
 
     sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
     doc = json.loads(sidecar_write["data"])

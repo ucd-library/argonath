@@ -5,8 +5,9 @@ Subcommands:
   probe        — report ffprobe metadata (duration, codecs, dimensions)
   hls          — generate the HLS adaptive-bitrate stream
   poster       — extract a poster-frame JPEG
-  derivatives  — generate the full derivative set (HLS stream + poster); the others
-                 above are deterministic single-recipe commands for ad-hoc/manual use.
+  derivatives  — generate the full derivative set (HLS stream + poster + a WebVTT
+                 caption via local Whisper ASR); the others above are deterministic
+                 single-recipe commands for ad-hoc/manual use.
 """
 from typing import Annotated
 
@@ -15,6 +16,8 @@ import typer
 from digtk.lib import utils
 from digtk.lib.config import (
     CONFIG,
+    CaptionsLanguageOption,
+    CaptionsModelOption,
     VideoPosterTimestampOption,
     VideoPosterWidthOption,
     VideoResolutionsOption,
@@ -67,11 +70,16 @@ def derivatives(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
     resolutions: VideoResolutionsOption = CONFIG["video"]["resolutions"],
     width: VideoPosterWidthOption = CONFIG["video"]["poster_width"],
+    language: CaptionsLanguageOption = CONFIG["captions"]["language"],
+    model: CaptionsModelOption = CONFIG["captions"]["model"],
 ):
-    """Generate the full derivative set: HLS stream + poster frame."""
+    """Generate the full derivative set: HLS stream + poster frame + WebVTT caption
+    (local Whisper ASR — machine-generated and unreviewed)."""
     try:
         utils.log(f"Generating derivatives for {ark} at resolutions {resolutions}")
-        result = video.derivatives(ark, opts={"resolutions": resolutions, "width": width})
+        result = video.derivatives(ark, opts={
+            "resolutions": resolutions, "width": width, "language": language, "model": model,
+        })
         utils.result(result)
     except _ERRORS as e:
         utils.error(str(e))

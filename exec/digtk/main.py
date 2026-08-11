@@ -7,9 +7,8 @@ Subcommands mirror the pipeline phases:
   digtk ai        — ad hoc Samwise AI queries, for testing (chat/embed)
   digtk image     — image derivatives (thumbnails, conversion, deskew, OCR prep)
   digtk pdf       — PDF derivatives (per-page thumbnails, conversion, deskew, OCR prep)
-  digtk video     — video derivatives (HLS stream, poster frame)
-  digtk audio     — audio derivatives (transcode, waveform)
-  digtk captions  — caption/transcript generation (video and audio) via local Whisper
+  digtk video     — video derivatives (HLS stream, poster frame, captions via local Whisper)
+  digtk audio     — audio derivatives (transcode, waveform, captions via local Whisper)
   digtk ocr       — OCR via Tesseract or ML fallback
   digtk metadata    — AI and human metadata generation
   digtk ingest      — ingest files into CaskFS
@@ -20,7 +19,7 @@ import sys
 
 import typer
 
-from digtk.commands import ai, audio, auth, captions, collection, config, image, ocr, metadata, ingest, pdf, search, video
+from digtk.commands import ai, audio, auth, collection, config, image, ocr, metadata, ingest, pdf, search, video
 from digtk.lib.banner import print_banner
 
 app = typer.Typer(
@@ -36,7 +35,6 @@ app.add_typer(image.app,      name="image")
 app.add_typer(pdf.app,        name="pdf")
 app.add_typer(video.app,      name="video")
 app.add_typer(audio.app,      name="audio")
-app.add_typer(captions.app,   name="captions")
 app.add_typer(ocr.app,        name="ocr")
 app.add_typer(metadata.app,   name="metadata")
 app.add_typer(ingest.app,     name="ingest")

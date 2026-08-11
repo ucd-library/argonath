@@ -10,9 +10,9 @@ holds the poster frame — a single rendered still, same conceptual bucket as an
 thumbnail).
 
 Each source video gets one VideoObject associatedMedia entry, tagged with its own
-filename stem as 'identifier' so a later `digtk captions transcribe` run (see
-digtk.models.digital_website.captions) can attach its caption to the right entry without needing to
-re-derive which video it belongs to.
+filename stem as 'identifier' so derivatives()'s own captions.transcribe_sources()
+call (see digtk.models.digital_website.captions) can attach its caption to the
+right entry without needing to re-derive which video it belongs to.
 """
 import os
 import tempfile
@@ -21,7 +21,7 @@ import time
 from digtk.lib import ffmpeg_utils, items, utils
 from digtk.lib.config import CONFIG
 from digtk.lib.schema import ARGONATH_NS
-from digtk.models.digital_website import pipeline
+from digtk.models.digital_website import captions, pipeline
 
 _LINK_RELATION = {
     "derivatives": f"{ARGONATH_NS}derivativeOf",
@@ -148,15 +148,21 @@ def derivatives(ark, opts={}):
     umbrella `digtk video derivatives` calls.
 
     Runs the HLS adaptive-bitrate ladder and extracts a poster frame for every source
-    video, publishing the stream to 'stream/' and the poster to 'derivatives/'. All
-    local generation happens before anything is published to CaskFS, so a failure at
-    any step leaves no partial derivative set behind.
+    video, publishing the stream to 'stream/' and the poster to 'derivatives/', then
+    transcribes every source to a WebVTT caption via captions.transcribe_sources()
+    (local Whisper ASR — machine-generated and unreviewed, see
+    docs/cask-conventions.md's Captions/Transcripts section) using the same staged
+    sources, merging each caption into the VideoObject entry update_associated_media()
+    just wrote. All local generation happens before anything is published to CaskFS,
+    so a failure at any step leaves no partial derivative set behind.
 
     :param str ark: Item ARK identifier.
     :param dict opts: 'resolutions' (comma-separated str, default
-        CONFIG["video"]["resolutions"]), 'width' (int, poster width); forwarded to
+        CONFIG["video"]["resolutions"]), 'width' (int, poster width); 'language'/'model'
+        for the caption step (see captions.transcribe_sources()); forwarded to
         ffmpeg_utils.
-    :returns: {"status": "success", "ark": str, "stream": {...}, "derivatives": {...}}
+    :returns: {"status": "success", "ark": str, "stream": {...}, "derivatives": {...},
+        "captions": {...}}
     :rtype: dict
     """
     resolutions = _parse_resolutions(opts.get("resolutions", CONFIG["video"]["resolutions"]))
@@ -221,4 +227,14 @@ def derivatives(ark, opts={}):
             })
         pipeline.update_associated_media(item, video_objects, [src["bronze_path"] for src in sources], "video")
 
-    return {"status": "success", "ark": ark, "stream": stream_result, "derivatives": derivatives_result}
+        utils.log("Transcribing captions...")
+        captions_result = captions.transcribe_sources(
+            item, sources, tmp_dir,
+            command=["digtk", "video", "derivatives", ark, "--resolutions", ",".join(resolutions)],
+            opts=opts,
+        )
+
+    return {
+        "status": "success", "ark": ark,
+        "stream": stream_result, "derivatives": derivatives_result, "captions": captions_result,
+    }

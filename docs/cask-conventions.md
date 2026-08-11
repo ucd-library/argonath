@@ -271,10 +271,10 @@ silver/[group]/[collection]/[time]/[item]/
     └── 1080p.m3u8 + 1080p.mp4
 ```
 
-The VideoObject's `identifier` (the source binary's filename stem) is how a later
-`digtk captions transcribe` run finds the right associatedMedia entry to attach its
-caption to (see "Captions/Transcripts" below) — it's not itself meant as a public
-identifier.
+The VideoObject's `identifier` (the source binary's filename stem) is how the same
+derivatives() run's caption-transcription step finds the right associatedMedia
+entry to attach its caption to (see "Captions/Transcripts" below) — it's not itself
+meant as a public identifier.
 
 ### Audio Transcoding and Waveforms
 
@@ -294,10 +294,13 @@ silver/[group]/[collection]/[time]/[item]/
 
 ### Captions/Transcripts
 
-`digtk captions transcribe` runs local Whisper ASR against every source video/audio
-file in an item, producing a WebVTT caption file per source. Shared by both media
-types (Whisper pulls audio from a video file itself via ffmpeg internally), captions
-land in their own `captions/` subdirectory:
+`digtk video derivatives`/`digtk audio derivatives` run local Whisper ASR against
+every source video/audio file as part of their standard derivative set —
+`digtk.models.digital_website.captions.transcribe_sources()` is called directly
+using the sources already staged for HLS/poster or transcode/waveform generation
+(no separate staging pass), producing a WebVTT caption file per source. Shared by
+both media types (Whisper pulls audio from a video file itself via ffmpeg
+internally), captions land in their own `captions/` subdirectory:
 
 ```
 silver/[group]/[collection]/[time]/[item]/
@@ -308,17 +311,17 @@ silver/[group]/[collection]/[time]/[item]/
 
 Machine-generated and unreviewed: the caption gets merged into the matching
 VideoObject/AudioObject associatedMedia entry (matched by the `identifier` stem —
-see above) as a nested `caption` MediaObject, and the item's `argonath:fieldSources`
-map records `"caption": "ai"` (see Field Sources below) so downstream review
-workflows know it needs a human pass. This merge is additive — unlike every other
-derivatives step, which regenerates and replaces its associatedMedia entries each
-run, caption generation only adds to whatever entry already exists (or a bare
-placeholder if it's run before derivatives() ever has).
+see above, written by the same derivatives() run just before the caption step) as
+a nested `caption` MediaObject, and the item's `argonath:fieldSources` map records
+`"caption": "ai"` (see Field Sources below) so downstream review workflows know it
+needs a human pass. This merge is additive — unlike every other derivatives step,
+which regenerates and replaces its associatedMedia entries each run, caption
+generation only adds to whatever entry already exists.
 
-`digtk captions transcribe` is invoked explicitly, as its own step, after `digtk video
-derivatives`/`digtk audio derivatives` — there's no umbrella command that chains the
-two together automatically. Image and PDF items have no equivalent — captions don't
-apply to a still image or an unrasterized document page.
+There's no standalone `digtk captions transcribe` command — captions are always
+generated as part of `derivatives()`, controllable via that command's
+`--language`/`--model` flags. Image and PDF items have no equivalent — captions
+don't apply to a still image or an unrasterized document page.
 
 ## Gold Layout
 

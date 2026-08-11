@@ -8,8 +8,9 @@ digtk.lib.ffmpeg_utils for the actual transcoding/waveform/probing work. Both ou
 the item's ordinary 'derivatives/' silver subdirectory, same as image thumbnails.
 
 Each source audio file gets one AudioObject associatedMedia entry, tagged with its own
-filename stem as 'identifier' so a later `digtk captions transcribe` run (see
-digtk.models.digital_website.captions) can attach its caption to the right entry.
+filename stem as 'identifier' so derivatives()'s own captions.transcribe_sources()
+call (see digtk.models.digital_website.captions) can attach its caption to the right
+entry.
 """
 import os
 import tempfile
@@ -18,7 +19,7 @@ import time
 from digtk.lib import ffmpeg_utils, items, utils
 from digtk.lib.config import CONFIG
 from digtk.lib.schema import ARGONATH_NS
-from digtk.models.digital_website import pipeline
+from digtk.models.digital_website import captions, pipeline
 
 _LINK_RELATION = f"{ARGONATH_NS}derivativeOf"
 
@@ -123,12 +124,18 @@ def waveform(ark, opts={}):
 
 def derivatives(ark, opts={}):
     """Generate the full derivative set for every source audio file in the item —
-    the umbrella `digtk audio derivatives` calls: transcode + waveform.
+    the umbrella `digtk audio derivatives` calls: transcode + waveform, then
+    transcribes every source to a WebVTT caption via captions.transcribe_sources()
+    (local Whisper ASR — machine-generated and unreviewed, see
+    docs/cask-conventions.md's Captions/Transcripts section) using the same staged
+    sources, merging each caption into the AudioObject entry update_associated_media()
+    just wrote.
 
     :param str ark: Item ARK identifier.
     :param dict opts: 'format' (str, default CONFIG["audio"]["transcode_format"]),
-        'width'/'height' (waveform dimensions); forwarded to ffmpeg_utils.
-    :returns: {"status": "success", "ark": str, "derivatives": {...}}
+        'width'/'height' (waveform dimensions); 'language'/'model' for the caption
+        step (see captions.transcribe_sources()); forwarded to ffmpeg_utils.
+    :returns: {"status": "success", "ark": str, "derivatives": {...}, "captions": {...}}
     :rtype: dict
     """
     fmt = opts.get("format", CONFIG["audio"]["transcode_format"])
@@ -181,4 +188,11 @@ def derivatives(ark, opts={}):
         ]
         pipeline.update_associated_media(item, audio_objects, [src["bronze_path"] for src in sources], "audio")
 
-    return {"status": "success", "ark": ark, "derivatives": result}
+        utils.log("Transcribing captions...")
+        captions_result = captions.transcribe_sources(
+            item, sources, tmp_dir,
+            command=["digtk", "audio", "derivatives", ark],
+            opts=opts,
+        )
+
+    return {"status": "success", "ark": ark, "derivatives": result, "captions": captions_result}

@@ -100,6 +100,20 @@ def fake_ffmpeg(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def fake_whisper(monkeypatch):
+    calls = []
+
+    def fake_transcribe(src_path, dest_path, opts={}):
+        calls.append({"src_path": src_path, "dest_path": dest_path, "opts": opts})
+        with open(dest_path, "w") as f:
+            f.write("WEBVTT\n")
+        return {"argv": [], "dest_path": dest_path}
+
+    monkeypatch.setattr(vw.captions.whisper_utils, "transcribe", fake_transcribe)
+    return calls
+
+
 def test_probe_reports_per_source(fake_fs, fake_ffmpeg):
     result = vw.probe(ARK)
     assert result == {"status": "success", "ark": ARK, "streams": {"video": {"duration_s": 10.0, "bit_rate": 1000, "streams": []}}}
@@ -126,14 +140,14 @@ def test_poster_publishes_to_derivatives(fake_fs, fake_derivative, fake_ffmpeg):
     assert result["outputs"] == ["poster-512.jpg"]
 
 
-def test_derivatives_publishes_stream_and_poster_separately(fake_fs, fake_derivative, fake_ffmpeg):
+def test_derivatives_publishes_stream_and_poster_separately(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
     result = vw.derivatives(ARK, opts={"resolutions": "360p"})
     assert result["stream"]["dir"] == "cask:/silver/g/c/latest/item/stream"
     assert result["derivatives"]["dir"] == "cask:/silver/g/c/latest/item/derivatives"
     assert result["derivatives"]["outputs"] == ["poster-1024.jpg"]  # default poster_width is 1024
 
 
-def test_derivatives_writes_video_object_with_identifier_and_thumbnail(fake_fs, fake_derivative, fake_ffmpeg):
+def test_derivatives_writes_video_object_with_identifier_and_thumbnail(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
     vw.derivatives(ARK, opts={"resolutions": "360p"})
 
     sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
@@ -146,9 +160,22 @@ def test_derivatives_writes_video_object_with_identifier_and_thumbnail(fake_fs, 
     assert media["thumbnailUrl"] == "cask://silver/g/c/latest/item/derivatives/poster-1024.jpg"
 
 
-def test_derivatives_multi_video_item_prefixes_filenames(fake_fs, fake_derivative, fake_ffmpeg, monkeypatch):
+def test_derivatives_multi_video_item_prefixes_filenames(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper, monkeypatch):
     use_multi_item(monkeypatch)
     result = vw.derivatives(ARK, opts={"resolutions": "360p"})
     assert sorted(result["derivatives"]["outputs"]) == ["clip-a-poster-1024.jpg", "clip-b-poster-1024.jpg"]
     assert "clip-a-playlist.m3u8" in result["stream"]["outputs"]
     assert "clip-b-playlist.m3u8" in result["stream"]["outputs"]
+
+
+def test_derivatives_transcribes_captions_for_every_source(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
+    result = vw.derivatives(ARK, opts={"resolutions": "360p"})
+    assert result["captions"]["dir"] == "cask:/silver/g/c/latest/item/captions"
+    assert result["captions"]["outputs"] == ["output-en.vtt"]
+    assert fake_whisper[0]["src_path"].endswith("video.mp4")
+
+
+def test_derivatives_transcribes_every_source_for_multi_video_item(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper, monkeypatch):
+    use_multi_item(monkeypatch)
+    result = vw.derivatives(ARK, opts={"resolutions": "360p"})
+    assert sorted(result["captions"]["outputs"]) == ["clip-a-output-en.vtt", "clip-b-output-en.vtt"]

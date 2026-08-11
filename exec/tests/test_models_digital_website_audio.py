@@ -89,6 +89,20 @@ def fake_ffmpeg(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def fake_whisper(monkeypatch):
+    calls = []
+
+    def fake_transcribe(src_path, dest_path, opts={}):
+        calls.append({"src_path": src_path, "dest_path": dest_path, "opts": opts})
+        with open(dest_path, "w") as f:
+            f.write("WEBVTT\n")
+        return {"argv": [], "dest_path": dest_path}
+
+    monkeypatch.setattr(aw.captions.whisper_utils, "transcribe", fake_transcribe)
+    return calls
+
+
 def test_probe_reports_per_source(fake_fs, fake_ffmpeg):
     result = aw.probe(ARK)
     assert result["streams"] == {"interview": {"duration_s": 30.0, "bit_rate": 320000, "streams": []}}
@@ -112,12 +126,12 @@ def test_waveform_writes_output_named_by_dimensions(fake_fs, fake_derivative, fa
     assert result["outputs"] == ["waveform-200x80.png"]
 
 
-def test_derivatives_writes_transcode_and_waveform_together(fake_fs, fake_derivative, fake_ffmpeg):
+def test_derivatives_writes_transcode_and_waveform_together(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
     result = aw.derivatives(ARK)
     assert sorted(result["derivatives"]["outputs"]) == sorted(["converted.mp3", "waveform-1024x256.png"])
 
 
-def test_derivatives_writes_audio_object_with_identifier(fake_fs, fake_derivative, fake_ffmpeg):
+def test_derivatives_writes_audio_object_with_identifier(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
     aw.derivatives(ARK)
     sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
     doc = json.loads(sidecar_write["data"])
@@ -129,10 +143,23 @@ def test_derivatives_writes_audio_object_with_identifier(fake_fs, fake_derivativ
     assert media["encodingFormat"] == "audio/mp3"
 
 
-def test_derivatives_multi_audio_item_prefixes_filenames(fake_fs, fake_derivative, fake_ffmpeg, monkeypatch):
+def test_derivatives_multi_audio_item_prefixes_filenames(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper, monkeypatch):
     use_multi_item(monkeypatch)
     result = aw.derivatives(ARK)
     assert sorted(result["derivatives"]["outputs"]) == sorted([
         "side-a-converted.mp3", "side-a-waveform-1024x256.png",
         "side-b-converted.mp3", "side-b-waveform-1024x256.png",
     ])
+
+
+def test_derivatives_transcribes_captions_for_every_source(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
+    result = aw.derivatives(ARK)
+    assert result["captions"]["dir"] == "cask:/silver/g/c/latest/item/captions"
+    assert result["captions"]["outputs"] == ["output-en.vtt"]
+    assert fake_whisper[0]["src_path"].endswith("interview.wav")
+
+
+def test_derivatives_transcribes_every_source_for_multi_audio_item(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper, monkeypatch):
+    use_multi_item(monkeypatch)
+    result = aw.derivatives(ARK)
+    assert sorted(result["captions"]["outputs"]) == ["side-a-output-en.vtt", "side-b-output-en.vtt"]

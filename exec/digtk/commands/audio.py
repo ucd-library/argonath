@@ -5,8 +5,9 @@ Subcommands:
   probe        — report ffprobe metadata (duration, codec, bitrate)
   transcode    — convert source to another audio format
   waveform     — generate a waveform image
-  derivatives  — generate the full derivative set (transcode + waveform); the others
-                 above are deterministic single-recipe commands for ad-hoc/manual use.
+  derivatives  — generate the full derivative set (transcode + waveform + a WebVTT
+                 caption via local Whisper ASR); the others above are deterministic
+                 single-recipe commands for ad-hoc/manual use.
 """
 from typing import Annotated
 
@@ -19,6 +20,8 @@ from digtk.lib.config import (
     AudioTranscodeFormatOption,
     AudioWaveformHeightOption,
     AudioWaveformWidthOption,
+    CaptionsLanguageOption,
+    CaptionsModelOption,
 )
 from digtk.models.digital_website import audio
 
@@ -68,11 +71,14 @@ def waveform(
 def derivatives(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
     format: AudioTranscodeFormatOption = CONFIG["audio"]["transcode_format"],
+    language: CaptionsLanguageOption = CONFIG["captions"]["language"],
+    model: CaptionsModelOption = CONFIG["captions"]["model"],
 ):
-    """Generate the full derivative set: transcode + waveform."""
+    """Generate the full derivative set: transcode + waveform + WebVTT caption
+    (local Whisper ASR — machine-generated and unreviewed)."""
     try:
         utils.log(f"Generating derivatives for {ark}")
-        result = audio.derivatives(ark, opts={"format": format})
+        result = audio.derivatives(ark, opts={"format": format, "language": language, "model": model})
         utils.result(result)
     except _ERRORS as e:
         utils.error(str(e))

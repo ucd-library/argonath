@@ -19,15 +19,20 @@ whichever existing VideoObject/AudioObject associatedMedia entry shares its
 instead of overwriting the whole associatedMedia array the way
 digtk.models.digital_website.pipeline.update_associated_media() does — that full-replace
 behavior is correct for the *_website.py umbrellas (they regenerate every entry each
-run) but wrong here, since captions are typically generated as a follow-up step after
-derivatives() has already written the item's associatedMedia.
+run) but wrong here, since video.derivatives()/audio.derivatives() call transcribe_sources()
+after they've already written the item's associatedMedia in the same run, not as a
+separate later step.
+
+There's no standalone `digtk captions transcribe` command — transcribe_sources() is
+called directly by video.derivatives()/audio.derivatives() using the sources they've
+already staged, so captions generate as part of the normal derivative run rather than
+a separate pass.
 """
 import json
 import os
-import tempfile
 import time
 
-from digtk.lib import derivative, fs, items, utils, whisper_utils
+from digtk.lib import derivative, fs, utils, whisper_utils
 from digtk.lib.config import CONFIG
 from digtk.lib.schema import ARGONATH_NS, SCHEMA_CONTEXT
 from digtk.models.digital_website import pipeline
@@ -94,51 +99,59 @@ def _merge_caption_into_sidecar(item, captions_by_stem, captions_dir, language, 
     return doc
 
 
-def transcribe(ark, opts={}):
-    """Transcribe every source video/audio file in the item to a WebVTT caption file.
+def transcribe_sources(item, sources, tmp_dir, command, opts={}):
+    """Transcribe an already-staged set of source video/audio files to WebVTT
+    caption files, merging each into the item's associatedMedia sidecar.
 
-    :param str ark: Item ARK identifier.
+    Called directly by video.derivatives()/audio.derivatives() using the sources
+    they've already staged into their own tmp_dir — never re-stages, so captions
+    generate as part of that same derivative run rather than a separate pass.
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param list[dict] sources: Already-staged sources (see pipeline.stage_sources()) —
+        every source video.derivatives()/audio.derivatives() is generating other
+        derivatives for in this same run.
+    :param str tmp_dir: Local directory to write caption files into (the caller's own
+        tmp_dir — shared, not a new one).
+    :param list[str] command: Full argv of the umbrella command driving this call
+        (e.g. ["digtk", "video", "derivatives", ark, ...]), recorded in the captions
+        manifest/lineage the same way every other publish() call in that run is.
     :param dict opts: 'language' (str, default CONFIG["captions"]["language"]), 'model'
         (str, default CONFIG["captions"]["model"], must be one of
         digtk.lib.whisper_utils.MODEL_CHOICES).
-    :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
+    :returns: {"dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
     """
     language = opts.get("language", CONFIG["captions"]["language"])
     model = opts.get("model", CONFIG["captions"]["model"])
-    item = items.resolve(ark)
-    media_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, {"video", "audio"})
     start = time.monotonic()
-    multi = len(media_paths) > 1
+    total = len(sources)
+    multi = total > 1
+    local_outputs = []
+    captions_by_stem = {}
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": media_paths})
-        total = len(sources)
-        local_outputs = []
-        captions_by_stem = {}
+    for i, src in enumerate(sources, start=1):
+        stem = src["stem"]
+        utils.log(f"[{i}/{total}] {stem}: transcribing (model={model})...")
+        filename = pipeline.output_name(stem, f"output-{language}.vtt", multi)
+        local_dest = os.path.join(tmp_dir, filename)
+        whisper_utils.transcribe(src["local_path"], local_dest, opts=opts)
+        local_outputs.append((filename, local_dest, src["bronze_path"]))
+        captions_by_stem[stem] = filename
 
-        for i, src in enumerate(sources, start=1):
-            stem = src["stem"]
-            utils.log(f"[{i}/{total}] {stem}: transcribing (model={model})...")
-            filename = pipeline.output_name(stem, f"output-{language}.vtt", multi)
-            local_dest = os.path.join(tmp_dir, filename)
-            whisper_utils.transcribe(src["local_path"], local_dest, opts=opts)
-            local_outputs.append((filename, local_dest, src["bronze_path"]))
-            captions_by_stem[stem] = filename
+    result = pipeline.publish(
+        item, "captions", local_outputs,
+        command=command,
+        params={"language": language, "model": model},
+        opts={
+            "manifest_opts": {"duration_s": time.monotonic() - start},
+            "link_relation": _LINK_RELATION,
+        },
+    )
 
-        result = pipeline.publish(
-            item, "captions", local_outputs,
-            command=["digtk", "captions", "transcribe", ark, "--language", language, "--model", model],
-            params={"language": language, "model": model},
-            opts={
-                "manifest_opts": {"duration_s": time.monotonic() - start},
-                "link_relation": _LINK_RELATION,
-            },
-        )
+    utils.log("Merging captions into associated-media sidecar...")
+    _merge_caption_into_sidecar(
+        item, captions_by_stem, result["dir"], language, [src["bronze_path"] for src in sources]
+    )
 
-        utils.log("Merging captions into associated-media sidecar...")
-        _merge_caption_into_sidecar(
-            item, captions_by_stem, result["dir"], language, [src["bronze_path"] for src in sources]
-        )
-
-    return {"status": "success", "ark": ark, **result}
+    return result
