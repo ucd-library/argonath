@@ -9,7 +9,7 @@ for the production bug class (from the reference dams/services/image-utils
 implementation) this is deliberately fixing, not replicating.
 
 This module is ARK/CaskFS-agnostic: every function takes and returns local
-filesystem paths only. digtk.models.digital_website is responsible for
+filesystem paths only. digtk.models.digital_website.image is responsible for
 staging CaskFS sources to local paths before calling in here, and publishing
 local outputs back to CaskFS afterward.
 """

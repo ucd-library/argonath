@@ -86,6 +86,10 @@ SEARCH_CHUNK_SIZE_ENV = "DIGTK_SEARCH_CHUNK_SIZE"
 SEARCH_CHUNK_BUFFER_ENV = "DIGTK_SEARCH_CHUNK_BUFFER"
 SEARCH_EMBED_MODEL_ENV = "DIGTK_SEARCH_EMBED_MODEL"
 
+PDF_TARGET_PIXEL_WIDTH_ENV = "DIGTK_PDF_TARGET_PIXEL_WIDTH"
+PDF_DEFAULT_DENSITY_ENV = "DIGTK_PDF_DEFAULT_DENSITY"
+PDF_RASTER_FORMAT_ENV = "DIGTK_PDF_RASTER_FORMAT"
+
 IMAGE_THUMBNAIL_WIDTHS_ENV = "DIGTK_IMAGE_THUMBNAIL_WIDTHS"
 IMAGE_CONVERT_FORMAT_ENV = "DIGTK_IMAGE_CONVERT_FORMAT"
 IMAGE_DPI_ENV = "DIGTK_IMAGE_DPI"
@@ -99,6 +103,32 @@ IMAGE_TIMEOUT_S_ENV = "DIGTK_IMAGE_TIMEOUT_S"
 IMAGE_USE_MAGICK_ENV = "DIGTK_IMAGE_USE_MAGICK"
 IMAGE_CONVERT_BIN_ENV = "DIGTK_IMAGE_CONVERT_BIN"
 IMAGE_IDENTIFY_BIN_ENV = "DIGTK_IMAGE_IDENTIFY_BIN"
+
+VIDEO_RESOLUTIONS_ENV = "DIGTK_VIDEO_RESOLUTIONS"
+VIDEO_CRF_ENV = "DIGTK_VIDEO_CRF"
+VIDEO_SEGMENT_SECONDS_ENV = "DIGTK_VIDEO_SEGMENT_SECONDS"
+VIDEO_GOP_SIZE_ENV = "DIGTK_VIDEO_GOP_SIZE"
+VIDEO_VIDEO_CODEC_ENV = "DIGTK_VIDEO_VIDEO_CODEC"
+VIDEO_PIX_FMT_ENV = "DIGTK_VIDEO_PIX_FMT"
+VIDEO_AUDIO_CODEC_ENV = "DIGTK_VIDEO_AUDIO_CODEC"
+VIDEO_AUDIO_SAMPLE_RATE_ENV = "DIGTK_VIDEO_AUDIO_SAMPLE_RATE"
+VIDEO_POSTER_TIMESTAMP_S_ENV = "DIGTK_VIDEO_POSTER_TIMESTAMP_S"
+VIDEO_POSTER_WIDTH_ENV = "DIGTK_VIDEO_POSTER_WIDTH"
+VIDEO_TIMEOUT_S_ENV = "DIGTK_VIDEO_TIMEOUT_S"
+VIDEO_FFMPEG_BIN_ENV = "DIGTK_VIDEO_FFMPEG_BIN"
+VIDEO_FFPROBE_BIN_ENV = "DIGTK_VIDEO_FFPROBE_BIN"
+
+AUDIO_TRANSCODE_FORMAT_ENV = "DIGTK_AUDIO_TRANSCODE_FORMAT"
+AUDIO_TRANSCODE_BITRATE_ENV = "DIGTK_AUDIO_TRANSCODE_BITRATE"
+AUDIO_WAVEFORM_WIDTH_ENV = "DIGTK_AUDIO_WAVEFORM_WIDTH"
+AUDIO_WAVEFORM_HEIGHT_ENV = "DIGTK_AUDIO_WAVEFORM_HEIGHT"
+AUDIO_WAVEFORM_COLOR_ENV = "DIGTK_AUDIO_WAVEFORM_COLOR"
+AUDIO_TIMEOUT_S_ENV = "DIGTK_AUDIO_TIMEOUT_S"
+
+CAPTIONS_LANGUAGE_ENV = "DIGTK_CAPTIONS_LANGUAGE"
+CAPTIONS_MODEL_ENV = "DIGTK_CAPTIONS_MODEL"
+CAPTIONS_WHISPER_BIN_ENV = "DIGTK_CAPTIONS_WHISPER_BIN"
+CAPTIONS_TIMEOUT_S_ENV = "DIGTK_CAPTIONS_TIMEOUT_S"
 
 CONFIG_PATH_ENV = "DIGTK_CONFIG_PATH"
 
@@ -127,6 +157,9 @@ SETTINGS = [
     {"dotpath": "search.chunk_size", "env": SEARCH_CHUNK_SIZE_ENV, "cast": int, "secret": False},
     {"dotpath": "search.chunk_buffer", "env": SEARCH_CHUNK_BUFFER_ENV, "cast": int, "secret": False},
     {"dotpath": "search.embed_model", "env": SEARCH_EMBED_MODEL_ENV, "cast": str, "secret": False},
+    {"dotpath": "pdf.target_pixel_width", "env": PDF_TARGET_PIXEL_WIDTH_ENV, "cast": int, "secret": False},
+    {"dotpath": "pdf.default_density", "env": PDF_DEFAULT_DENSITY_ENV, "cast": int, "secret": False},
+    {"dotpath": "pdf.raster_format", "env": PDF_RASTER_FORMAT_ENV, "cast": str, "secret": False},
     {"dotpath": "image.thumbnail_widths", "env": IMAGE_THUMBNAIL_WIDTHS_ENV, "cast": str, "secret": False},
     {"dotpath": "image.convert_format", "env": IMAGE_CONVERT_FORMAT_ENV, "cast": str, "secret": False},
     {"dotpath": "image.dpi", "env": IMAGE_DPI_ENV, "cast": int, "secret": False},
@@ -140,6 +173,29 @@ SETTINGS = [
     {"dotpath": "image.use_magick", "env": IMAGE_USE_MAGICK_ENV, "cast": _cast_bool, "secret": False},
     {"dotpath": "image.convert_bin", "env": IMAGE_CONVERT_BIN_ENV, "cast": str, "secret": False},
     {"dotpath": "image.identify_bin", "env": IMAGE_IDENTIFY_BIN_ENV, "cast": str, "secret": False},
+    {"dotpath": "video.resolutions", "env": VIDEO_RESOLUTIONS_ENV, "cast": str, "secret": False},
+    {"dotpath": "video.crf", "env": VIDEO_CRF_ENV, "cast": int, "secret": False},
+    {"dotpath": "video.segment_seconds", "env": VIDEO_SEGMENT_SECONDS_ENV, "cast": int, "secret": False},
+    {"dotpath": "video.gop_size", "env": VIDEO_GOP_SIZE_ENV, "cast": int, "secret": False},
+    {"dotpath": "video.video_codec", "env": VIDEO_VIDEO_CODEC_ENV, "cast": str, "secret": False},
+    {"dotpath": "video.pix_fmt", "env": VIDEO_PIX_FMT_ENV, "cast": str, "secret": False},
+    {"dotpath": "video.audio_codec", "env": VIDEO_AUDIO_CODEC_ENV, "cast": str, "secret": False},
+    {"dotpath": "video.audio_sample_rate", "env": VIDEO_AUDIO_SAMPLE_RATE_ENV, "cast": int, "secret": False},
+    {"dotpath": "video.poster_timestamp_s", "env": VIDEO_POSTER_TIMESTAMP_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "video.poster_width", "env": VIDEO_POSTER_WIDTH_ENV, "cast": int, "secret": False},
+    {"dotpath": "video.timeout_s", "env": VIDEO_TIMEOUT_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "video.ffmpeg_bin", "env": VIDEO_FFMPEG_BIN_ENV, "cast": str, "secret": False},
+    {"dotpath": "video.ffprobe_bin", "env": VIDEO_FFPROBE_BIN_ENV, "cast": str, "secret": False},
+    {"dotpath": "audio.transcode_format", "env": AUDIO_TRANSCODE_FORMAT_ENV, "cast": str, "secret": False},
+    {"dotpath": "audio.transcode_bitrate", "env": AUDIO_TRANSCODE_BITRATE_ENV, "cast": str, "secret": False},
+    {"dotpath": "audio.waveform_width", "env": AUDIO_WAVEFORM_WIDTH_ENV, "cast": int, "secret": False},
+    {"dotpath": "audio.waveform_height", "env": AUDIO_WAVEFORM_HEIGHT_ENV, "cast": int, "secret": False},
+    {"dotpath": "audio.waveform_color", "env": AUDIO_WAVEFORM_COLOR_ENV, "cast": str, "secret": False},
+    {"dotpath": "audio.timeout_s", "env": AUDIO_TIMEOUT_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "captions.language", "env": CAPTIONS_LANGUAGE_ENV, "cast": str, "secret": False},
+    {"dotpath": "captions.model", "env": CAPTIONS_MODEL_ENV, "cast": str, "secret": False},
+    {"dotpath": "captions.whisper_bin", "env": CAPTIONS_WHISPER_BIN_ENV, "cast": str, "secret": False},
+    {"dotpath": "captions.timeout_s", "env": CAPTIONS_TIMEOUT_S_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_word_count_threshold", "env": OCR_ORIENTATION_WORD_COUNT_THRESHOLD_ENV, "cast": int, "secret": False},
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
 ]
@@ -299,6 +355,17 @@ CONFIG = {
         # chunking favors the larger/more accurate embedding model.
         "embed_model": _env(SEARCH_EMBED_MODEL_ENV, _env(SAMWISE_EMBED_MODEL_ENV, "qwen3-embed:4b")),
     },
+    "pdf": {
+        # target_pixel_width/default_density match the reference dams/services/image-utils
+        # pipeline's lib/config.js: pdf.tifResizeWidth (3072, env TIF_RESIZE_WIDTH) and
+        # pdf.extractDensity (600, env PDF_DENSITY) — see digtk.lib.pdf_render.rasterize_page().
+        "target_pixel_width": _env(PDF_TARGET_PIXEL_WIDTH_ENV, 3072, int),
+        "default_density": _env(PDF_DEFAULT_DENSITY_ENV, 600, int),
+        # PyMuPDF's Pixmap.save() only writes png/jpg/pnm/psd/ps natively (no tiff without
+        # an undeclared transitive Pillow dependency via pil_save()) — png is lossless and
+        # just as suitable an intermediate for the downstream image_magick/tesseract steps.
+        "raster_format": _env(PDF_RASTER_FORMAT_ENV, "png"),
+    },
     "image": {
         "thumbnail_widths": _env(IMAGE_THUMBNAIL_WIDTHS_ENV, "256,512,1024"),
         "convert_format": _env(IMAGE_CONVERT_FORMAT_ENV, "jpeg"),
@@ -319,6 +386,44 @@ CONFIG = {
         "use_magick": _env(IMAGE_USE_MAGICK_ENV, False, _cast_bool),
         "convert_bin": _env(IMAGE_CONVERT_BIN_ENV, "convert"),
         "identify_bin": _env(IMAGE_IDENTIFY_BIN_ENV, "identify"),
+    },
+    "video": {
+        # crf/segment_seconds/gop_size/video_codec/pix_fmt/audio_codec/audio_sample_rate
+        # and the per-resolution bitrate ladder (digtk.lib.ffmpeg_utils._RESOLUTION_LADDER)
+        # match the reference dams/services/image-utils pipeline's lib/ffmpeg/convert.sh —
+        # that script only exposes the resolution list itself as a config knob; everything
+        # else was a hardcoded literal there, exposed as a setting here instead.
+        "resolutions": _env(VIDEO_RESOLUTIONS_ENV, "360p,480p,720p,1080p"),
+        "crf": _env(VIDEO_CRF_ENV, 20, int),
+        "segment_seconds": _env(VIDEO_SEGMENT_SECONDS_ENV, 4, int),
+        "gop_size": _env(VIDEO_GOP_SIZE_ENV, 48, int),
+        "video_codec": _env(VIDEO_VIDEO_CODEC_ENV, "h264"),
+        "pix_fmt": _env(VIDEO_PIX_FMT_ENV, "yuv420p"),
+        "audio_codec": _env(VIDEO_AUDIO_CODEC_ENV, "aac"),
+        "audio_sample_rate": _env(VIDEO_AUDIO_SAMPLE_RATE_ENV, 48000, int),
+        # poster_timestamp_s/poster_width have no reference precedent (the reference
+        # pipeline has no poster-frame extraction at all) — reasonable new defaults.
+        "poster_timestamp_s": _env(VIDEO_POSTER_TIMESTAMP_S_ENV, 5.0, float),
+        "poster_width": _env(VIDEO_POSTER_WIDTH_ENV, 1024, int),
+        "timeout_s": _env(VIDEO_TIMEOUT_S_ENV, 3600.0, float),
+        "ffmpeg_bin": _env(VIDEO_FFMPEG_BIN_ENV, "ffmpeg"),
+        "ffprobe_bin": _env(VIDEO_FFPROBE_BIN_ENV, "ffprobe"),
+    },
+    "audio": {
+        # No reference precedent for standalone audio transcode/waveform generation —
+        # reasonable new defaults.
+        "transcode_format": _env(AUDIO_TRANSCODE_FORMAT_ENV, "mp3"),
+        "transcode_bitrate": _env(AUDIO_TRANSCODE_BITRATE_ENV, "192k"),
+        "waveform_width": _env(AUDIO_WAVEFORM_WIDTH_ENV, 1024, int),
+        "waveform_height": _env(AUDIO_WAVEFORM_HEIGHT_ENV, 256, int),
+        "waveform_color": _env(AUDIO_WAVEFORM_COLOR_ENV, "0x3b82f6"),
+        "timeout_s": _env(AUDIO_TIMEOUT_S_ENV, 600.0, float),
+    },
+    "captions": {
+        "language": _env(CAPTIONS_LANGUAGE_ENV, "en"),
+        "model": _env(CAPTIONS_MODEL_ENV, "small"),
+        "whisper_bin": _env(CAPTIONS_WHISPER_BIN_ENV, "whisper"),
+        "timeout_s": _env(CAPTIONS_TIMEOUT_S_ENV, 3600.0, float),
     },
 }
 
@@ -375,6 +480,51 @@ ImageFuzzThresholdOption = Annotated[int, typer.Option(
 ImageThumbnailQualityOption = Annotated[int, typer.Option(
     "--quality", envvar=IMAGE_THUMBNAIL_QUALITY_ENV,
     help=f"JPEG quality (1-100). Env: {IMAGE_THUMBNAIL_QUALITY_ENV}.",
+)]
+
+VideoResolutionsOption = Annotated[str, typer.Option(
+    "--resolutions", envvar=VIDEO_RESOLUTIONS_ENV,
+    help=f"Comma-separated HLS resolution rungs (e.g. 360p,720p). Env: {VIDEO_RESOLUTIONS_ENV}.",
+)]
+
+VideoPosterTimestampOption = Annotated[float, typer.Option(
+    "--timestamp", envvar=VIDEO_POSTER_TIMESTAMP_S_ENV,
+    help=f"Poster-frame timestamp, seconds. Env: {VIDEO_POSTER_TIMESTAMP_S_ENV}.",
+)]
+
+VideoPosterWidthOption = Annotated[int, typer.Option(
+    "--width", envvar=VIDEO_POSTER_WIDTH_ENV,
+    help=f"Poster-frame width in pixels. Env: {VIDEO_POSTER_WIDTH_ENV}.",
+)]
+
+AudioTranscodeFormatOption = Annotated[str, typer.Option(
+    "--format", envvar=AUDIO_TRANSCODE_FORMAT_ENV,
+    help=f"Target audio format (e.g. mp3, aac). Env: {AUDIO_TRANSCODE_FORMAT_ENV}.",
+)]
+
+AudioTranscodeBitrateOption = Annotated[str, typer.Option(
+    "--bitrate", envvar=AUDIO_TRANSCODE_BITRATE_ENV,
+    help=f"Target audio bitrate (e.g. 192k). Env: {AUDIO_TRANSCODE_BITRATE_ENV}.",
+)]
+
+AudioWaveformWidthOption = Annotated[int, typer.Option(
+    "--width", envvar=AUDIO_WAVEFORM_WIDTH_ENV,
+    help=f"Waveform image width in pixels. Env: {AUDIO_WAVEFORM_WIDTH_ENV}.",
+)]
+
+AudioWaveformHeightOption = Annotated[int, typer.Option(
+    "--height", envvar=AUDIO_WAVEFORM_HEIGHT_ENV,
+    help=f"Waveform image height in pixels. Env: {AUDIO_WAVEFORM_HEIGHT_ENV}.",
+)]
+
+CaptionsLanguageOption = Annotated[str, typer.Option(
+    "--language", envvar=CAPTIONS_LANGUAGE_ENV,
+    help=f"Whisper language code (e.g. en, es). Env: {CAPTIONS_LANGUAGE_ENV}.",
+)]
+
+CaptionsModelOption = Annotated[str, typer.Option(
+    "--model", envvar=CAPTIONS_MODEL_ENV,
+    help=f"Whisper model size (tiny/base/small/medium/large). Env: {CAPTIONS_MODEL_ENV}.",
 )]
 
 SearchSpaceOption = Annotated[str, typer.Option(

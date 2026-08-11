@@ -1,0 +1,368 @@
+"""
+PDF item derivative-generation workflow.
+
+Structurally parallel to digtk.models.digital_website.image, built on the same shared
+digtk.models.digital_website.pipeline staging/publishing/lineage plumbing, but with one PDF
+page rasterized (via digtk.lib.pdf_render, PyMuPDF) into a local image before running
+through the exact same digtk.lib.image_magick/digtk.lib.ocr_utils steps already used for
+plain image bronze items — a rasterized page is, by that point, just a local image file.
+
+One ARK covers the whole PDF; pages are never independently ARK-addressable. Each page
+gets its own derivatives/page-NNN and ocr/page-NNN silver subdirectory (zero-padded to
+the item's own page count) rather than a shared, stem-prefixed directory like multi-image
+items use — a PDF page and a multi-image item's photograph are different concepts (page
+order vs. independent captures), and page-NNN nesting is unambiguous without needing
+filename prefixing. A rare multi-PDF item (more than one PDF binary sharing an ARK)
+additionally nests by source stem: derivatives/{stem}/page-NNN.
+
+See docs/cask-conventions.md for the full silver layout, including how this differs from
+the existing "Multi-Part Items" (parts/, per-page ARK) convention.
+"""
+import os
+import tempfile
+import time
+
+from digtk.lib import image_magick, items, pdf_render, utils
+from digtk.lib.config import CONFIG
+from digtk.lib.schema import ARGONATH_NS
+from digtk.models.digital_website import pipeline
+
+_LINK_RELATION = {
+    "derivatives": f"{ARGONATH_NS}derivativeOf",
+    "ocr": f"{ARGONATH_NS}ocrPrepOf",
+}
+
+
+def _page_tag(page_index, count):
+    """Zero-padded page directory name, wide enough for the item's own page count.
+
+    :param int page_index: 0-indexed page number.
+    :param int count: Total page count (pad width scales with this, minimum 3 digits).
+    :rtype: str
+    """
+    pad = max(3, len(str(max(count - 1, 0))))
+    return f"page-{page_index:0{pad}d}"
+
+
+def _rasterize(pdf_path, page_index, tmp_dir, stem, page_tag, opts):
+    """Rasterize one PDF page to a local image, named to avoid collisions across
+    sources/pages sharing one temp directory.
+
+    :rtype: str -- local raster image path
+    """
+    raster_format = opts.get("raster_format", CONFIG["pdf"]["raster_format"])
+    raster_path = os.path.join(tmp_dir, f"{stem}-{page_tag}-raster.{raster_format}")
+    pdf_render.rasterize_page(pdf_path, page_index, raster_path, opts)
+    return raster_path
+
+
+def page_count(ark, opts={}):
+    """Report each source PDF's page count for an item — ad hoc/debug, no derivatives generated.
+
+    :param str ark: Item ARK identifier.
+    :param dict opts: Unused.
+    :returns: {"status": "success", "ark": str, "pages": {stem: count}}
+    :rtype: dict
+    """
+    item = items.resolve(ark)
+    pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pdf_paths})
+        pages = {src["stem"]: pdf_render.page_count(src["local_path"], opts) for src in sources}
+    return {"status": "success", "ark": ark, "pages": pages}
+
+
+def thumbnail(ark, opts={}):
+    """Generate thumbnail (+ web) JPEGs at each configured width, for one page of
+    every source PDF in the item.
+
+    Ad hoc/manual use, mirroring digtk.models.digital_website.image.thumbnails(); derivatives()
+    is what Dagster's derivatives_job actually calls.
+
+    :param str ark: Item ARK identifier.
+    :param dict opts: 'page' (int, default 0), 'widths' (comma-separated str, default
+        CONFIG["image"]["thumbnail_widths"]), 'quality' (int).
+    :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
+    :rtype: dict
+    """
+    page = opts.get("page", 0)
+    widths = pipeline.parse_widths(opts.get("widths", CONFIG["image"]["thumbnail_widths"]))
+    item = items.resolve(ark)
+    pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
+    start = time.monotonic()
+    multi = len(pdf_paths) > 1
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pdf_paths})
+        local_outputs = []
+        for src in sources:
+            raster_path = _rasterize(src["local_path"], page, tmp_dir, src["stem"], f"page-{page:03d}", opts)
+            thumb_set = pipeline.generate_thumbnail_set(raster_path, tmp_dir, widths, src["stem"], multi, opts)
+            local_outputs += [(filename, local_path, src["bronze_path"]) for filename, local_path in thumb_set]
+
+        result = pipeline.publish(
+            item, f"derivatives/page-{page:03d}", local_outputs,
+            command=["digtk", "pdf", "thumbnail", ark, "--page", str(page), "--widths", ",".join(map(str, widths))],
+            params={"page": page, "widths": widths},
+            opts={
+                "manifest_opts": {"duration_s": time.monotonic() - start},
+                "link_relation": _LINK_RELATION["derivatives"],
+            },
+        )
+
+    return {"status": "success", "ark": ark, **result}
+
+
+def convert(ark, opts={}):
+    """Convert one page of every source PDF's rasterized image to another format.
+
+    Ad hoc — writes standalone `derivatives/page-NNN/converted.<ext>` file(s).
+
+    :param str ark: Item ARK identifier.
+    :param dict opts: 'page' (int, default 0), 'format' (str, default
+        CONFIG["image"]["convert_format"]), 'quality' (int).
+    :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
+    :rtype: dict
+    """
+    page = opts.get("page", 0)
+    fmt = opts.get("format", CONFIG["image"]["convert_format"])
+    ext = pipeline.EXTENSION_BY_FORMAT.get(fmt.lower(), f".{fmt.lower()}")
+    item = items.resolve(ark)
+    pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
+    start = time.monotonic()
+    multi = len(pdf_paths) > 1
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pdf_paths})
+        local_outputs = []
+        for src in sources:
+            raster_path = _rasterize(src["local_path"], page, tmp_dir, src["stem"], f"page-{page:03d}", opts)
+            filename = pipeline.output_name(src["stem"], f"converted{ext}", multi)
+            local_dest = os.path.join(tmp_dir, filename)
+            image_magick.convert_format(raster_path, local_dest, opts={"quality": opts.get("quality", CONFIG["image"]["thumbnail_quality"])})
+            local_outputs.append((filename, local_dest, src["bronze_path"]))
+
+        result = pipeline.publish(
+            item, f"derivatives/page-{page:03d}", local_outputs,
+            command=["digtk", "pdf", "convert", ark, "--page", str(page), "--format", fmt],
+            params={"page": page, "format": fmt},
+            opts={
+                "manifest_opts": {"duration_s": time.monotonic() - start},
+                "link_relation": _LINK_RELATION["derivatives"],
+            },
+        )
+
+    return {"status": "success", "ark": ark, **result}
+
+
+def deskew(ark, opts={}):
+    """Apply a single deterministic deskew pass to one page of every source PDF.
+
+    Ad hoc — derivatives()'s OCR comparison is what actually decides deskew for the
+    published derivative set; this is a fixed single pass for manual testing.
+
+    :param str ark: Item ARK identifier.
+    :param dict opts: 'page' (int, default 0), forwarded to image_magick.deskew()
+        (threshold, working_width, output_width, quality).
+    :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
+    :rtype: dict
+    """
+    page = opts.get("page", 0)
+    item = items.resolve(ark)
+    pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
+    start = time.monotonic()
+    multi = len(pdf_paths) > 1
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pdf_paths})
+        local_outputs = []
+        for src in sources:
+            raster_path = _rasterize(src["local_path"], page, tmp_dir, src["stem"], f"page-{page:03d}", opts)
+            filename = pipeline.output_name(src["stem"], "deskewed.jpg", multi)
+            local_dest = os.path.join(tmp_dir, filename)
+            image_magick.deskew(raster_path, local_dest, opts=opts)
+            local_outputs.append((filename, local_dest, src["bronze_path"]))
+
+        result = pipeline.publish(
+            item, f"derivatives/page-{page:03d}", local_outputs,
+            command=["digtk", "pdf", "deskew", ark, "--page", str(page)],
+            params={k: v for k, v in opts.items() if k in ("page", "threshold", "working_width", "output_width", "quality")},
+            opts={
+                "manifest_opts": {"duration_s": time.monotonic() - start},
+                "link_relation": _LINK_RELATION["derivatives"],
+            },
+        )
+
+    return {"status": "success", "ark": ark, **result}
+
+
+def prep_ocr(ark, opts={}):
+    """Generate a single OCR-prep image for one page of every source PDF.
+
+    Ad hoc — derivatives()'s orientation comparison produces the actual published prep
+    image(s); this is a fixed single pass (deskewed or not, per opts) for manual testing.
+
+    :param str ark: Item ARK identifier.
+    :param dict opts: 'page' (int, default 0), forwarded to image_magick.prep_ocr()
+        (size, dpi, fuzz, quality, deskew, threshold).
+    :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
+    :rtype: dict
+    """
+    page = opts.get("page", 0)
+    item = items.resolve(ark)
+    pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
+    start = time.monotonic()
+    multi = len(pdf_paths) > 1
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pdf_paths})
+        local_outputs = []
+        for src in sources:
+            raster_path = _rasterize(src["local_path"], page, tmp_dir, src["stem"], f"page-{page:03d}", opts)
+            base_name = "prep-deskew.jpg" if opts.get("deskew") else "prep.jpg"
+            filename = pipeline.output_name(src["stem"], base_name, multi)
+            local_dest = os.path.join(tmp_dir, filename)
+            image_magick.prep_ocr(raster_path, local_dest, opts=opts)
+            local_outputs.append((filename, local_dest, src["bronze_path"]))
+
+        result = pipeline.publish(
+            item, f"ocr/page-{page:03d}", local_outputs,
+            command=["digtk", "pdf", "prep-ocr", ark, "--page", str(page)],
+            params={k: v for k, v in opts.items() if k in ("page", "deskew", "dpi", "fuzz", "quality", "size", "threshold")},
+            opts={
+                "manifest_opts": {"duration_s": time.monotonic() - start},
+                "link_relation": _LINK_RELATION["ocr"],
+            },
+        )
+
+    return {"status": "success", "ark": ark, **result}
+
+
+def derivatives(ark, opts={}):
+    """Generate the full derivative set for every page of every source PDF in the
+    item — the umbrella `digtk pdf derivatives` calls.
+
+    For each source PDF: rasterizes every page, decides scan orientation independently
+    per page via a real OCR comparison (same digtk.models.digital_website.pipeline primitive
+    the image pipeline uses), then applies each page's own decision to its own thumbnail
+    set and OCR-prep image. Each page publishes into its own derivatives/page-NNN and
+    ocr/page-NNN silver subdirectory (multi-PDF items additionally nest by source stem),
+    plus one aggregate manifest per source PDF summarizing every page's orientation
+    decision. All local generation happens before anything is published to CaskFS, so a
+    failure at any step leaves no partial derivative set behind for that PDF.
+
+    :param str ark: Item ARK identifier.
+    :param dict opts: 'widths' (comma-separated str, default
+        CONFIG["image"]["thumbnail_widths"]); forwarded to pdf_render/image_magick/ocr_utils:
+        'target_pixel_width', 'default_density', 'quality', 'dpi', 'fuzz', 'threshold', etc.
+    :returns: {"status": "success", "ark": str, "pdfs": {stem: {"pages": int,
+        "derivatives": {...}, "ocr": {...}, "orientation": {page_tag: {...}}}}}
+    :rtype: dict
+    """
+    widths = pipeline.parse_widths(opts.get("widths", CONFIG["image"]["thumbnail_widths"]))
+    item = items.resolve(ark)
+    pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
+    start = time.monotonic()
+    multi_pdf = len(pdf_paths) > 1
+
+    pdfs_result = {}
+    image_objects = []
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pdf_paths})
+        total_pdfs = len(sources)
+
+        for pdf_i, src in enumerate(sources, start=1):
+            stem = src["stem"]
+            pdf_path = src["local_path"]
+            prefix = f"{stem}/" if multi_pdf else ""
+            count = pdf_render.page_count(pdf_path, opts)
+            utils.log(f"[{pdf_i}/{total_pdfs}] {stem}: {count} page(s)")
+
+            orientations = {}
+            derivatives_pages = []
+            ocr_pages = []
+
+            for page_index in range(count):
+                page_tag = _page_tag(page_index, count)
+                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} {page_tag}: rasterizing...")
+                raster_path = _rasterize(pdf_path, page_index, tmp_dir, stem, page_tag, opts)
+
+                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} {page_tag}: deciding orientation (running OCR twice)...")
+                orientation = pipeline.select_orientation(raster_path, tmp_dir, opts)
+                apply_deskew = orientation["deskew"]
+                orientations[page_tag] = orientation
+
+                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} {page_tag}: generating {len(widths)} thumbnail(s)...")
+                thumb_set = pipeline.generate_thumbnail_set(
+                    raster_path, tmp_dir, widths, page_tag, False, {**opts, "deskew": apply_deskew}
+                )
+                thumb_outputs = [(filename, local_path, src["bronze_path"]) for filename, local_path in thumb_set]
+
+                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} {page_tag}: generating OCR-prep image...")
+                base_prep_name = "prep-deskew.jpg" if apply_deskew else "prep.jpg"
+                prep_path = os.path.join(tmp_dir, f"{stem}-{page_tag}-{base_prep_name}")
+                image_magick.prep_ocr(raster_path, prep_path, opts={**opts, "deskew": apply_deskew})
+
+                command = ["digtk", "pdf", "derivatives", ark, "--widths", ",".join(map(str, widths))]
+                derivatives_result = pipeline.publish(
+                    item, f"{prefix}derivatives/{page_tag}", thumb_outputs,
+                    command=command,
+                    params={"widths": widths, "page": page_index, "orientation": {"deskew_selected": apply_deskew, "stats": orientation["stats"]}},
+                    opts={"link_relation": _LINK_RELATION["derivatives"]},
+                )
+                ocr_result = pipeline.publish(
+                    item, f"{prefix}ocr/{page_tag}", [(os.path.basename(prep_path), prep_path, src["bronze_path"])],
+                    command=command,
+                    params={"page": page_index, "orientation": {"deskew_selected": apply_deskew}},
+                    opts={"link_relation": _LINK_RELATION["ocr"]},
+                )
+
+                for filename, local_path in thumb_set:
+                    dims = image_magick.probe_dimensions(local_path)
+                    image_objects.append({
+                        "@type": "ImageObject",
+                        "contentUrl": pipeline.cask_public_ref(f"{derivatives_result['dir']}/{filename}"),
+                        "encodingFormat": "image/jpeg",
+                        "position": page_index,
+                        **dims,
+                    })
+                derivatives_pages.append(derivatives_result)
+                ocr_pages.append(ocr_result)
+                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} {page_tag}: done")
+
+            duration_s = time.monotonic() - start
+            agg_rel_path = f"{item.item_path}/{prefix}derivatives" if item.item_path else f"{prefix}derivatives"
+            agg_ocr_rel_path = f"{item.item_path}/{prefix}ocr" if item.item_path else f"{prefix}ocr"
+            manifest_opts = {"group": item.group, "time": item.time, "duration_s": duration_s}
+
+            derivatives_manifest = utils.write_manifest(
+                item.collection, agg_rel_path,
+                command=["digtk", "pdf", "derivatives", ark, "--widths", ",".join(map(str, widths))],
+                params={"pages": count, "widths": widths, "orientation": {
+                    tag: {"deskew_selected": o["deskew"], "stats": o["stats"]} for tag, o in orientations.items()
+                }},
+                outputs=[f"{tag}/" for tag in orientations],
+                source_files=[src["bronze_path"]],
+                opts=manifest_opts,
+            )
+            ocr_manifest = utils.write_manifest(
+                item.collection, agg_ocr_rel_path,
+                command=["digtk", "pdf", "derivatives", ark],
+                params={"pages": count, "orientation": {tag: {"deskew_selected": o["deskew"]} for tag, o in orientations.items()}},
+                outputs=[f"{tag}/" for tag in orientations],
+                source_files=[src["bronze_path"]],
+                opts=manifest_opts,
+            )
+
+            pdfs_result[stem] = {
+                "pages": count,
+                "derivatives": {"pages": derivatives_pages, "manifest": derivatives_manifest},
+                "ocr": {"pages": ocr_pages, "manifest": ocr_manifest},
+                "orientation": orientations,
+            }
+
+        utils.log("Updating associated-media sidecar...")
+        pipeline.update_associated_media(item, image_objects, [src["bronze_path"] for src in sources], "pdf")
+
+    return {"status": "success", "ark": ark, "pdfs": pdfs_result}

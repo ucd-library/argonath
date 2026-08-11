@@ -99,6 +99,12 @@ def generate_derivatives(context: dg.AssetExecutionContext, config: DerivativesC
     applies that single decision consistently across every output — see
     docs/cask-conventions.md's "Scan Orientation" section.
 
+    Assumes this partition's item is an image item — there's no Dagster-level
+    routing by media type yet. PDF/video/audio items are processed by invoking
+    `digtk pdf/video/audio derivatives` directly (see docs/cask-conventions.md's
+    "Multi-Format Items" section); wiring that into Dagster is a deliberately
+    separate, not-yet-scoped piece of work.
+
     :param context: Dagster asset execution context.
     :param config: DerivativesConfig with thumbnail widths.
     """
