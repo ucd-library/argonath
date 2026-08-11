@@ -26,6 +26,17 @@ EXTENSION_BY_FORMAT = {
     "tiff": ".tif", "tif": ".tif", "webp": ".webp", "gif": ".gif",
 }
 
+# Top-level silver subdirectory for the small/medium/large product set image.py and
+# pdf.py publish for frontend consumption — distinct from "derivatives" (the older,
+# flatter name) to make clear this is specifically the public-facing product line, not
+# every kind of derived artifact (OCR-prep images, AI metadata, etc. still live in
+# their own top-level dirs). See docs/cask-conventions.md's Silver Layout section.
+PUBLIC_FRONTEND_DIR = "public-frontend-derivatives"
+
+# generate_thumbnail_set() always produces exactly these three, ascending by width —
+# a fixed semantic-size product line rather than one file per configured pixel width.
+THUMBNAIL_SIZE_LABELS = ["small", "medium", "large"]
+
 # An item's bronze binaries can legitimately span more than one media format — e.g. an
 # archival transfer supplying both a compiled PDF and per-page TIFF masters for the same
 # physical document (both supplied directly by the archiving team, neither derived from
@@ -79,16 +90,6 @@ def parse_widths(widths):
     if isinstance(widths, str):
         widths = [int(w.strip()) for w in widths.split(",")]
     return sorted(widths)
-
-
-def thumbnail_filename(width, widths):
-    """The largest configured width is the "web" derivative; the rest are "thumb"s.
-
-    :param int width: Width to name.
-    :param list[int] widths: Full set of widths being generated.
-    :rtype: str
-    """
-    return f"web-{width}.jpg" if width == max(widths) else f"thumb-{width}.jpg"
 
 
 def output_name(stem, base_name, multi):
@@ -268,25 +269,38 @@ def update_associated_media(item, media_objects, source_files, source_group):
     return doc
 
 
-def generate_thumbnail_set(local_src, tmp_dir, widths, stem, multi, opts={}):
-    """Generate one resized JPEG per configured width, all sharing the same orientation.
+def generate_thumbnail_set(local_src, tmp_dir, widths, stem, opts={}):
+    """Generate small/medium/large JPEGs, all sharing the same orientation.
+
+    Each source now publishes into its own nested directory (see PUBLIC_FRONTEND_DIR
+    and docs/cask-conventions.md's Silver Layout section), so the published filename no
+    longer needs multi-source disambiguation — it's always exactly "small.jpg",
+    "medium.jpg", "large.jpg". `stem` is still used to keep local scratch files apart,
+    since multiple sources' generation still shares one `tmp_dir` during a single
+    command invocation even though each publishes to its own remote directory.
 
     :param str local_src: Local path to the staged source image (or a rasterized PDF page).
     :param str tmp_dir: Local directory to write outputs into.
-    :param list[int] widths: Widths to generate.
-    :param str stem: Source's filename stem, for multi-source disambiguation.
-    :param bool multi: True if this item has more than one source.
+    :param list[int] widths: Exactly 3 widths (ascending -> small, medium, large).
+    :param str stem: Disambiguates this source's local scratch filenames from any other
+        source sharing tmp_dir; never appears in the returned (published) filename.
     :param dict opts: 'deskew' (bool, default False) applies the deskew recipe to every
         width instead of a plain resize; 'quality' forwarded to image_magick.
-    :returns: (filename, local_path) pairs, one per width.
+    :returns: (filename, local_path) pairs — filename is "small.jpg"/"medium.jpg"/
+        "large.jpg", local_path is a stem-disambiguated scratch path.
     :rtype: list[tuple[str, str]]
+    :raises ValueError: If widths doesn't have exactly 3 entries.
     """
+    if len(widths) != 3:
+        raise ValueError(
+            f"generate_thumbnail_set() requires exactly 3 widths (small/medium/large), got {widths}"
+        )
     quality = opts.get("quality", CONFIG["image"]["thumbnail_quality"])
     apply_deskew = opts.get("deskew", False)
     outputs = []
-    for width in widths:
-        filename = output_name(stem, thumbnail_filename(width, widths), multi)
-        local_path = os.path.join(tmp_dir, filename)
+    for label, width in zip(THUMBNAIL_SIZE_LABELS, widths):
+        filename = f"{label}.jpg"
+        local_path = os.path.join(tmp_dir, f"{stem}-{label}.jpg")
         if apply_deskew:
             image_magick.deskew(local_src, local_path, opts={**opts, "output_width": width, "quality": quality})
         else:

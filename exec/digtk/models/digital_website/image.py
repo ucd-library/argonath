@@ -49,51 +49,56 @@ _LINK_RELATION_BY_SUBDIR = {
 
 
 def thumbnails(ark, opts={}):
-    """Generate thumbnail (+ web) JPEGs at each configured width, for every
-    source image in the item.
+    """Generate small/medium/large JPEGs, for every source image in the item.
 
     Standalone, deterministic — no orientation comparison. For ad-hoc/manual
     use; generate() is what Dagster's derivatives_job actually calls.
 
+    Each source publishes into its own nested directory, keyed by its own bronze
+    filename (see PUBLIC_FRONTEND_DIR and docs/cask-conventions.md's Silver Layout
+    section) — e.g. `public-frontend-derivatives/images/page_100.tif/images/`.
+
     :param str ark: Item ARK identifier.
     :param dict opts: 'widths' (comma-separated str, default
-        CONFIG["image"]["thumbnail_widths"]), 'quality' (int).
-    :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
+        CONFIG["image"]["thumbnail_widths"]) — must resolve to exactly 3 widths
+        (small/medium/large), 'quality' (int).
+    :returns: {"status": "success", "ark": str, "images": {filename: {"dir": str,
+        "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
     widths = pipeline.parse_widths(opts.get("widths", CONFIG["image"]["thumbnail_widths"]))
     item = items.resolve(ark)
     image_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "image")
     start = time.monotonic()
-    multi = len(image_paths) > 1
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": image_paths})
         total = len(sources)
-        local_outputs = []
+        images = {}
         for i, src in enumerate(sources, start=1):
-            utils.log(f"[{i}/{total}] {src['stem']}: generating {len(widths)} thumbnail(s)...")
-            thumb_set = pipeline.generate_thumbnail_set(src["local_path"], tmp_dir, widths, src["stem"], multi, opts)
-            local_outputs += [(filename, local_path, src["bronze_path"]) for filename, local_path in thumb_set]
+            filename = os.path.basename(src["bronze_path"])
+            utils.log(f"[{i}/{total}] {filename}: generating {len(widths)} thumbnail(s)...")
+            thumb_set = pipeline.generate_thumbnail_set(src["local_path"], tmp_dir, widths, src["stem"], opts)
+            local_outputs = [(fn, local_path, src["bronze_path"]) for fn, local_path in thumb_set]
 
-        result = pipeline.publish(
-            item, "derivatives", local_outputs,
-            command=["digtk", "image", "thumbnail", ark, "--widths", ",".join(map(str, widths))],
-            params={"widths": widths},
-            opts={
-                "manifest_opts": {"duration_s": time.monotonic() - start},
-                "link_relation": _LINK_RELATION_BY_SUBDIR["derivatives"],
-            },
-        )
+            images[filename] = pipeline.publish(
+                item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images", local_outputs,
+                command=["digtk", "image", "thumbnail", ark, "--widths", ",".join(map(str, widths))],
+                params={"widths": widths},
+                opts={
+                    "manifest_opts": {"duration_s": time.monotonic() - start},
+                    "link_relation": _LINK_RELATION_BY_SUBDIR["derivatives"],
+                },
+            )
 
-    return {"status": "success", "ark": ark, **result}
+    return {"status": "success", "ark": ark, "images": images}
 
 
 def convert(ark, opts={}):
     """Convert every source image's binary to another format.
 
-    Ad hoc — writes standalone `derivatives/converted.<ext>` file(s), not part of
-    generate()'s standard derivative set.
+    Ad hoc — writes standalone `public-frontend-derivatives/converted.<ext>` file(s),
+    not part of generate()'s standard derivative set.
 
     :param str ark: Item ARK identifier.
     :param dict opts: 'format' (str, default CONFIG["image"]["convert_format"]), 'quality' (int).
@@ -119,7 +124,7 @@ def convert(ark, opts={}):
             local_outputs.append((filename, local_dest, src["bronze_path"]))
 
         result = pipeline.publish(
-            item, "derivatives", local_outputs,
+            item, pipeline.PUBLIC_FRONTEND_DIR, local_outputs,
             command=["digtk", "image", "convert", ark, "--format", fmt],
             params={"format": fmt},
             opts={
@@ -160,7 +165,7 @@ def deskew(ark, opts={}):
             local_outputs.append((filename, local_dest, src["bronze_path"]))
 
         result = pipeline.publish(
-            item, "derivatives", local_outputs,
+            item, pipeline.PUBLIC_FRONTEND_DIR, local_outputs,
             command=["digtk", "image", "deskew", ark],
             params={k: v for k, v in opts.items() if k in ("threshold", "working_width", "output_width", "quality")},
             opts={
@@ -220,18 +225,23 @@ def generate(ark, opts={}):
 
     Stages every source image once, decides scan orientation independently per
     image via a real OCR comparison (pipeline.select_orientation), then applies
-    each image's own decision to its own thumbnail set and OCR-prep image. All
-    images' outputs accumulate into one combined derivatives/ publish and one
-    combined ocr/ publish (matching the item's single derivatives/ and ocr/
-    directories — no per-image subdirectory nesting). All local generation
-    happens before anything is published to CaskFS, so a failure at any step
-    leaves no partial derivative set behind.
+    each image's own decision to its own thumbnail set and OCR-prep image. Each
+    image's small/medium/large set, plus a pyramidal tiled TIFF for IIIF-style
+    deep-zoom serving (digtk.lib.image_magick.tile() — generation only, no serving
+    side wired up yet, see docs/cask-conventions.md's "Deep-Zoom Tiles" section),
+    publish together into one nested directory, keyed by its own bronze filename
+    (see PUBLIC_FRONTEND_DIR and docs/cask-conventions.md's Silver Layout section);
+    OCR-prep images still accumulate into one combined ocr/ publish, unaffected by
+    this. All local generation happens before anything is published to CaskFS, so
+    a failure at any step leaves no partial derivative set behind.
 
     :param str ark: Item ARK identifier.
     :param dict opts: 'widths' (comma-separated str, default
-        CONFIG["image"]["thumbnail_widths"]); forwarded to image_magick/ocr_utils:
-        'quality', 'dpi', 'fuzz', 'threshold', etc.
-    :returns: {"status": "success", "ark": str, "derivatives": {...}, "ocr": {...},
+        CONFIG["image"]["thumbnail_widths"]) — must resolve to exactly 3 widths
+        (small/medium/large); forwarded to image_magick/ocr_utils: 'quality', 'dpi',
+        'fuzz', 'threshold', etc.
+    :returns: {"status": "success", "ark": str, "derivatives": {filename: {"dir": str,
+        "outputs": [...], "manifest": {...}}}, "ocr": {...},
         "orientation": {stem: {"deskew": bool, "stats": {...}}, ...}}
     :rtype: dict
     """
@@ -245,12 +255,15 @@ def generate(ark, opts={}):
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": image_paths})
         total = len(sources)
 
-        thumb_outputs = []
+        derivatives_results = {}
         ocr_outputs = []
         orientations = {}
+        image_objects = []
+        command = ["digtk", "image", "derivatives", ark, "--widths", ",".join(map(str, widths))]
 
         for i, src in enumerate(sources, start=1):
             stem = src["stem"]
+            filename = os.path.basename(src["bronze_path"])
             utils.log(f"[{i}/{total}] {stem}: deciding orientation (running OCR twice)...")
             orientation = pipeline.select_orientation(src["local_path"], tmp_dir, opts)
             apply_deskew = orientation["deskew"]
@@ -259,9 +272,26 @@ def generate(ark, opts={}):
 
             utils.log(f"[{i}/{total}] {stem}: generating {len(widths)} thumbnail(s)...")
             thumb_set = pipeline.generate_thumbnail_set(
-                src["local_path"], tmp_dir, widths, stem, multi, {**opts, "deskew": apply_deskew}
+                src["local_path"], tmp_dir, widths, stem, {**opts, "deskew": apply_deskew}
             )
-            thumb_outputs += [(filename, local_path, src["bronze_path"]) for filename, local_path in thumb_set]
+            thumb_outputs = [(fn, local_path, src["bronze_path"]) for fn, local_path in thumb_set]
+
+            utils.log(f"[{i}/{total}] {stem}: generating tiled pyramid TIFF...")
+            tile_dest = os.path.join(tmp_dir, f"{stem}-tiled.tif")
+            image_magick.tile(src["local_path"], tile_dest, opts)
+            thumb_outputs.append(("tiled.tif", tile_dest, src["bronze_path"]))
+
+            utils.log(f"[{i}/{total}] {stem}: publishing derivative set...")
+            derivatives_result = pipeline.publish(
+                item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images", thumb_outputs,
+                command=command,
+                params={
+                    "widths": widths,
+                    "orientation": {"deskew_selected": apply_deskew, "stats": orientation["stats"]},
+                },
+                opts={"link_relation": _LINK_RELATION_BY_SUBDIR["derivatives"]},
+            )
+            derivatives_results[filename] = derivatives_result
 
             utils.log(f"[{i}/{total}] {stem}: generating OCR-prep image...")
             base_prep_name = "prep-deskew.jpg" if apply_deskew else "prep.jpg"
@@ -269,27 +299,18 @@ def generate(ark, opts={}):
             prep_path = os.path.join(tmp_dir, prep_filename)
             image_magick.prep_ocr(src["local_path"], prep_path, opts={**opts, "deskew": apply_deskew})
             ocr_outputs.append((prep_filename, prep_path, src["bronze_path"]))
+
+            for fn, local_path in thumb_set:
+                dims = image_magick.probe_dimensions(local_path)
+                image_objects.append({
+                    "@type": "ImageObject",
+                    "contentUrl": pipeline.cask_public_ref(f"{derivatives_result['dir']}/{fn}"),
+                    "encodingFormat": "image/jpeg",
+                    **dims,
+                })
             utils.log(f"[{i}/{total}] {stem}: done")
 
         duration_s = time.monotonic() - start
-        command = ["digtk", "image", "derivatives", ark, "--widths", ",".join(map(str, widths))]
-
-        utils.log(f"Publishing {len(thumb_outputs)} derivative file(s)...")
-        derivatives_result = pipeline.publish(
-            item, "derivatives", thumb_outputs,
-            command=command,
-            params={
-                "widths": widths,
-                "orientation": {
-                    stem: {"deskew_selected": o["deskew"], "stats": o["stats"]}
-                    for stem, o in orientations.items()
-                },
-            },
-            opts={
-                "manifest_opts": {"duration_s": duration_s},
-                "link_relation": _LINK_RELATION_BY_SUBDIR["derivatives"],
-            },
-        )
         utils.log(f"Publishing {len(ocr_outputs)} OCR-prep file(s)...")
         ocr_result = pipeline.publish(
             item, "ocr", ocr_outputs,
@@ -307,21 +328,12 @@ def generate(ark, opts={}):
         )
 
         utils.log("Updating associated-media sidecar...")
-        image_objects = []
-        for filename, local_path, _source_bronze_path in thumb_outputs:
-            dims = image_magick.probe_dimensions(local_path)
-            image_objects.append({
-                "@type": "ImageObject",
-                "contentUrl": pipeline.cask_public_ref(f"{derivatives_result['dir']}/{filename}"),
-                "encodingFormat": "image/jpeg",
-                **dims,
-            })
         pipeline.update_associated_media(item, image_objects, [src["bronze_path"] for src in sources], "image")
 
     return {
         "status": "success",
         "ark": ark,
-        "derivatives": derivatives_result,
+        "derivatives": derivatives_results,
         "ocr": ocr_result,
         "orientation": orientations,
     }

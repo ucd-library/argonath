@@ -7,10 +7,11 @@ Subcommands:
   deskew       — correct skew in scanned images
   prep-ocr     — prepare image for OCR (2048px, 300 DPI, fuzz whiten)
   derivatives  — generate the full derivative set with orientation auto-detection
-                 (thumbnails, deskew, OCR-prep, all sharing one OCR-driven orientation
-                 decision) — this is what Dagster's derivatives_job actually calls;
-                 the others above are deterministic single-recipe commands for
-                 ad-hoc/manual use.
+                 (thumbnails, deskew, OCR-prep, a tiled pyramid TIFF for future
+                 IIIF-style deep-zoom serving, all sharing one OCR-driven
+                 orientation decision) — this is what Dagster's derivatives_job
+                 actually calls; the others above are deterministic single-recipe
+                 commands for ad-hoc/manual use.
 """
 from typing import Annotated
 

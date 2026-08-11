@@ -15,6 +15,7 @@ RUN apt-get update && \
     tesseract-ocr-eng \
     imagemagick \
     ghostscript \
+    poppler-utils \
     ffmpeg \
     libmagic1 \
     postgresql-client-16 && \

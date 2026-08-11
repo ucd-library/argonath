@@ -74,11 +74,14 @@ Mirrors the bronze path exactly (`[group]/[collection]/[time]/[item]/`) but hold
 ```
 silver/[group]/[collection]/[time]/[item]/
 ├── item.jsonld.json            # domain: associatedMedia refs to the derivatives below
-├── derivatives/
-│   ├── manifest.json
-│   ├── thumb-256.jpg
-│   ├── thumb-512.jpg
-│   └── web-1024.jpg
+├── public-frontend-derivatives/
+│   └── images/
+│       └── photograph.tiff/    # named after the source's own bronze filename
+│           └── images/
+│               ├── manifest.json
+│               ├── small.jpg
+│               ├── medium.jpg
+│               └── large.jpg
 ├── ocr/
 │   ├── manifest.json
 │   ├── prep.jpg                # OCR-ready image: resized, 300 DPI, fuzz-whitened.
@@ -96,10 +99,21 @@ silver/[group]/[collection]/[time]/[item]/
     └── chunks.json                # text chunks + embedding IDs
 ```
 
-This is the layout for an **image** bronze item. `derivatives/` and `ocr/` are reused
-(not media-specific) across image, PDF, video, and audio items alike — see the
-PDF/video/audio subsections below for how each format's own outputs land there, plus
-the `stream/` and `captions/` subdirectories video/audio items add.
+This is the layout for an **image** bronze item. `public-frontend-derivatives/` holds
+the small/medium/large product set every image and PDF page publishes for frontend
+consumption — see "PDF Pagination" below for how a PDF's pages nest under it
+differently than a plain image does. `ocr/` is reused (not media-specific) across
+image, PDF, video, and audio items alike — see the PDF/video/audio subsections below
+for how each format's own outputs land there, plus the `stream/` and `captions/`
+subdirectories video/audio items add. (Video and audio derivatives still use the
+older flat `derivatives/` name for now — see their subsections below.)
+
+Every source image gets its own nested directory under `public-frontend-derivatives/
+images/`, named after its own bronze filename — this holds regardless of whether the
+item has one source image or several, so there's no filename-prefixing scheme to
+disambiguate a multi-image item; each source's small/medium/large set and manifest
+just live in their own directory instead. `ocr/`, `metadata/`, and `rag/` are
+unaffected by this and remain flat, shared directories.
 
 ### Scan Orientation
 
@@ -110,8 +124,9 @@ against each, and keeps whichever has both a higher word count and a higher (or
 equal) median confidence. That single decision is then applied consistently to
 every thumbnail width and to the published OCR-prep image, so an item is never
 right-side-up in one derivative and skewed in another. The decision and the
-comparison stats that drove it are recorded in `derivatives/manifest.json`'s
-`params` (`deskew_selected`, `orientation_stats`) for auditability.
+comparison stats that drove it are recorded in each source's own
+`public-frontend-derivatives/images/<filename>/images/manifest.json`'s `params`
+(`deskew_selected`, `stats`) for auditability.
 
 This comparison logic lives in `digtk.lib.ocr_utils` and is deliberately shared,
 not derivatives-specific: the (separate, later) OCR phase's own `digtk ocr
@@ -152,15 +167,22 @@ pipeline against the same item leaves both sets of associatedMedia entries in
 normalized to a fixed target pixel width regardless of the PDF's native page size),
 then runs each rasterized page through the same thumbnail/deskew/OCR-prep pipeline
 described above for images — a rasterized page is just a local image file by that
-point. Each page publishes into its own zero-padded subdirectory:
+point. Each source PDF gets its own directory under `public-frontend-derivatives/`,
+named after its own bronze filename (sibling to `images/`, not nested inside it —
+a PDF is a different kind of source than a plain image); within that, each page
+publishes into its own plain 1-indexed subdirectory:
 
 ```
 silver/[group]/[collection]/[time]/[item]/
-├── item.jsonld.json          # associatedMedia: one ImageObject per page, "position": N
-├── derivatives/
-│   ├── manifest.json          # aggregate: page count, per-page orientation summary
-│   ├── page-000/{manifest.json, thumb-256.jpg, thumb-512.jpg, web-1024.jpg}
-│   └── page-001/...
+├── item.jsonld.json                 # associatedMedia: one ImageObject per page, "position": N
+├── public-frontend-derivatives/
+│   ├── images/                      # sibling to document.pdf/ below — holds plain image sources
+│   │   └── ...
+│   └── document.pdf/                # named after the source's own bronze filename
+│       └── images/
+│           ├── manifest.json         # aggregate: page count, per-page orientation summary
+│           ├── 1/{manifest.json, small.jpg, medium.jpg, large.jpg}
+│           └── 2/...
 └── ocr/
     ├── manifest.json
     ├── page-000/{manifest.json, prep.jpg or prep-deskew.jpg}
@@ -168,14 +190,62 @@ silver/[group]/[collection]/[time]/[item]/
 ```
 
 **One ARK covers the whole PDF; pages are never independently ARK-addressable.**
-`page-NNN` is purely an internal derivative-generation detail — the PDF binary
-itself remains the source of record (no page gets an "original" reference the way a
-plain image derivative would). This is a deliberately different, lighter-weight
-model than the "Multi-Part Items" convention below, which mints a real ARK per part
-for cases that need independently citable/searchable pages. Use `parts/` when a
-document's individual pages need their own identity; use plain PDF pagination when
-they don't. A rare multi-PDF item (more than one PDF sharing an ARK) additionally
-nests by source filename stem: `derivatives/{stem}/page-000/...`.
+The plain 1-indexed page directory (`1/`, `2/`, ...) is purely an internal
+derivative-generation detail — the PDF binary itself remains the source of record
+(no page gets an "original" reference the way a plain image derivative would). This
+is a deliberately different, lighter-weight model than the "Multi-Part Items"
+convention below, which mints a real ARK per part for cases that need independently
+citable/searchable pages. Use `parts/` when a document's individual pages need their
+own identity; use plain PDF pagination when they don't.
+
+OCR-prep images are unaffected by this restructuring and still publish under the
+older zero-padded `ocr/page-NNN` scheme, with their own separate aggregate manifest
+at `ocr/manifest.json` — the two aggregate manifests (`.../images/manifest.json` for
+the small/medium/large set, `ocr/manifest.json` for OCR-prep) summarize the same
+per-page orientation decisions independently, since they're published as separate
+`digtk.lib.derivative.write()` calls. A rare multi-PDF item (more than one PDF
+sharing an ARK) is disambiguated for free by this scheme — each PDF's own filename
+is already its own top-level directory name, so no additional stem-prefixing is
+needed there. OCR's flat `page-NNN` naming still nests by source filename stem in
+that case: `{stem}/ocr/page-000/...`.
+
+### Deep-Zoom Tiles
+
+`digtk image derivatives`/`digtk pdf derivatives` generate a pyramidal
+(multi-resolution), tiled TIFF via ImageMagick's `ptif:` output coder as part of
+their standard set — ported byte-for-byte from the reference
+dams/services/image-utils pipeline's `generate-image-products.sh`
+(`TILED_TIF_OPTS`: 256px tiles, JPEG-compressed, capped at 3072px wide). Intended
+for IIIF-style deep-zoom viewing (the legacy system served these through IIPImage
+Server + a Leaflet frontend), but **generation only for now** — there's no IIIF
+Image API server wired up in argonath yet, so these tiles aren't servable to
+anything until that separate infrastructure piece exists.
+
+Publishes as `tiled.tif`, alongside (not in a separate directory from) the
+small/medium/large set, sharing that directory's manifest:
+
+```
+silver/[group]/[collection]/[time]/[item]/
+└── public-frontend-derivatives/
+    ├── images/
+    │   └── photograph.tiff/
+    │       └── images/{manifest.json, small.jpg, medium.jpg, large.jpg, tiled.tif}
+    └── document.pdf/
+        └── images/1/{manifest.json, small.jpg, medium.jpg, large.jpg, tiled.tif}
+```
+
+Runs on the full-resolution source (or, for a PDF, the full-resolution rasterized
+page from `digtk.lib.pdf_render`) — not a downscaled derivative, and independent
+of that source's own deskew decision — matching the reference pipeline exactly.
+`tiled.tif` isn't represented as its own `associatedMedia` entry (it's a TIFF
+pyramid, not a flat viewable JPEG like the others) — only the small/medium/large
+set gets ImageObject entries.
+
+`digtk.lib.image_magick.tile()` is still available directly for anyone scripting
+around this, but there's no standalone `digtk image|pdf tile` command — running
+just the tile step alone would overwrite that directory's manifest with one
+describing only `tiled.tif`, so regenerating it is a `derivatives()`/`generate()`
+re-run.
 
 ### Video Streaming and Poster Frames
 
@@ -281,11 +351,11 @@ like any other, linked to its site's collection ARK via `isPartOf`. No separate
 modeling is needed for website hierarchy versus multi-part archival items.
 
 **Not the same thing as PDF pagination** (see "PDF Pagination" above): a PDF
-bronze item's pages are `derivatives/page-NNN`/`ocr/page-NNN` subdirectories under
-one ARK, with no per-page ARK and no `parts/` — a lighter-weight model for pages
-that don't need independent identity. Use this `parts/` convention instead when
-individual pages/parts genuinely need their own ARK (independently citable,
-searchable, or RAG-indexable).
+bronze item's pages are `public-frontend-derivatives/<pdf-filename>/images/<n>`/
+`ocr/page-NNN` subdirectories under one ARK, with no per-page ARK and no `parts/` —
+a lighter-weight model for pages that don't need independent identity. Use this
+`parts/` convention instead when individual pages/parts genuinely need their own
+ARK (independently citable, searchable, or RAG-indexable).
 
 ## Structural vs. Domain Metadata
 
@@ -352,7 +422,7 @@ directory:
   "status": "success",
   "command": ["digtk", "image", "thumbnail", "ark:/87287/d7abc1234", "--widths", "256,512,1024"],
   "params": { "widths": [256, 512, 1024] },
-  "outputs": ["thumb-256.jpg", "thumb-512.jpg", "web-1024.jpg"],
+  "outputs": ["small.jpg", "medium.jpg", "large.jpg"],
   "duration_s": 1.4
 }
 ```

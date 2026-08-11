@@ -1,4 +1,5 @@
 import json
+import os
 from contextlib import contextmanager
 
 import pytest
@@ -8,6 +9,7 @@ from digtk.models.digital_website import pipeline
 from digtk.models.digital_website import image as dw
 
 ARK = "ark:/87287/d7abc1234"
+WIDTHS = "256,512,1024"
 
 ITEM = ItemLocation(
     ark=ARK, group="g", collection="c", time="latest", item_path="item",
@@ -80,7 +82,7 @@ def fake_derivative(monkeypatch):
 
 @pytest.fixture
 def fake_image_magick(monkeypatch):
-    calls = {"thumbnail": [], "convert_format": [], "deskew": [], "prep_ocr": []}
+    calls = {"thumbnail": [], "convert_format": [], "deskew": [], "prep_ocr": [], "tile": []}
 
     def record(kind):
         def fn(src, dest, opts={}):
@@ -105,6 +107,7 @@ def fake_image_magick(monkeypatch):
     monkeypatch.setattr(dw.image_magick, "convert_format", record("convert_format"))
     monkeypatch.setattr(dw.image_magick, "deskew", record("deskew"))
     monkeypatch.setattr(dw.image_magick, "prep_ocr", record("prep_ocr"))
+    monkeypatch.setattr(dw.image_magick, "tile", record("tile"))
     monkeypatch.setattr(dw.image_magick, "probe_dimensions", probe_dimensions)
     return calls
 
@@ -124,13 +127,16 @@ def derivative_calls_for(calls, rel_path_suffix):
 
 # --- standalone verbs (single-image item) ----------------------------------
 
-def test_thumbnails_splits_thumb_and_web_names(fake_fs, fake_derivative, fake_image_magick):
-    result = dw.thumbnails(ARK, opts={"widths": "256,512,1024"})
+def test_thumbnails_publishes_small_medium_large(fake_fs, fake_derivative, fake_image_magick):
+    result = dw.thumbnails(ARK, opts={"widths": WIDTHS})
     assert result["status"] == "success"
-    assert sorted(result["outputs"]) == ["thumb-256.jpg", "thumb-512.jpg", "web-1024.jpg"]
+    image_result = result["images"]["photo.tiff"]
+    assert sorted(image_result["outputs"]) == ["large.jpg", "medium.jpg", "small.jpg"]
     resized_widths = {c["width"] for c in fake_image_magick["thumbnail"]}
     assert resized_widths == {256, 512, 1024}
-    assert result["dir"] == "cask:/silver/g/c/latest/item/derivatives"
+    assert image_result["dir"] == (
+        "cask:/silver/g/c/latest/item/public-frontend-derivatives/images/photo.tiff/images"
+    )
 
     write_call = fake_derivative[0]
     assert write_call["type"] == "silver"
@@ -143,13 +149,14 @@ def test_thumbnails_splits_thumb_and_web_names(fake_fs, fake_derivative, fake_im
 
 
 def test_thumbnails_stages_source_via_fs_read_stream(fake_fs, fake_derivative, fake_image_magick):
-    dw.thumbnails(ARK, opts={"widths": "256"})
+    dw.thumbnails(ARK, opts={"widths": WIDTHS})
     assert fake_fs["read_stream_calls"] == ["cask:/bronze/g/c/latest/item/photo.tiff"]
 
 
 def test_convert_maps_format_to_extension(fake_fs, fake_derivative, fake_image_magick):
     result = dw.convert(ARK, opts={"format": "png"})
     assert result["outputs"] == ["converted.png"]
+    assert result["dir"] == "cask:/silver/g/c/latest/item/public-frontend-derivatives"
 
 
 def test_convert_defaults_to_configured_format(fake_fs, fake_derivative, fake_image_magick):
@@ -160,6 +167,7 @@ def test_convert_defaults_to_configured_format(fake_fs, fake_derivative, fake_im
 def test_deskew_standalone_writes_single_output(fake_fs, fake_derivative, fake_image_magick):
     result = dw.deskew(ARK, opts={"threshold": 25})
     assert result["outputs"] == ["deskewed.jpg"]
+    assert result["dir"] == "cask:/silver/g/c/latest/item/public-frontend-derivatives"
     assert fake_image_magick["deskew"][0]["opts"]["threshold"] == 25
 
 
@@ -173,36 +181,43 @@ def test_prep_ocr_standalone_names_by_deskew_flag(fake_fs, fake_derivative, fake
 
 # --- multi-image item: standalone verbs -------------------------------------
 
-def test_thumbnails_prefixes_filenames_for_multi_image_item(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
+def test_thumbnails_nests_per_source_for_multi_image_item(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
     use_multi_item(monkeypatch)
-    result = dw.thumbnails(ARK, opts={"widths": "256"})
-    assert sorted(result["outputs"]) == ["photo-a-web-256.jpg", "photo-b-web-256.jpg"]
+    result = dw.thumbnails(ARK, opts={"widths": WIDTHS})
+    assert set(result["images"].keys()) == {"photo-a.tiff", "photo-b.tiff"}
+    for filename in ("photo-a.tiff", "photo-b.tiff"):
+        assert sorted(result["images"][filename]["outputs"]) == ["large.jpg", "medium.jpg", "small.jpg"]
+        assert result["images"][filename]["dir"] == (
+            f"cask:/silver/g/c/latest/box-1/folder-3/public-frontend-derivatives/images/{filename}/images"
+        )
 
 
 def test_thumbnails_stages_every_binary_for_multi_image_item(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
     use_multi_item(monkeypatch)
-    dw.thumbnails(ARK, opts={"widths": "256"})
+    dw.thumbnails(ARK, opts={"widths": WIDTHS})
     assert sorted(fake_fs["read_stream_calls"]) == sorted(MULTI_ITEM.bronze_binary_paths)
 
 
 def test_publish_records_correct_source_file_per_output(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
     use_multi_item(monkeypatch)
-    dw.thumbnails(ARK, opts={"widths": "256"})
+    dw.thumbnails(ARK, opts={"widths": WIDTHS})
     by_rel_path = {c["rel_path"]: c["source_files"] for c in fake_derivative}
-    assert by_rel_path["box-1/folder-3/derivatives/photo-a-web-256.jpg"] == ["cask:/bronze/g/c/latest/box-1/folder-3/photo-a.tiff"]
-    assert by_rel_path["box-1/folder-3/derivatives/photo-b-web-256.jpg"] == ["cask:/bronze/g/c/latest/box-1/folder-3/photo-b.tiff"]
+    assert by_rel_path["box-1/folder-3/public-frontend-derivatives/images/photo-a.tiff/images/small.jpg"] == [
+        "cask:/bronze/g/c/latest/box-1/folder-3/photo-a.tiff"
+    ]
+    assert by_rel_path["box-1/folder-3/public-frontend-derivatives/images/photo-b.tiff/images/small.jpg"] == [
+        "cask:/bronze/g/c/latest/box-1/folder-3/photo-b.tiff"
+    ]
 
 
 # --- mixed-format item: PDF + TIFF supplied for the same document -----------
 
 def test_thumbnails_ignores_pdf_sibling_and_stages_only_the_tiff(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
     use_mixed_format_item(monkeypatch)
-    result = dw.thumbnails(ARK, opts={"widths": "256"})
+    result = dw.thumbnails(ARK, opts={"widths": WIDTHS})
 
     assert fake_fs["read_stream_calls"] == ["cask:/bronze/g/c/latest/item/photo.tiff"]
-    # multi must be computed from the filtered (image-only) count, not the item's
-    # total bronze_binary_paths count (2, including the PDF) — so no stem prefixing.
-    assert result["outputs"] == ["web-256.jpg"]
+    assert set(result["images"].keys()) == {"photo.tiff"}
 
 
 def test_thumbnails_raises_when_item_has_no_image_binaries(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
@@ -213,7 +228,7 @@ def test_thumbnails_raises_when_item_has_no_image_binaries(fake_fs, fake_derivat
     monkeypatch.setattr(dw.items, "resolve", lambda ark, opts={}: pdf_only_item)
 
     with pytest.raises(ValueError, match="no image binaries found"):
-        dw.thumbnails(ARK, opts={"widths": "256"})
+        dw.thumbnails(ARK, opts={"widths": WIDTHS})
 
 
 # --- orientation selection ------------------------------------------------
@@ -239,7 +254,7 @@ def test_select_orientation_original_when_comparison_picks_original(tmp_path, fa
 
 def test_generate_stages_source_exactly_once(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
-    dw.generate(ARK, opts={"widths": "256,512,1024"})
+    dw.generate(ARK, opts={"widths": WIDTHS})
     assert len(fake_fs["read_stream_calls"]) == 1
 
 
@@ -251,13 +266,13 @@ def test_generate_calls_compare_orientations_exactly_once(fake_fs, fake_derivati
         return {"selected": "original", "stats": {"original": {}, "deskewed": {}}}
 
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", spy)
-    dw.generate(ARK, opts={"widths": "256,512"})
+    dw.generate(ARK, opts={"widths": WIDTHS})
     assert len(calls) == 1
 
 
 def test_generate_applies_deskew_decision_to_every_width(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("deskewed"))
-    dw.generate(ARK, opts={"widths": "256,512,1024"})
+    dw.generate(ARK, opts={"widths": WIDTHS})
 
     assert len(fake_image_magick["thumbnail"]) == 0
     deskewed_widths = {c["opts"]["output_width"] for c in fake_image_magick["deskew"]}
@@ -267,17 +282,20 @@ def test_generate_applies_deskew_decision_to_every_width(fake_fs, fake_derivativ
 
 def test_generate_uses_resize_when_original_orientation_wins(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
-    dw.generate(ARK, opts={"widths": "256,512"})
+    dw.generate(ARK, opts={"widths": WIDTHS})
     assert len(fake_image_magick["deskew"]) == 0
-    assert {c["width"] for c in fake_image_magick["thumbnail"]} == {256, 512}
+    assert {c["width"] for c in fake_image_magick["thumbnail"]} == {256, 512, 1024}
 
 
 def test_generate_publishes_derivatives_and_ocr_as_separate_manifests(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("deskewed"))
-    result = dw.generate(ARK, opts={"widths": "256,512"})
+    result = dw.generate(ARK, opts={"widths": WIDTHS})
 
-    assert result["derivatives"]["dir"] == "cask:/silver/g/c/latest/item/derivatives"
-    assert sorted(result["derivatives"]["outputs"]) == ["thumb-256.jpg", "web-512.jpg"]
+    image_result = result["derivatives"]["photo.tiff"]
+    assert image_result["dir"] == (
+        "cask:/silver/g/c/latest/item/public-frontend-derivatives/images/photo.tiff/images"
+    )
+    assert sorted(image_result["outputs"]) == ["large.jpg", "medium.jpg", "small.jpg", "tiled.tif"]
     assert result["ocr"]["dir"] == "cask:/silver/g/c/latest/item/ocr"
     assert result["ocr"]["outputs"] == ["prep-deskew.jpg"]
     assert result["orientation"]["photo"]["deskew"] is True
@@ -285,11 +303,14 @@ def test_generate_publishes_derivatives_and_ocr_as_separate_manifests(fake_fs, f
 
 def test_generate_records_orientation_decision_in_derivatives_manifest_params(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("deskewed"))
-    dw.generate(ARK, opts={"widths": "256"})
-    derivatives_manifest_call = next(c for c in fake_derivative if c["rel_path"].endswith("derivatives/manifest.json"))
+    dw.generate(ARK, opts={"widths": WIDTHS})
+    derivatives_manifest_call = next(
+        c for c in fake_derivative
+        if c["rel_path"] == "item/public-frontend-derivatives/images/photo.tiff/images/manifest.json"
+    )
     manifest = json.loads(derivatives_manifest_call["data"])
-    assert manifest["params"]["orientation"]["photo"]["deskew_selected"] is True
-    assert manifest["params"]["orientation"]["photo"]["stats"]["deskewed"]["count"] == 20
+    assert manifest["params"]["orientation"]["deskew_selected"] is True
+    assert manifest["params"]["orientation"]["stats"]["deskewed"]["count"] == 20
 
 
 def test_generate_fails_before_any_publish_when_a_thumbnail_fails(fake_fs, fake_derivative, monkeypatch):
@@ -302,7 +323,7 @@ def test_generate_fails_before_any_publish_when_a_thumbnail_fails(fake_fs, fake_
     monkeypatch.setattr(dw.image_magick, "thumbnail", failing_thumbnail)
 
     with pytest.raises(RuntimeError, match="convert exploded"):
-        dw.generate(ARK, opts={"widths": "256,512"})
+        dw.generate(ARK, opts={"widths": WIDTHS})
 
     assert fake_derivative == []
 
@@ -317,25 +338,26 @@ def test_generate_cleans_up_temp_directory(fake_fs, fake_derivative, fake_image_
         return original_stage(item, tmp_dir, opts)
 
     monkeypatch.setattr(pipeline, "stage_sources", spy_stage)
-    dw.generate(ARK, opts={"widths": "256"})
+    dw.generate(ARK, opts={"widths": WIDTHS})
 
-    import os
     assert not os.path.exists(captured_dirs[0])
 
 
 def test_generate_writes_associated_media_sidecar_with_dimensions(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
-    dw.generate(ARK, opts={"widths": "256,512"})
+    dw.generate(ARK, opts={"widths": WIDTHS})
 
     sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
     doc = json.loads(sidecar_write["data"])
     assert doc["@id"] == ARK
     assert doc["ark"] == ARK
-    assert len(doc["associatedMedia"]) == 2
+    assert len(doc["associatedMedia"]) == 3
     for entry in doc["associatedMedia"]:
         assert entry["@type"] == "ImageObject"
         assert entry["width"] == 100 and entry["height"] == 200
-        assert entry["contentUrl"].startswith("cask://silver/g/c/latest/item/derivatives/")
+        assert entry["contentUrl"].startswith(
+            "cask://silver/g/c/latest/item/public-frontend-derivatives/images/photo.tiff/images/"
+        )
 
 
 def test_generate_merges_into_existing_sidecar(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
@@ -343,12 +365,12 @@ def test_generate_merges_into_existing_sidecar(fake_fs, fake_derivative, fake_im
     monkeypatch.setattr(pipeline.fs, "exists", lambda path: True)
     monkeypatch.setattr(pipeline.fs, "read", lambda path: b'{"@id": "' + ARK.encode() + b'", "ark": "' + ARK.encode() + b'", "name": "Existing Title"}')
 
-    dw.generate(ARK, opts={"widths": "256"})
+    dw.generate(ARK, opts={"widths": WIDTHS})
 
     sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
     doc = json.loads(sidecar_write["data"])
     assert doc["name"] == "Existing Title"
-    assert len(doc["associatedMedia"]) == 1
+    assert len(doc["associatedMedia"]) == 3
 
 
 # --- generate() umbrella: multi-image item ----------------------------------
@@ -365,21 +387,25 @@ def test_generate_decides_orientation_independently_per_image(fake_fs, fake_deri
         return {"selected": selected, "stats": {"original": {"count": 1}, "deskewed": {"count": 2}}}
 
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", selective_compare)
-    result = dw.generate(ARK, opts={"widths": "256"})
+    result = dw.generate(ARK, opts={"widths": WIDTHS})
 
     assert len(calls) == 2  # one comparison per source image
     assert result["orientation"]["photo-a"]["deskew"] is True
     assert result["orientation"]["photo-b"]["deskew"] is False
 
 
-def test_generate_combines_multi_image_outputs_into_shared_directories(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
+def test_generate_nests_multi_image_derivatives_by_source_filename(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
     use_multi_item(monkeypatch)
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
 
-    result = dw.generate(ARK, opts={"widths": "256"})
+    result = dw.generate(ARK, opts={"widths": WIDTHS})
 
-    assert result["derivatives"]["dir"] == "cask:/silver/g/c/latest/box-1/folder-3/derivatives"
-    assert sorted(result["derivatives"]["outputs"]) == ["photo-a-web-256.jpg", "photo-b-web-256.jpg"]
+    assert set(result["derivatives"].keys()) == {"photo-a.tiff", "photo-b.tiff"}
+    for filename in ("photo-a.tiff", "photo-b.tiff"):
+        assert result["derivatives"][filename]["dir"] == (
+            f"cask:/silver/g/c/latest/box-1/folder-3/public-frontend-derivatives/images/{filename}/images"
+        )
+        assert sorted(result["derivatives"][filename]["outputs"]) == ["large.jpg", "medium.jpg", "small.jpg", "tiled.tif"]
     assert result["ocr"]["dir"] == "cask:/silver/g/c/latest/box-1/folder-3/ocr"
     assert sorted(result["ocr"]["outputs"]) == ["photo-a-prep.jpg", "photo-b-prep.jpg"]
 
@@ -388,9 +414,9 @@ def test_generate_associated_media_covers_every_image_for_multi_image_item(fake_
     use_multi_item(monkeypatch)
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
 
-    dw.generate(ARK, opts={"widths": "256"})
+    dw.generate(ARK, opts={"widths": WIDTHS})
 
     sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
     assert sorted(sidecar_write["source_files"]) == sorted(MULTI_ITEM.bronze_binary_paths)
     doc = json.loads(sidecar_write["data"])
-    assert len(doc["associatedMedia"]) == 2
+    assert len(doc["associatedMedia"]) == 6  # 2 images x 3 sizes each

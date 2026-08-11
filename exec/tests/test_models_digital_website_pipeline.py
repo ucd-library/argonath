@@ -1,4 +1,5 @@
 import json
+import os
 from contextlib import contextmanager
 
 import pytest
@@ -67,12 +68,6 @@ def test_parse_widths_passes_through_a_list():
     assert pipeline.parse_widths([512, 256]) == [256, 512]
 
 
-def test_thumbnail_filename_largest_width_is_web():
-    widths = [256, 512, 1024]
-    assert pipeline.thumbnail_filename(1024, widths) == "web-1024.jpg"
-    assert pipeline.thumbnail_filename(256, widths) == "thumb-256.jpg"
-
-
 def test_output_name_prefixes_only_when_multi():
     assert pipeline.output_name("photo-a", "thumb-256.jpg", multi=True) == "photo-a-thumb-256.jpg"
     assert pipeline.output_name("photo", "thumb-256.jpg", multi=False) == "thumb-256.jpg"
@@ -81,6 +76,29 @@ def test_output_name_prefixes_only_when_multi():
 def test_cask_public_ref_converts_dispatch_prefix():
     internal = "cask:/silver/g/c/latest/item/derivatives/thumb-256.jpg"
     assert pipeline.cask_public_ref(internal) == "cask://silver/g/c/latest/item/derivatives/thumb-256.jpg"
+
+
+def test_generate_thumbnail_set_names_by_semantic_size(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_thumbnail(src, dest, width, opts={}):
+        calls.append(width)
+        with open(dest, "wb") as f:
+            f.write(b"fake")
+
+    monkeypatch.setattr(pipeline.image_magick, "thumbnail", fake_thumbnail)
+    outputs = pipeline.generate_thumbnail_set("src.jpg", str(tmp_path), [256, 512, 1024], "photo", {})
+
+    assert [filename for filename, _ in outputs] == ["small.jpg", "medium.jpg", "large.jpg"]
+    assert calls == [256, 512, 1024]
+    for filename, local_path in outputs:
+        assert os.path.basename(local_path) != filename  # local scratch name stays stem-disambiguated
+        assert os.path.exists(local_path)
+
+
+def test_generate_thumbnail_set_requires_exactly_three_widths():
+    with pytest.raises(ValueError, match="requires exactly 3 widths"):
+        pipeline.generate_thumbnail_set("src.jpg", "/tmp", [256, 512], "photo", {})
 
 
 @pytest.fixture

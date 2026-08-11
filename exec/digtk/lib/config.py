@@ -89,6 +89,7 @@ SEARCH_EMBED_MODEL_ENV = "DIGTK_SEARCH_EMBED_MODEL"
 PDF_TARGET_PIXEL_WIDTH_ENV = "DIGTK_PDF_TARGET_PIXEL_WIDTH"
 PDF_DEFAULT_DENSITY_ENV = "DIGTK_PDF_DEFAULT_DENSITY"
 PDF_RASTER_FORMAT_ENV = "DIGTK_PDF_RASTER_FORMAT"
+PDF_PDFINFO_BIN_ENV = "DIGTK_PDF_PDFINFO_BIN"
 
 IMAGE_THUMBNAIL_WIDTHS_ENV = "DIGTK_IMAGE_THUMBNAIL_WIDTHS"
 IMAGE_CONVERT_FORMAT_ENV = "DIGTK_IMAGE_CONVERT_FORMAT"
@@ -96,6 +97,9 @@ IMAGE_DPI_ENV = "DIGTK_IMAGE_DPI"
 IMAGE_DESKEW_THRESHOLD_ENV = "DIGTK_IMAGE_DESKEW_THRESHOLD"
 IMAGE_FUZZ_THRESHOLD_ENV = "DIGTK_IMAGE_FUZZ_THRESHOLD"
 IMAGE_THUMBNAIL_QUALITY_ENV = "DIGTK_IMAGE_THUMBNAIL_QUALITY"
+IMAGE_TILE_SIZE_ENV = "DIGTK_IMAGE_TILE_SIZE"
+IMAGE_TILE_MAX_WIDTH_ENV = "DIGTK_IMAGE_TILE_MAX_WIDTH"
+IMAGE_TILE_QUALITY_ENV = "DIGTK_IMAGE_TILE_QUALITY"
 IMAGE_OCR_PREP_QUALITY_ENV = "DIGTK_IMAGE_OCR_PREP_QUALITY"
 IMAGE_OCR_PREP_SIZE_ENV = "DIGTK_IMAGE_OCR_PREP_SIZE"
 IMAGE_DESKEW_WORKING_WIDTH_ENV = "DIGTK_IMAGE_DESKEW_WORKING_WIDTH"
@@ -160,12 +164,16 @@ SETTINGS = [
     {"dotpath": "pdf.target_pixel_width", "env": PDF_TARGET_PIXEL_WIDTH_ENV, "cast": int, "secret": False},
     {"dotpath": "pdf.default_density", "env": PDF_DEFAULT_DENSITY_ENV, "cast": int, "secret": False},
     {"dotpath": "pdf.raster_format", "env": PDF_RASTER_FORMAT_ENV, "cast": str, "secret": False},
+    {"dotpath": "pdf.pdfinfo_bin", "env": PDF_PDFINFO_BIN_ENV, "cast": str, "secret": False},
     {"dotpath": "image.thumbnail_widths", "env": IMAGE_THUMBNAIL_WIDTHS_ENV, "cast": str, "secret": False},
     {"dotpath": "image.convert_format", "env": IMAGE_CONVERT_FORMAT_ENV, "cast": str, "secret": False},
     {"dotpath": "image.dpi", "env": IMAGE_DPI_ENV, "cast": int, "secret": False},
     {"dotpath": "image.deskew_threshold", "env": IMAGE_DESKEW_THRESHOLD_ENV, "cast": int, "secret": False},
     {"dotpath": "image.fuzz_threshold", "env": IMAGE_FUZZ_THRESHOLD_ENV, "cast": int, "secret": False},
     {"dotpath": "image.thumbnail_quality", "env": IMAGE_THUMBNAIL_QUALITY_ENV, "cast": int, "secret": False},
+    {"dotpath": "image.tile_size", "env": IMAGE_TILE_SIZE_ENV, "cast": int, "secret": False},
+    {"dotpath": "image.tile_max_width", "env": IMAGE_TILE_MAX_WIDTH_ENV, "cast": int, "secret": False},
+    {"dotpath": "image.tile_quality", "env": IMAGE_TILE_QUALITY_ENV, "cast": int, "secret": False},
     {"dotpath": "image.ocr_prep_quality", "env": IMAGE_OCR_PREP_QUALITY_ENV, "cast": int, "secret": False},
     {"dotpath": "image.ocr_prep_size", "env": IMAGE_OCR_PREP_SIZE_ENV, "cast": int, "secret": False},
     {"dotpath": "image.deskew_working_width", "env": IMAGE_DESKEW_WORKING_WIDTH_ENV, "cast": int, "secret": False},
@@ -356,15 +364,16 @@ CONFIG = {
         "embed_model": _env(SEARCH_EMBED_MODEL_ENV, _env(SAMWISE_EMBED_MODEL_ENV, "qwen3-embed:4b")),
     },
     "pdf": {
-        # target_pixel_width/default_density match the reference dams/services/image-utils
-        # pipeline's lib/config.js: pdf.tifResizeWidth (3072, env TIF_RESIZE_WIDTH) and
-        # pdf.extractDensity (600, env PDF_DENSITY) — see digtk.lib.pdf_render.rasterize_page().
+        # target_pixel_width/default_density/raster_format match the reference
+        # dams/services/image-utils pipeline's lib/config.js: pdf.tifResizeWidth (3072,
+        # env TIF_RESIZE_WIDTH), pdf.extractDensity (600, env PDF_DENSITY), and its
+        # rasterization step's TIFF output — see digtk.lib.pdf_render.rasterize_page(),
+        # which shells out to ImageMagick's `convert` (PDF delegate -> Ghostscript) the
+        # same way the reference pipeline's extract-pdf-page.js does.
         "target_pixel_width": _env(PDF_TARGET_PIXEL_WIDTH_ENV, 3072, int),
         "default_density": _env(PDF_DEFAULT_DENSITY_ENV, 600, int),
-        # PyMuPDF's Pixmap.save() only writes png/jpg/pnm/psd/ps natively (no tiff without
-        # an undeclared transitive Pillow dependency via pil_save()) — png is lossless and
-        # just as suitable an intermediate for the downstream image_magick/tesseract steps.
-        "raster_format": _env(PDF_RASTER_FORMAT_ENV, "png"),
+        "raster_format": _env(PDF_RASTER_FORMAT_ENV, "tif"),
+        "pdfinfo_bin": _env(PDF_PDFINFO_BIN_ENV, "pdfinfo"),
     },
     "image": {
         "thumbnail_widths": _env(IMAGE_THUMBNAIL_WIDTHS_ENV, "256,512,1024"),
@@ -373,6 +382,13 @@ CONFIG = {
         "deskew_threshold": _env(IMAGE_DESKEW_THRESHOLD_ENV, 40, int),
         "fuzz_threshold": _env(IMAGE_FUZZ_THRESHOLD_ENV, 80, int),
         "thumbnail_quality": _env(IMAGE_THUMBNAIL_QUALITY_ENV, 90, int),
+        # tile_size/tile_max_width/tile_quality match the reference
+        # dams/services/image-utils pipeline's generate-image-products.sh
+        # TILED_TIF_OPTS exactly (256px tiles, 3072px max width, quality 90) — see
+        # digtk.lib.image_magick.tile().
+        "tile_size": _env(IMAGE_TILE_SIZE_ENV, 256, int),
+        "tile_max_width": _env(IMAGE_TILE_MAX_WIDTH_ENV, 3072, int),
+        "tile_quality": _env(IMAGE_TILE_QUALITY_ENV, 90, int),
         "ocr_prep_quality": _env(IMAGE_OCR_PREP_QUALITY_ENV, 100, int),
         "ocr_prep_size": _env(IMAGE_OCR_PREP_SIZE_ENV, 2048, int),
         "deskew_working_width": _env(IMAGE_DESKEW_WORKING_WIDTH_ENV, 2048, int),
