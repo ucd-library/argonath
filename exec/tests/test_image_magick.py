@@ -102,6 +102,23 @@ def test_probe_dimensions_does_not_frame_index_non_tiff(fake_run):
     assert calls[0]["argv"][-1] == "/tmp/photo.jpg"
 
 
+def test_probe_all_frame_dimensions_parses_one_entry_per_frame(fake_run):
+    calls = fake_run(stdout="3072x3911\n1536x1955\n768x977\n")
+    result = image_magick.probe_all_frame_dimensions("/tmp/tiled.tif")
+    assert result == [
+        {"width": 3072, "height": 3911},
+        {"width": 1536, "height": 1955},
+        {"width": 768, "height": 977},
+    ]
+    assert calls[0]["argv"] == ["identify", "-format", "%wx%h\n", "/tmp/tiled.tif"]
+
+
+def test_probe_all_frame_dimensions_never_frame_indexes(fake_run):
+    calls = fake_run(stdout="100x200\n")
+    image_magick.probe_all_frame_dimensions("/tmp/tiled.tif")
+    assert calls[0]["argv"][-1] == "/tmp/tiled.tif"
+
+
 def test_thumbnail_includes_resize_flag(fake_run):
     calls = fake_run()
     result = image_magick.thumbnail("/tmp/src.jpg", "/tmp/thumb-256.jpg", 256)

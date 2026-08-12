@@ -235,6 +235,17 @@ def generate(ark, opts={}):
     this. All local generation happens before anything is published to CaskFS, so
     a failure at any step leaves no partial derivative set behind.
 
+    That per-source images/ manifest also carries an "extra" block — "original"/
+    "small"/"medium"/"large"/"tiled"/"ocr" keys, each a {"size", "url"} pair (size
+    is a {"width", "height"} dict of strings, or a list of them for "tiled"'s
+    multi-level pyramid — stringified via pipeline.size_as_strings() to match the legacy
+    manifest's own convention) — simulating the equivalent content the legacy
+    DAMS/Fedora manifest carried, but with cask:// reference URIs in place of
+    Fin-proxy/GCS/IIIF-server paths (argonath has no serving-side equivalent of
+    those yet) and "ocr" pointing at this run's real OCR-prep JPEG rather than a
+    .djvu file argonath never produces (see docs/cask-conventions.md's
+    manifest.json section).
+
     :param str ark: Item ARK identifier.
     :param dict opts: 'widths' (comma-separated str, default
         CONFIG["image"]["thumbnail_widths"]) — must resolve to exactly 3 widths
@@ -281,6 +292,39 @@ def generate(ark, opts={}):
             image_magick.tile(src["local_path"], tile_dest, opts)
             thumb_outputs.append(("tiled.tif", tile_dest, src["bronze_path"]))
 
+            utils.log(f"[{i}/{total}] {stem}: generating OCR-prep image...")
+            base_prep_name = "prep-deskew.jpg" if apply_deskew else "prep.jpg"
+            prep_filename = pipeline.output_name(stem, base_prep_name, multi)
+            prep_path = os.path.join(tmp_dir, prep_filename)
+            image_magick.prep_ocr(src["local_path"], prep_path, opts={**opts, "deskew": apply_deskew})
+            ocr_outputs.append((prep_filename, prep_path, src["bronze_path"]))
+
+            utils.log(f"[{i}/{total}] {stem}: probing derivative dimensions...")
+            size_by_label = {label: image_magick.probe_dimensions(local_path) for label, (fn, local_path) in zip(pipeline.THUMBNAIL_SIZE_LABELS, thumb_set)}
+            images_dir = pipeline.derivative_dir(item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images")
+            ocr_dir = pipeline.derivative_dir(item, "ocr")
+            manifest_extra = {
+                "original": {
+                    "size": pipeline.size_as_strings(image_magick.probe_dimensions(src["local_path"])),
+                    "url": pipeline.cask_public_ref(src["bronze_path"]),
+                },
+                **{
+                    label: {
+                        "size": pipeline.size_as_strings(size_by_label[label]),
+                        "url": pipeline.cask_public_ref(f"{images_dir}/{label}.jpg"),
+                    }
+                    for label in pipeline.THUMBNAIL_SIZE_LABELS
+                },
+                "tiled": {
+                    "size": [pipeline.size_as_strings(d) for d in image_magick.probe_all_frame_dimensions(tile_dest)],
+                    "url": pipeline.cask_public_ref(f"{images_dir}/tiled.tif"),
+                },
+                "ocr": {
+                    "size": pipeline.size_as_strings(image_magick.probe_dimensions(prep_path)),
+                    "url": pipeline.cask_public_ref(f"{ocr_dir}/{prep_filename}"),
+                },
+            }
+
             utils.log(f"[{i}/{total}] {stem}: publishing derivative set...")
             derivatives_result = pipeline.publish(
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images", thumb_outputs,
@@ -289,24 +333,19 @@ def generate(ark, opts={}):
                     "widths": widths,
                     "orientation": {"deskew_selected": apply_deskew, "stats": orientation["stats"]},
                 },
-                opts={"link_relation": _LINK_RELATION_BY_SUBDIR["derivatives"]},
+                opts={
+                    "manifest_opts": {"extra": manifest_extra},
+                    "link_relation": _LINK_RELATION_BY_SUBDIR["derivatives"],
+                },
             )
             derivatives_results[filename] = derivatives_result
 
-            utils.log(f"[{i}/{total}] {stem}: generating OCR-prep image...")
-            base_prep_name = "prep-deskew.jpg" if apply_deskew else "prep.jpg"
-            prep_filename = pipeline.output_name(stem, base_prep_name, multi)
-            prep_path = os.path.join(tmp_dir, prep_filename)
-            image_magick.prep_ocr(src["local_path"], prep_path, opts={**opts, "deskew": apply_deskew})
-            ocr_outputs.append((prep_filename, prep_path, src["bronze_path"]))
-
-            for fn, local_path in thumb_set:
-                dims = image_magick.probe_dimensions(local_path)
+            for label, (fn, local_path) in zip(pipeline.THUMBNAIL_SIZE_LABELS, thumb_set):
                 image_objects.append({
                     "@type": "ImageObject",
-                    "contentUrl": pipeline.cask_public_ref(f"{derivatives_result['dir']}/{fn}"),
+                    "contentUrl": pipeline.cask_public_ref(f"{images_dir}/{fn}"),
                     "encodingFormat": "image/jpeg",
-                    **dims,
+                    **size_by_label[label],
                 })
             utils.log(f"[{i}/{total}] {stem}: done")
 

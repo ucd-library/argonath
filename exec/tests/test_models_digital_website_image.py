@@ -103,12 +103,16 @@ def fake_image_magick(monkeypatch):
     def probe_dimensions(path, opts={}):
         return {"width": 100, "height": 200}
 
+    def probe_all_frame_dimensions(path, opts={}):
+        return [{"width": 3072, "height": 3911}, {"width": 1536, "height": 1955}]
+
     monkeypatch.setattr(dw.image_magick, "thumbnail", record_thumbnail())
     monkeypatch.setattr(dw.image_magick, "convert_format", record("convert_format"))
     monkeypatch.setattr(dw.image_magick, "deskew", record("deskew"))
     monkeypatch.setattr(dw.image_magick, "prep_ocr", record("prep_ocr"))
     monkeypatch.setattr(dw.image_magick, "tile", record("tile"))
     monkeypatch.setattr(dw.image_magick, "probe_dimensions", probe_dimensions)
+    monkeypatch.setattr(dw.image_magick, "probe_all_frame_dimensions", probe_all_frame_dimensions)
     return calls
 
 
@@ -311,6 +315,36 @@ def test_generate_records_orientation_decision_in_derivatives_manifest_params(fa
     manifest = json.loads(derivatives_manifest_call["data"])
     assert manifest["params"]["orientation"]["deskew_selected"] is True
     assert manifest["params"]["orientation"]["stats"]["deskewed"]["count"] == 20
+
+
+def test_generate_records_rich_manifest_content_for_original_small_medium_large_tiled_ocr(
+    fake_fs, fake_derivative, fake_image_magick, monkeypatch
+):
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
+    dw.generate(ARK, opts={"widths": WIDTHS})
+    derivatives_manifest_call = next(
+        c for c in fake_derivative
+        if c["rel_path"] == "item/public-frontend-derivatives/images/photo.tiff/images/manifest.json"
+    )
+    manifest = json.loads(derivatives_manifest_call["data"])
+
+    assert manifest["original"] == {
+        "size": {"width": "100", "height": "200"},
+        "url": "cask://bronze/g/c/latest/item/photo.tiff",
+    }
+    for label in ("small", "medium", "large"):
+        assert manifest[label] == {
+            "size": {"width": "100", "height": "200"},
+            "url": f"cask://silver/g/c/latest/item/public-frontend-derivatives/images/photo.tiff/images/{label}.jpg",
+        }
+    assert manifest["tiled"] == {
+        "size": [{"width": "3072", "height": "3911"}, {"width": "1536", "height": "1955"}],
+        "url": "cask://silver/g/c/latest/item/public-frontend-derivatives/images/photo.tiff/images/tiled.tif",
+    }
+    assert manifest["ocr"] == {
+        "size": {"width": "100", "height": "200"},
+        "url": "cask://silver/g/c/latest/item/ocr/prep.jpg",
+    }
 
 
 def test_generate_fails_before_any_publish_when_a_thumbnail_fails(fake_fs, fake_derivative, monkeypatch):

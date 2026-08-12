@@ -141,6 +141,24 @@ def stage_sources(item, tmp_dir, opts={}):
     return sources
 
 
+def derivative_dir(item, subdir):
+    """Compute the CaskFS silver directory a publish() call to this subdir would use.
+
+    A pure function of inputs already known before calling publish() — lets a
+    caller (e.g. digtk.models.digital_website.image's generate(), building its
+    manifest's "extra" content) build cask:// url references into a directory
+    before that directory's write/manifest actually happens, without needing
+    publish()'s return value first. publish() itself calls this internally.
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param str subdir: Same 'subdir' publish() would be called with.
+    :returns: CaskFS process directory ('cask:/...').
+    :rtype: str
+    """
+    rel_path = f"{item.item_path}/{subdir}" if item.item_path else subdir
+    return f"cask:{derivative.dest_path(type='silver', collection=item.collection, rel_path=rel_path, opts={'group': item.group, 'time': item.time})}"
+
+
 def publish(item, subdir, local_outputs, command, params, opts={}):
     """Write local output files to CaskFS (with lineage) and record a manifest.
 
@@ -196,8 +214,25 @@ def publish(item, subdir, local_outputs, command, params, opts={}):
         source_files=source_files,
         opts={**opts.get("manifest_opts", {}), "group": item.group, "time": item.time},
     )
-    dest_dir = f"cask:{derivative.dest_path(type='silver', collection=item.collection, rel_path=rel_path, opts={'group': item.group, 'time': item.time})}"
+    dest_dir = derivative_dir(item, subdir)
     return {"dir": dest_dir, "outputs": outputs, "manifest": manifest}
+
+
+def size_as_strings(dims):
+    """Stringify a {"width", "height"} dict's values, matching the legacy
+    DAMS/Fedora manifest.json's "size" field convention (see
+    docs/cask-conventions.md's "Image Manifest Content"/"PDF Manifest Content") —
+    everywhere else in this codebase (image_magick.probe_dimensions(),
+    associatedMedia ImageObject entries) these stay real ints; this formatting is
+    specific to generate()'s/derivatives()'s rich manifest "extra" content, shared
+    by digital_website.image and .pdf since a rasterized PDF page's manifest needs
+    the exact same size formatting an image's does.
+
+    :param dict dims: {"width": int, "height": int}.
+    :returns: {"width": str, "height": str}.
+    :rtype: dict
+    """
+    return {"width": str(dims["width"]), "height": str(dims["height"])}
 
 
 def cask_public_ref(internal_path):

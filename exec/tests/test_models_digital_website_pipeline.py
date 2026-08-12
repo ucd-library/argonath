@@ -78,6 +78,20 @@ def test_cask_public_ref_converts_dispatch_prefix():
     assert pipeline.cask_public_ref(internal) == "cask://silver/g/c/latest/item/derivatives/thumb-256.jpg"
 
 
+def test_size_as_strings_stringifies_width_and_height():
+    assert pipeline.size_as_strings({"width": 256, "height": 326}) == {"width": "256", "height": "326"}
+
+
+def test_derivative_dir_matches_what_publish_would_use():
+    assert pipeline.derivative_dir(ITEM, "public-frontend-derivatives/images/photo.tiff/images") == (
+        "cask:/silver/g/c/latest/item/public-frontend-derivatives/images/photo.tiff/images"
+    )
+
+
+def test_derivative_dir_honors_item_path_for_multi_item():
+    assert pipeline.derivative_dir(MULTI_ITEM, "ocr") == "cask:/silver/g/c/latest/box-1/folder-3/ocr"
+
+
 def test_generate_thumbnail_set_names_by_semantic_size(tmp_path, monkeypatch):
     calls = []
 

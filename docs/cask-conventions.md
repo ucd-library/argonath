@@ -247,6 +247,125 @@ just the tile step alone would overwrite that directory's manifest with one
 describing only `tiled.tif`, so regenerating it is a `derivatives()`/`generate()`
 re-run.
 
+### Image Manifest Content
+
+Each source image's `public-frontend-derivatives/images/<filename>/images/manifest.json`
+(and, for a PDF page, its `document.pdf/images/<n>/manifest.json`) carries a richer
+set of top-level keys beyond the generic manifest shape (see "manifest.json"
+below) — `original`, `small`, `medium`, `large`, `tiled`, and `ocr`, each a
+`{"size", "url"}` pair:
+
+```json
+{
+  "written_at": "2026-06-24T10:00:00Z",
+  "status": "success",
+  "command": ["digtk", "image", "derivatives", "ark:/87287/d7abc1234"],
+  "params": { "widths": [256, 512, 1024], "orientation": { "deskew_selected": false, "stats": {} } },
+  "outputs": ["small.jpg", "medium.jpg", "large.jpg", "tiled.tif"],
+  "duration_s": null,
+  "original": {
+    "size": { "width": "2797", "height": "3561" },
+    "url": "cask://bronze/g/c/latest/item/photograph.tiff"
+  },
+  "small": {
+    "size": { "width": "256", "height": "326" },
+    "url": "cask://silver/g/c/latest/item/public-frontend-derivatives/images/photograph.tiff/images/small.jpg"
+  },
+  "medium": { "size": { "width": "512", "height": "652" }, "url": "cask://.../medium.jpg" },
+  "large": { "size": { "width": "1024", "height": "1304" }, "url": "cask://.../large.jpg" },
+  "tiled": {
+    "size": [
+      { "width": "3072", "height": "3911" },
+      { "width": "1536", "height": "1955" },
+      { "width": "768", "height": "977" }
+    ],
+    "url": "cask://silver/g/c/latest/item/public-frontend-derivatives/images/photograph.tiff/images/tiled.tif"
+  },
+  "ocr": {
+    "size": { "width": "2048", "height": "2610" },
+    "url": "cask://silver/g/c/latest/item/ocr/prep.jpg"
+  }
+}
+```
+
+This simulates the equivalent content the legacy DAMS/Fedora pipeline's manifest
+carried, matching its "size" width/height convention exactly — stringified, not
+plain ints — via `pipeline.size_as_strings()` (shared with the PDF manifest content
+below), with two deliberate differences:
+
+- **`url` is a `cask://` reference URI** (see caskfs's docs/ld.md "Reference Binary
+  File" convention — the same scheme `associatedMedia.contentUrl` already uses),
+  not a Fin-proxy/GCS-proxy/IIIF-server path — argonath has no serving-side
+  equivalent of those yet. `tiled` has no separate `iiif` field for the same reason.
+- **`ocr` points at this run's real OCR-prep JPEG** (`ocr/prep.jpg` or
+  `prep-deskew.jpg` — see "Scan Orientation" above), not a `.djvu` file argonath
+  never produces, and has no `imageSize` field — argonath's OCR-prep image is
+  generated at its own configured size (`CONFIG["image"]["ocr_prep_size"]`), not
+  derived from picking one of small/medium/large the way legacy's was.
+
+`thumbnails()` (the ad hoc `digtk image thumbnail` command) does not generate this
+content — only `generate()`/`derivatives()`'s full run has the tile and OCR-prep
+context this needs.
+
+### PDF Manifest Content
+
+`digtk pdf derivatives` gives each page's own
+`public-frontend-derivatives/<pdf-filename>/images/<n>/manifest.json` the same kind
+of rich content as an image's manifest (above) — `small`/`medium`/`large`/`tiled`/
+`ocr` keys, each a `{"size", "url"}` pair — plus two PDF-specific keys, `page` and
+`extractDensity`. There's no `original` key here: unlike a plain image derivative,
+a PDF page has no separate original binary to reference (the PDF itself is the
+source of record — see "PDF Pagination" above).
+
+```json
+{
+  "written_at": "2026-06-24T10:00:00Z",
+  "status": "success",
+  "command": ["digtk", "pdf", "derivatives", "ark:/87287/d7abc1234", "--widths", "256,512,1024"],
+  "params": { "widths": [256, 512, 1024], "page": 69, "orientation": { "deskew_selected": false, "stats": {} } },
+  "outputs": ["small.jpg", "medium.jpg", "large.jpg", "tiled.tif"],
+  "duration_s": null,
+  "page": 70,
+  "extractDensity": 600,
+  "small": {
+    "size": { "width": "256", "height": "333" },
+    "url": "cask://silver/g/c/latest/item/public-frontend-derivatives/document.pdf/images/70/small.jpg"
+  },
+  "medium": { "size": { "width": "512", "height": "667" }, "url": "cask://.../medium.jpg" },
+  "large": { "size": { "width": "1024", "height": "1333" }, "url": "cask://.../large.jpg" },
+  "tiled": {
+    "size": [
+      { "width": "3072", "height": "4000" },
+      { "width": "1536", "height": "2000" },
+      { "width": "768", "height": "1000" }
+    ],
+    "url": "cask://silver/g/c/latest/item/public-frontend-derivatives/document.pdf/images/70/tiled.tif"
+  },
+  "ocr": {
+    "size": { "width": "1024", "height": "1333" },
+    "url": "cask://silver/g/c/latest/item/ocr/page-069/document-page-069-prep.jpg"
+  }
+}
+```
+
+The aggregate `public-frontend-derivatives/<pdf-filename>/images/manifest.json`
+additionally carries a `"pages"` array — every page's own rich content above,
+composed in page order — mirroring the legacy pipeline's per-PDF composite
+manifest, alongside this codebase's own existing aggregate fields (`params.pages`,
+`params.orientation`, etc. — see "PDF Pagination" above).
+
+Two deliberate differences from the legacy format, beyond the ones already called
+out for images:
+
+- **`page` is 1-indexed**, matching this codebase's own `images/<n>/` directory
+  numbering (see "PDF Pagination" above) — legacy used a 0-indexed page number
+  matching its own 0-indexed directory scheme (`images/0/`, `images/1/`, ...). This
+  keeps `page` self-consistent with the directory it actually lives in rather than
+  literally porting legacy's numbering.
+- **No `imageSize` field on `ocr`** — same reasoning as the image manifest's `ocr`
+  entry above (argonath's OCR-prep image isn't derived from picking one of
+  small/medium/large).
+
 ### Video Streaming
 
 `digtk video derivatives` transcodes a video bronze item into an HLS
@@ -443,6 +562,13 @@ directory:
 
 Manifests persist beyond Dagster's run retention window and are the durable
 record of what was run, when, and what it produced.
+
+Some process directories' manifests carry additional top-level keys beyond this
+generic shape — `digtk.lib.utils.write_manifest()`'s `opts['extra']` merges them
+in verbatim, since what "extra" content means is specific to the caller, not
+something this shared helper interprets. See "Image Manifest Content" above for
+the one case that currently uses this (`original`/`small`/`medium`/`large`/
+`tiled`/`ocr`).
 
 ## ARK Format
 

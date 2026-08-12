@@ -138,6 +138,10 @@ def fake_image_magick(monkeypatch):
     monkeypatch.setattr(pd.image_magick, "prep_ocr", record("prep_ocr"))
     monkeypatch.setattr(pd.image_magick, "tile", record("tile"))
     monkeypatch.setattr(pd.image_magick, "probe_dimensions", lambda path, opts={}: {"width": 100, "height": 200})
+    monkeypatch.setattr(
+        pd.image_magick, "probe_all_frame_dimensions",
+        lambda path, opts={}: [{"width": 3072, "height": 3976}, {"width": 1536, "height": 1988}],
+    )
     return calls
 
 
@@ -253,6 +257,49 @@ def test_derivatives_writes_per_page_manifest(fake_fs, fake_pdf_render, fake_der
     )
     manifest = json.loads(page_manifest_call["data"])
     assert manifest["params"]["page"] == 0
+
+
+def test_derivatives_records_rich_manifest_content_per_page(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, monkeypatch):
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
+
+    page_manifest_call = next(
+        c for c in fake_derivative
+        if c["rel_path"] == "item/public-frontend-derivatives/document.pdf/images/1/manifest.json"
+    )
+    manifest = json.loads(page_manifest_call["data"])
+
+    assert manifest["page"] == 1
+    assert manifest["extractDensity"] == 600
+    assert "original" not in manifest
+    for label in ("small", "medium", "large"):
+        assert manifest[label] == {
+            "size": {"width": "100", "height": "200"},
+            "url": f"cask://silver/g/c/latest/item/public-frontend-derivatives/document.pdf/images/1/{label}.jpg",
+        }
+    assert manifest["tiled"] == {
+        "size": [{"width": "3072", "height": "3976"}, {"width": "1536", "height": "1988"}],
+        "url": "cask://silver/g/c/latest/item/public-frontend-derivatives/document.pdf/images/1/tiled.tif",
+    }
+    assert manifest["ocr"] == {
+        "size": {"width": "100", "height": "200"},
+        "url": "cask://silver/g/c/latest/item/ocr/page-000/document-page-000-prep.jpg",
+    }
+
+
+def test_derivatives_writes_pages_array_on_aggregate_manifest(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, monkeypatch):
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
+
+    agg_manifest_call = next(
+        c for c in fake_derivative
+        if c["rel_path"] == "item/public-frontend-derivatives/document.pdf/images/manifest.json"
+    )
+    manifest = json.loads(agg_manifest_call["data"])
+
+    assert [p["page"] for p in manifest["pages"]] == [1, 2]
+    assert manifest["pages"][0]["small"]["url"].endswith("/images/1/small.jpg")
+    assert manifest["pages"][1]["small"]["url"].endswith("/images/2/small.jpg")
 
 
 def test_derivatives_decides_orientation_independently_per_page(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, monkeypatch):

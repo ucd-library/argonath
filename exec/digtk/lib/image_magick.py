@@ -133,6 +133,32 @@ def probe_dimensions(path, opts={}):
     return {"width": int(width), "height": int(height)}
 
 
+def probe_all_frame_dimensions(path, opts={}):
+    """Probe the pixel dimensions of every frame in a multi-frame image, via `identify`.
+
+    Unlike probe_dimensions(), this never selects a single frame — `identify`
+    applies -format once per frame when none is selected, which is exactly what a
+    pyramidal TIFF's resolution-level enumeration needs (see
+    digtk.models.digital_website.image's rich manifest content: tile()'s output has
+    one frame per pyramid level, largest first).
+
+    :param str path: Local image path.
+    :param dict opts: 'timeout' (float), 'magick' (bool) — see _use_magick().
+    :returns: One {"width": int, "height": int} entry per frame, in file order.
+    :rtype: list[dict]
+    :raises ImageMagickError: If `identify` fails or times out.
+    """
+    stdout = run(_identify_argv(opts) + ["-format", "%wx%h\n", path], opts)
+    dims = []
+    for line in stdout.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        width, height = line.split("x")
+        dims.append({"width": int(width), "height": int(height)})
+    return dims
+
+
 def _bit_depth(path, opts={}):
     """Read an image's bits-per-channel via `identify`.
 

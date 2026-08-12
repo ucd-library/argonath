@@ -62,3 +62,19 @@ def test_write_manifest_passes_time_through_to_derivative_write(monkeypatch):
     monkeypatch.setattr(derivative, "write", lambda **kwargs: calls.append(kwargs))
     utils.write_manifest("c", "x", [], {}, [], source_files=["cask:/bronze/g/c/2026-01-01/x/y.tiff"], opts={"group": "g", "time": "2026-01-01"})
     assert calls[0]["opts"]["time"] == "2026-01-01"
+
+
+def test_write_manifest_merges_extra_top_level_keys(monkeypatch):
+    monkeypatch.setattr(derivative, "write", lambda **kwargs: None)
+    manifest = utils.write_manifest(
+        "c", "x", [], {}, ["small.jpg"], source_files=["cask:/bronze/g/c/latest/x/y.tiff"],
+        opts={"group": "g", "extra": {"small": {"size": {"width": 256, "height": 326}, "url": "cask://silver/g/c/latest/x/small.jpg"}}},
+    )
+    assert manifest["small"] == {"size": {"width": 256, "height": 326}, "url": "cask://silver/g/c/latest/x/small.jpg"}
+    assert manifest["outputs"] == ["small.jpg"]
+
+
+def test_write_manifest_without_extra_has_no_extra_keys(monkeypatch):
+    monkeypatch.setattr(derivative, "write", lambda **kwargs: None)
+    manifest = utils.write_manifest("c", "x", [], {}, [], source_files=["cask:/bronze/g/c/latest/x/y.tiff"], opts={"group": "g"})
+    assert set(manifest.keys()) == {"written_at", "status", "command", "params", "outputs", "duration_s"}

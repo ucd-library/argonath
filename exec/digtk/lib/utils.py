@@ -65,7 +65,14 @@ def write_manifest(collection, rel_path, command, params, outputs, source_files,
         outputs were derived from — this manifest's own lineage.
     :param dict opts: 'group' (required), 'time' (default 'latest'), 'status'
         (default "success"), 'duration_s' (float), 'error' (str, only meaningful
-        if status="error").
+        if status="error"), 'extra' (dict, optional) — additional top-level keys
+        merged into the manifest as-is, for callers that need richer per-output
+        content than the generic 'outputs' filename list (e.g.
+        digtk.models.digital_website.image's per-size/url "original"/"small"/
+        "medium"/"large"/"tiled"/"ocr" manifest content — see
+        docs/cask-conventions.md's manifest.json section). Generic here on
+        purpose: this function stays media-type-agnostic, so the caller decides
+        what "extra" means for its own outputs.
     :returns: The manifest dict that was written.
     :rtype: dict
     """
@@ -79,6 +86,8 @@ def write_manifest(collection, rel_path, command, params, outputs, source_files,
     }
     if "error" in opts:
         manifest["error"] = opts["error"]
+    if "extra" in opts:
+        manifest.update(opts["extra"])
 
     derivative.write(
         type="silver",

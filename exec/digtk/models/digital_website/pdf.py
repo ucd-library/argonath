@@ -52,12 +52,15 @@ def _rasterize(pdf_path, page_index, tmp_dir, stem, page_tag, opts):
     """Rasterize one PDF page to a local image, named to avoid collisions across
     sources/pages sharing one temp directory.
 
-    :rtype: str -- local raster image path
+    :returns: pdf_render.rasterize_page()'s own result — {"dest_path": str,
+        "dpi": float, "width_px": int, "height_px": int}. derivatives() uses "dpi"
+        for its manifest's "extractDensity" field; other callers just want
+        "dest_path".
+    :rtype: dict
     """
     raster_format = opts.get("raster_format", CONFIG["pdf"]["raster_format"])
     raster_path = os.path.join(tmp_dir, f"{stem}-{page_tag}-raster.{raster_format}")
-    pdf_render.rasterize_page(pdf_path, page_index, raster_path, opts)
-    return raster_path
+    return pdf_render.rasterize_page(pdf_path, page_index, raster_path, opts)
 
 
 def page_count(ark, opts={}):
@@ -102,7 +105,7 @@ def thumbnail(ark, opts={}):
         pdfs = {}
         for src in sources:
             pdf_filename = os.path.basename(src["bronze_path"])
-            raster_path = _rasterize(src["local_path"], page, tmp_dir, src["stem"], f"page-{page:03d}", opts)
+            raster_path = _rasterize(src["local_path"], page, tmp_dir, src["stem"], f"page-{page:03d}", opts)["dest_path"]
             thumb_set = pipeline.generate_thumbnail_set(raster_path, tmp_dir, widths, f"{src['stem']}-{page}", opts)
             local_outputs = [(fn, local_path, src["bronze_path"]) for fn, local_path in thumb_set]
 
@@ -142,7 +145,7 @@ def convert(ark, opts={}):
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pdf_paths})
         local_outputs = []
         for src in sources:
-            raster_path = _rasterize(src["local_path"], page, tmp_dir, src["stem"], f"page-{page:03d}", opts)
+            raster_path = _rasterize(src["local_path"], page, tmp_dir, src["stem"], f"page-{page:03d}", opts)["dest_path"]
             filename = pipeline.output_name(src["stem"], f"converted{ext}", multi)
             local_dest = os.path.join(tmp_dir, filename)
             image_magick.convert_format(raster_path, local_dest, opts={"quality": opts.get("quality", CONFIG["image"]["thumbnail_quality"])})
@@ -183,7 +186,7 @@ def deskew(ark, opts={}):
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pdf_paths})
         local_outputs = []
         for src in sources:
-            raster_path = _rasterize(src["local_path"], page, tmp_dir, src["stem"], f"page-{page:03d}", opts)
+            raster_path = _rasterize(src["local_path"], page, tmp_dir, src["stem"], f"page-{page:03d}", opts)["dest_path"]
             filename = pipeline.output_name(src["stem"], "deskewed.jpg", multi)
             local_dest = os.path.join(tmp_dir, filename)
             image_magick.deskew(raster_path, local_dest, opts=opts)
@@ -224,7 +227,7 @@ def prep_ocr(ark, opts={}):
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pdf_paths})
         local_outputs = []
         for src in sources:
-            raster_path = _rasterize(src["local_path"], page, tmp_dir, src["stem"], f"page-{page:03d}", opts)
+            raster_path = _rasterize(src["local_path"], page, tmp_dir, src["stem"], f"page-{page:03d}", opts)["dest_path"]
             base_name = "prep-deskew.jpg" if opts.get("deskew") else "prep.jpg"
             filename = pipeline.output_name(src["stem"], base_name, multi)
             local_dest = os.path.join(tmp_dir, filename)
@@ -265,6 +268,19 @@ def derivatives(ark, opts={}):
     generation happens before anything is published to CaskFS, so a failure at any step
     leaves no partial derivative set behind for that PDF.
 
+    Each page's own images/<n>/ manifest also carries an "extra" block — "page" (this
+    codebase's own 1-indexed page number, matching the directory it's published into —
+    legacy DAMS/Fedora used a 0-indexed page number matching its own 0-indexed directory
+    scheme, so this is a deliberate divergence to stay self-consistent rather than a
+    literal port), "extractDensity" (the DPI rasterize_page() actually used for this
+    page), and "small"/"medium"/"large"/"tiled"/"ocr" keys shaped exactly like
+    digtk.models.digital_website.image.generate()'s own manifest content (see its
+    docstring and docs/cask-conventions.md's "Image Manifest Content"/"PDF Manifest
+    Content") — no "original" key here, since a PDF page has no separate original
+    binary reference the way a plain image derivative does. The aggregate images/
+    manifest additionally carries a "pages" array composing every page's own extra
+    block, mirroring the legacy pipeline's per-PDF composite manifest.
+
     :param str ark: Item ARK identifier.
     :param dict opts: 'widths' (comma-separated str, default
         CONFIG["image"]["thumbnail_widths"]); forwarded to pdf_render/image_magick/ocr_utils:
@@ -299,12 +315,15 @@ def derivatives(ark, opts={}):
             orientations = {}
             derivatives_pages = {}
             ocr_pages = []
+            page_manifest_entries = []
 
             for page_index in range(count):
                 page_no = page_index + 1
                 page_tag = _page_tag(page_index, count)  # still used for the (unchanged) ocr/ path
                 utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: rasterizing...")
-                raster_path = _rasterize(pdf_path, page_index, tmp_dir, stem, page_tag, opts)
+                raster = _rasterize(pdf_path, page_index, tmp_dir, stem, page_tag, opts)
+                raster_path = raster["dest_path"]
+                density = raster["dpi"]
 
                 utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: deciding orientation (running OCR twice)...")
                 orientation = pipeline.select_orientation(raster_path, tmp_dir, opts)
@@ -327,28 +346,56 @@ def derivatives(ark, opts={}):
                 prep_path = os.path.join(tmp_dir, f"{stem}-{page_tag}-{base_prep_name}")
                 image_magick.prep_ocr(raster_path, prep_path, opts={**opts, "deskew": apply_deskew})
 
+                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: probing derivative dimensions...")
+                size_by_label = {label: image_magick.probe_dimensions(local_path) for label, (fn, local_path) in zip(pipeline.THUMBNAIL_SIZE_LABELS, thumb_set)}
+                images_dir = pipeline.derivative_dir(item, f"{images_base}/{page_no}")
+                ocr_dir = pipeline.derivative_dir(item, f"{ocr_prefix}ocr/{page_tag}")
+                ocr_filename = os.path.basename(prep_path)
+                page_manifest_extra = {
+                    "page": page_no,
+                    "extractDensity": density,
+                    **{
+                        label: {
+                            "size": pipeline.size_as_strings(size_by_label[label]),
+                            "url": pipeline.cask_public_ref(f"{images_dir}/{label}.jpg"),
+                        }
+                        for label in pipeline.THUMBNAIL_SIZE_LABELS
+                    },
+                    "tiled": {
+                        "size": [pipeline.size_as_strings(d) for d in image_magick.probe_all_frame_dimensions(tile_dest)],
+                        "url": pipeline.cask_public_ref(f"{images_dir}/tiled.tif"),
+                    },
+                    "ocr": {
+                        "size": pipeline.size_as_strings(image_magick.probe_dimensions(prep_path)),
+                        "url": pipeline.cask_public_ref(f"{ocr_dir}/{ocr_filename}"),
+                    },
+                }
+                page_manifest_entries.append(page_manifest_extra)
+
                 command = ["digtk", "pdf", "derivatives", ark, "--widths", ",".join(map(str, widths))]
                 page_result = pipeline.publish(
                     item, f"{images_base}/{page_no}", thumb_outputs,
                     command=command,
                     params={"widths": widths, "page": page_index, "orientation": {"deskew_selected": apply_deskew, "stats": orientation["stats"]}},
-                    opts={"link_relation": _LINK_RELATION["derivatives"]},
+                    opts={
+                        "manifest_opts": {"extra": page_manifest_extra},
+                        "link_relation": _LINK_RELATION["derivatives"],
+                    },
                 )
                 ocr_result = pipeline.publish(
-                    item, f"{ocr_prefix}ocr/{page_tag}", [(os.path.basename(prep_path), prep_path, src["bronze_path"])],
+                    item, f"{ocr_prefix}ocr/{page_tag}", [(ocr_filename, prep_path, src["bronze_path"])],
                     command=command,
                     params={"page": page_index, "orientation": {"deskew_selected": apply_deskew}},
                     opts={"link_relation": _LINK_RELATION["ocr"]},
                 )
 
-                for fn, local_path in thumb_set:
-                    dims = image_magick.probe_dimensions(local_path)
+                for label, (fn, local_path) in zip(pipeline.THUMBNAIL_SIZE_LABELS, thumb_set):
                     image_objects.append({
                         "@type": "ImageObject",
-                        "contentUrl": pipeline.cask_public_ref(f"{page_result['dir']}/{fn}"),
+                        "contentUrl": pipeline.cask_public_ref(f"{images_dir}/{fn}"),
                         "encodingFormat": "image/jpeg",
                         "position": page_index,
-                        **dims,
+                        **size_by_label[label],
                     })
                 derivatives_pages[str(page_no)] = page_result
                 ocr_pages.append(ocr_result)
@@ -367,7 +414,7 @@ def derivatives(ark, opts={}):
                 }},
                 outputs=[f"{tag}/" for tag in orientations],
                 source_files=[src["bronze_path"]],
-                opts=manifest_opts,
+                opts={**manifest_opts, "extra": {"pages": page_manifest_entries}},
             )
             ocr_manifest = utils.write_manifest(
                 item.collection, agg_ocr_rel_path,
