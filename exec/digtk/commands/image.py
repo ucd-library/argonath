@@ -7,10 +7,11 @@ Subcommands:
   deskew       — correct skew in scanned images
   prep-ocr     — prepare image for OCR (2048px, 300 DPI, fuzz whiten)
   derivatives  — generate the full derivative set with orientation auto-detection
-                 (thumbnails, deskew, OCR-prep, all sharing one OCR-driven orientation
-                 decision) — this is what Dagster's derivatives_job actually calls;
-                 the others above are deterministic single-recipe commands for
-                 ad-hoc/manual use.
+                 (thumbnails, deskew, OCR-prep, a tiled pyramid TIFF for future
+                 IIIF-style deep-zoom serving, all sharing one OCR-driven
+                 orientation decision) — this is what Dagster's derivatives_job
+                 actually calls; the others above are deterministic single-recipe
+                 commands for ad-hoc/manual use.
 """
 from typing import Annotated
 
@@ -26,7 +27,7 @@ from digtk.lib.config import (
     ImageThumbnailQualityOption,
     ImageThumbnailWidthsOption,
 )
-from digtk.models import digital_website
+from digtk.models.digital_website import image
 
 app = typer.Typer(help="Image processing commands.", no_args_is_help=True)
 
@@ -42,7 +43,7 @@ def thumbnail(
     """Generate thumbnail JPEGs at each requested width."""
     try:
         utils.log(f"Generating thumbnails for {ark} at widths {widths}")
-        utils.result(digital_website.thumbnails(ark, opts={"widths": widths, "quality": quality}))
+        utils.result(image.thumbnails(ark, opts={"widths": widths, "quality": quality}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -55,7 +56,7 @@ def convert(
     """Convert source binary to the specified format."""
     try:
         utils.log(f"Converting {ark} to {format}")
-        utils.result(digital_website.convert(ark, opts={"format": format}))
+        utils.result(image.convert(ark, opts={"format": format}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -69,7 +70,7 @@ def deskew(
     """Correct skew in a scanned image."""
     try:
         utils.log(f"Deskewing {ark} (threshold {threshold}%)")
-        utils.result(digital_website.deskew(ark, opts={"threshold": threshold, "quality": quality}))
+        utils.result(image.deskew(ark, opts={"threshold": threshold, "quality": quality}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -84,7 +85,7 @@ def prep_ocr(
     """Prepare image for OCR: 2048px long edge, 300 DPI, fuzz whiten background."""
     try:
         utils.log(f"Preparing {ark} for OCR (dpi={dpi}, deskew={deskew})")
-        utils.result(digital_website.prep_ocr(ark, opts={"dpi": dpi, "fuzz": fuzz_threshold, "deskew": deskew}))
+        utils.result(image.prep_ocr(ark, opts={"dpi": dpi, "fuzz": fuzz_threshold, "deskew": deskew}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -105,7 +106,7 @@ def derivatives(
     """
     try:
         utils.log(f"Generating derivatives for {ark} at widths {widths}")
-        result = digital_website.generate(ark, opts={
+        result = image.generate(ark, opts={
             "widths": widths,
             "threshold": deskew_threshold,
             "fuzz": fuzz_threshold,

@@ -15,11 +15,19 @@ RUN apt-get update && \
     tesseract-ocr-eng \
     imagemagick \
     ghostscript \
+    poppler-utils \
+    ffmpeg \
     libmagic1 \
     postgresql-client-16 && \
     rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir uv
+
+# openai-whisper's local ASR model is downloaded lazily on first `whisper` invocation
+# (cached under ~/.cache/whisper) rather than baked in here — see docs/cask-conventions.md's
+# Captions/Transcripts section. The deployment environment needs a persistent volume at
+# that cache path so the model isn't re-downloaded on every container restart.
+RUN uv pip install --system --no-cache-dir openai-whisper
 
 # Allow ImageMagick to read/write all formats (default policy restricts PDF etc.)
 RUN sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/' \

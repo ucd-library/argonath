@@ -21,7 +21,7 @@ import os
 import re
 from html.parser import HTMLParser
 
-import fitz  # PyMuPDF
+import pymupdf
 
 DEFAULT_DPI = 200.0
 MIN_FONT_SIZE = 2.0
@@ -83,9 +83,9 @@ def hocr_words(hocr_path):
 def _insert_words(page, words, page_rect, scale):
     """Place each word's invisible text inside its bounding box.
 
-    :param fitz.Page page: Page to write to.
+    :param pymupdf.Page page: Page to write to.
     :param list[dict] words: [{'text', 'bbox'}] in image-pixel coords.
-    :param fitz.Rect page_rect: Full page rectangle in points.
+    :param pymupdf.Rect page_rect: Full page rectangle in points.
     :param float scale: Image pixels -> PDF points factor.
     :returns: Number of words placed.
     :rtype: int
@@ -107,7 +107,7 @@ def _insert_words(page, words, page_rect, scale):
         baseline_x = min(max(x0, 0.0), W - 1)
         baseline_y = min(max(y1 - (y1 - y0) * 0.12, font_size), H - 1)
         try:
-            natural = fitz.get_text_length(text, fontname="helv", fontsize=font_size)
+            natural = pymupdf.get_text_length(text, fontname="helv", fontsize=font_size)
             hscale = (
                 max(MIN_HSCALE, min(box_width / natural, MAX_HSCALE))
                 if natural > 0.1 else 1.0
@@ -115,7 +115,7 @@ def _insert_words(page, words, page_rect, scale):
             page.insert_text(
                 (baseline_x, baseline_y), text,
                 fontsize=font_size, fontname="helv", render_mode=3,
-                morph=(fitz.Point(baseline_x, baseline_y), fitz.Matrix(hscale, 1.0)),
+                morph=(pymupdf.Point(baseline_x, baseline_y), pymupdf.Matrix(hscale, 1.0)),
             )
             placed += 1
         except Exception:  # noqa: BLE001 — never let one word abort the page
@@ -143,14 +143,14 @@ def build_searchable_pdf(image_paths, words_per_page, dest_path, opts={}):
             f"({len(words_per_page)}) must align"
         )
     scale = 72.0 / float(opts.get("dpi", DEFAULT_DPI))
-    doc = fitz.open()
+    doc = pymupdf.open()
     words_placed = 0
     for image_path, words in zip(image_paths, words_per_page):
-        pix = fitz.Pixmap(image_path)
+        pix = pymupdf.Pixmap(image_path)
         w_pt, h_pt = pix.width * scale, pix.height * scale
         pix = None
         page = doc.new_page(width=w_pt, height=h_pt)
-        rect = fitz.Rect(0, 0, w_pt, h_pt)
+        rect = pymupdf.Rect(0, 0, w_pt, h_pt)
         page.insert_image(rect, filename=image_path)
         if words:
             words_placed += _insert_words(page, words, rect, scale)

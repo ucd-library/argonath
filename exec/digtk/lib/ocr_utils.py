@@ -4,7 +4,7 @@ Tesseract is the baseline; ML OCR (surya or docTR) is the fallback
 when Tesseract confidence falls below threshold.
 
 run_tesseract/analyze_words/compare_orientations are ARK/CaskFS-agnostic
-(local file paths only) and deliberately shared: digtk.models.digital_website
+(local file paths only) and deliberately shared: digtk.models.digital_website.image
 calls them during derivatives generation to pick the correct scan orientation,
 and the future `digtk ocr tesseract` command (phase 0.5) calls run_tesseract
 independently, later, to produce an item's final searchable hOCR/text output.

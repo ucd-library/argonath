@@ -9,7 +9,7 @@ for the production bug class (from the reference dams/services/image-utils
 implementation) this is deliberately fixing, not replicating.
 
 This module is ARK/CaskFS-agnostic: every function takes and returns local
-filesystem paths only. digtk.models.digital_website is responsible for
+filesystem paths only. digtk.models.digital_website.image is responsible for
 staging CaskFS sources to local paths before calling in here, and publishing
 local outputs back to CaskFS afterward.
 """
@@ -53,7 +53,7 @@ def _frame_suffix(path, frame):
     return f"{path}[{frame}]" if frame is not None else path
 
 
-def _run(argv, opts={}):
+def run(argv, opts={}):
     """Run an ImageMagick subprocess call safely.
 
     :param list[str] argv: Full command, e.g. ["convert", ...]. Never shell-interpreted.
@@ -85,7 +85,7 @@ def _use_magick(opts):
     return bool(opts.get("magick", CONFIG["image"]["use_magick"]))
 
 
-def _convert_argv(opts):
+def convert_argv(opts):
     """Resolve the base command for a convert-style invocation.
 
     Uses `magick` (IMv7's unified CLI, which convert-style operators run under
@@ -104,7 +104,7 @@ def _convert_argv(opts):
 def _identify_argv(opts):
     """Resolve the base command for an identify-style invocation.
 
-    Mirrors _convert_argv(): `magick identify` under IMv7's unified CLI, else
+    Mirrors convert_argv(): `magick identify` under IMv7's unified CLI, else
     the legacy `identify` binary (CONFIG["image"]["identify_bin"] /
     DIGTK_IMAGE_IDENTIFY_BIN).
 
@@ -128,9 +128,35 @@ def probe_dimensions(path, opts={}):
     :raises ImageMagickError: If `identify` fails or times out.
     """
     src = _frame_suffix(path, opts.get("frame"))
-    stdout = _run(_identify_argv(opts) + ["-format", "%wx%h ", src], opts)
+    stdout = run(_identify_argv(opts) + ["-format", "%wx%h ", src], opts)
     width, height = stdout.strip().split()[0].split("x")
     return {"width": int(width), "height": int(height)}
+
+
+def probe_all_frame_dimensions(path, opts={}):
+    """Probe the pixel dimensions of every frame in a multi-frame image, via `identify`.
+
+    Unlike probe_dimensions(), this never selects a single frame — `identify`
+    applies -format once per frame when none is selected, which is exactly what a
+    pyramidal TIFF's resolution-level enumeration needs (see
+    digtk.models.digital_website.image's rich manifest content: tile()'s output has
+    one frame per pyramid level, largest first).
+
+    :param str path: Local image path.
+    :param dict opts: 'timeout' (float), 'magick' (bool) — see _use_magick().
+    :returns: One {"width": int, "height": int} entry per frame, in file order.
+    :rtype: list[dict]
+    :raises ImageMagickError: If `identify` fails or times out.
+    """
+    stdout = run(_identify_argv(opts) + ["-format", "%wx%h\n", path], opts)
+    dims = []
+    for line in stdout.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        width, height = line.split("x")
+        dims.append({"width": int(width), "height": int(height)})
+    return dims
 
 
 def _bit_depth(path, opts={}):
@@ -146,7 +172,7 @@ def _bit_depth(path, opts={}):
     """
     src = _frame_suffix(path, opts.get("frame"))
     try:
-        stdout = _run(_identify_argv(opts) + ["-format", "%[bit-depth]", src], opts)
+        stdout = run(_identify_argv(opts) + ["-format", "%[bit-depth]", src], opts)
     except ImageMagickError:
         return 8
     try:
@@ -180,7 +206,7 @@ def thumbnail(src_path, dest_path, width, opts={}):
     quality = opts.get("quality", CONFIG["image"]["thumbnail_quality"])
     src = _frame_suffix(src_path, opts.get("frame"))
 
-    argv = _convert_argv(opts) + [src, "-auto-orient"]
+    argv = convert_argv(opts) + [src, "-auto-orient"]
     if _bit_depth(src_path, opts) > 8:
         argv.append("-auto-level")
     argv += [
@@ -188,7 +214,7 @@ def thumbnail(src_path, dest_path, width, opts={}):
         "-quality", str(quality), "-alpha", "remove", "-layers", "flatten",
         dest_path,
     ]
-    _run(argv, opts)
+    run(argv, opts)
     return {"argv": argv, "dest_path": dest_path}
 
 
@@ -209,12 +235,12 @@ def convert_format(src_path, dest_path, opts={}):
     quality = opts.get("quality", CONFIG["image"]["thumbnail_quality"])
     src = _frame_suffix(src_path, opts.get("frame"))
 
-    argv = _convert_argv(opts) + [
+    argv = convert_argv(opts) + [
         src,
         "-quality", str(quality), "-alpha", "remove", "-layers", "flatten",
         dest_path,
     ]
-    _run(argv, opts)
+    run(argv, opts)
     return {"argv": argv, "dest_path": dest_path}
 
 
@@ -246,7 +272,7 @@ def deskew(src_path, dest_path, opts={}):
     quality = opts.get("quality", CONFIG["image"]["thumbnail_quality"])
     src = _frame_suffix(src_path, opts.get("frame"))
 
-    argv = _convert_argv(opts) + [
+    argv = convert_argv(opts) + [
         src,
         "-resize", f"{working_width}x",
         "-deskew", f"{threshold}%",
@@ -256,7 +282,7 @@ def deskew(src_path, dest_path, opts={}):
         "-resize", f"{output_width}x",
         dest_path,
     ]
-    _run(argv, opts)
+    run(argv, opts)
     return {"argv": argv, "dest_path": dest_path}
 
 
@@ -297,7 +323,7 @@ def prep_ocr(src_path, dest_path, opts={}):
     quality = opts.get("quality", CONFIG["image"]["ocr_prep_quality"])
     src = _frame_suffix(src_path, opts.get("frame"))
 
-    argv = _convert_argv(opts) + [src, "-auto-orient"]
+    argv = convert_argv(opts) + [src, "-auto-orient"]
     if _bit_depth(src_path, opts) > 8:
         argv.append("-auto-level")
     enhance = opts.get("enhance")
@@ -323,5 +349,50 @@ def prep_ocr(src_path, dest_path, opts={}):
         "-quality", str(quality),
         dest_path,
     ]
-    _run(argv, opts)
+    run(argv, opts)
+    return {"argv": argv, "dest_path": dest_path}
+
+
+def tile(src_path, dest_path, opts={}):
+    """Generate a pyramidal (multi-resolution), tiled TIFF via ImageMagick's `ptif:`
+    output coder, for IIIF-style deep-zoom serving.
+
+    Ported byte-for-byte from the reference dams/services/image-utils pipeline's
+    generate-image-products.sh TILED_TIF_OPTS — same flags, same order:
+
+    `convert <src>[frame] -define tiff:tile-geometry={tile_size}x{tile_size}
+    -compress JPEG -alpha remove -resize {max_width}x -quality {quality}
+    -layers flatten ptif:<dest>`.
+
+    Generation only — there's no IIIF Image API server wired up yet to serve these
+    tiles (see docs/cask-conventions.md's "Deep-Zoom Tiles" section), so this isn't
+    part of thumbnail()/generate()'s standard derivative set.
+
+    :param str src_path: Local source image path (or a rasterized PDF page).
+    :param str dest_path: Local destination path — a plain .tif path; the `ptif:`
+        coder prefix is applied internally, callers don't need to know about it.
+    :param dict opts: 'tile_size' (int, default CONFIG["image"]["tile_size"]),
+        'max_width' (int, default CONFIG["image"]["tile_max_width"]), 'quality' (int,
+        default CONFIG["image"]["tile_quality"]), 'frame' (int|None), 'timeout' (float),
+        'magick' (bool) — see _use_magick().
+    :returns: {"argv": list[str], "dest_path": str}
+    :rtype: dict
+    :raises ImageMagickError: If `convert` fails or times out.
+    """
+    tile_size = opts.get("tile_size", CONFIG["image"]["tile_size"])
+    max_width = opts.get("max_width", CONFIG["image"]["tile_max_width"])
+    quality = opts.get("quality", CONFIG["image"]["tile_quality"])
+    src = _frame_suffix(src_path, opts.get("frame"))
+
+    argv = convert_argv(opts) + [
+        src,
+        "-define", f"tiff:tile-geometry={tile_size}x{tile_size}",
+        "-compress", "JPEG",
+        "-alpha", "remove",
+        "-resize", f"{max_width}x",
+        "-quality", str(quality),
+        "-layers", "flatten",
+        f"ptif:{dest_path}",
+    ]
+    run(argv, opts)
     return {"argv": argv, "dest_path": dest_path}

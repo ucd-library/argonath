@@ -1,4 +1,4 @@
-import fitz
+import pymupdf
 import pytest
 
 from digtk.models import pdf_utils
@@ -15,7 +15,7 @@ HOCR_SAMPLE = """
 
 
 def _make_page_image(path, width=800, height=600):
-    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, width, height))
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, width, height))
     pix.clear_with(255)
     pix.save(str(path))
 
@@ -59,7 +59,7 @@ def test_build_creates_pdf_with_page_per_image(tmp_path):
     )
 
     assert result == {"pages": 2, "words_placed": 1}
-    doc = fitz.open(str(dest))
+    doc = pymupdf.open(str(dest))
     assert doc.page_count == 2
     # 800x600 px at default 200 dpi -> 288x216 pt
     assert doc[0].rect.width == pytest.approx(288.0)
@@ -74,7 +74,7 @@ def test_text_is_searchable_and_lands_on_its_box(tmp_path):
         [str(img)], [[{"text": "HELLO", "bbox": [100, 200, 300, 240]}]], str(dest)
     )
 
-    doc = fitz.open(str(dest))
+    doc = pymupdf.open(str(dest))
     hits = doc[0].search_for("HELLO")
     assert len(hits) == 1
     # bbox [100..300] px at 200 dpi -> [36..108] pt: the hscaled word should
@@ -89,7 +89,7 @@ def test_dpi_opt_scales_page(tmp_path):
     _make_page_image(img)
     dest = tmp_path / "out.pdf"
     pdf_utils.build_searchable_pdf([str(img)], [None], str(dest), opts={"dpi": 400})
-    doc = fitz.open(str(dest))
+    doc = pymupdf.open(str(dest))
     assert doc[0].rect.width == pytest.approx(144.0)
 
 
@@ -100,7 +100,7 @@ def test_title_and_producer_metadata(tmp_path):
     pdf_utils.build_searchable_pdf(
         [str(img)], [None], str(dest), opts={"title": "Bodega Report 12"}
     )
-    doc = fitz.open(str(dest))
+    doc = pymupdf.open(str(dest))
     assert doc.metadata["title"] == "Bodega Report 12"
     assert doc.metadata["producer"] == "digtk"
 
@@ -130,6 +130,6 @@ def test_hocr_to_pdf_round_trip(tmp_path):
     result = pdf_utils.build_searchable_pdf([str(img)], [words], str(dest))
 
     assert result["words_placed"] == 2
-    text = fitz.open(str(dest))[0].get_text()
+    text = pymupdf.open(str(dest))[0].get_text()
     assert "HELLO" in text
     assert "W&B" in text

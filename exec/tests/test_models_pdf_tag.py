@@ -1,4 +1,4 @@
-import fitz
+import pymupdf
 import pikepdf
 import pytest
 
@@ -34,7 +34,7 @@ def _build(tmp_path, words_pages, name="src.pdf"):
     images = []
     for i in range(len(words_pages)):
         img = tmp_path / f"page{i}.png"
-        pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 800, 600))
+        pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 800, 600))
         pix.clear_with(255)
         pix.save(str(img))
         images.append(str(img))
@@ -68,7 +68,7 @@ def test_text_still_searchable_after_tagging(tmp_path):
     src = _build(tmp_path, [PROSE_WORDS])
     dest = tmp_path / "tagged.pdf"
     pdf_tag.tag_scan_pdf(src, str(dest), "Test Doc")
-    page = fitz.open(str(dest))[0]
+    page = pymupdf.open(str(dest))[0]
     assert len(page.search_for("hello")) == 1
     assert "Monthly" in page.get_text()
 

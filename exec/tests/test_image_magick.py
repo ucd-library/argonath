@@ -102,6 +102,23 @@ def test_probe_dimensions_does_not_frame_index_non_tiff(fake_run):
     assert calls[0]["argv"][-1] == "/tmp/photo.jpg"
 
 
+def test_probe_all_frame_dimensions_parses_one_entry_per_frame(fake_run):
+    calls = fake_run(stdout="3072x3911\n1536x1955\n768x977\n")
+    result = image_magick.probe_all_frame_dimensions("/tmp/tiled.tif")
+    assert result == [
+        {"width": 3072, "height": 3911},
+        {"width": 1536, "height": 1955},
+        {"width": 768, "height": 977},
+    ]
+    assert calls[0]["argv"] == ["identify", "-format", "%wx%h\n", "/tmp/tiled.tif"]
+
+
+def test_probe_all_frame_dimensions_never_frame_indexes(fake_run):
+    calls = fake_run(stdout="100x200\n")
+    image_magick.probe_all_frame_dimensions("/tmp/tiled.tif")
+    assert calls[0]["argv"][-1] == "/tmp/tiled.tif"
+
+
 def test_thumbnail_includes_resize_flag(fake_run):
     calls = fake_run()
     result = image_magick.thumbnail("/tmp/src.jpg", "/tmp/thumb-256.jpg", 256)
@@ -306,3 +323,55 @@ def test_run_honors_opts_timeout_override(fake_run):
     calls = fake_run()
     image_magick.convert_format("/tmp/src.jpg", "/tmp/dest.jpg", opts={"timeout": 5})
     assert calls[0]["kwargs"]["timeout"] == 5
+
+
+# --- tile (pyramidal/deep-zoom TIFF) ------------------------------------------
+# Ported byte-for-byte from the reference dams/services/image-utils pipeline's
+# generate-image-products.sh TILED_TIF_OPTS.
+
+def test_tile_matches_legacy_argv_exactly(fake_run):
+    calls = fake_run()
+    result = image_magick.tile("/tmp/src.jpg", "/tmp/tiled.tif")
+    argv = calls[0]["argv"]
+    assert argv == [
+        "convert", "/tmp/src.jpg",
+        "-define", "tiff:tile-geometry=256x256",
+        "-compress", "JPEG",
+        "-alpha", "remove",
+        "-resize", "3072x",
+        "-quality", "90",
+        "-layers", "flatten",
+        "ptif:/tmp/tiled.tif",
+    ]
+    assert result == {"argv": argv, "dest_path": "/tmp/tiled.tif"}
+
+
+def test_tile_frame_indexes_tiff_sources(fake_run):
+    calls = fake_run()
+    image_magick.tile("/tmp/src.tif", "/tmp/tiled.tif")
+    assert calls[0]["argv"][1] == "/tmp/src.tif[0]"
+
+
+def test_tile_honors_custom_tile_size_max_width_and_quality(fake_run):
+    calls = fake_run()
+    image_magick.tile("/tmp/src.jpg", "/tmp/tiled.tif", opts={"tile_size": 512, "max_width": 4096, "quality": 75})
+    argv = calls[0]["argv"]
+    assert "tiff:tile-geometry=512x512" in argv
+    assert argv[argv.index("-resize") + 1] == "4096x"
+    assert argv[argv.index("-quality") + 1] == "75"
+
+
+def test_tile_honors_configured_defaults(fake_run, monkeypatch):
+    monkeypatch.setitem(image_magick.CONFIG["image"], "tile_size", 128)
+    monkeypatch.setitem(image_magick.CONFIG["image"], "tile_max_width", 2048)
+    calls = fake_run()
+    image_magick.tile("/tmp/src.jpg", "/tmp/tiled.tif")
+    argv = calls[0]["argv"]
+    assert "tiff:tile-geometry=128x128" in argv
+    assert argv[argv.index("-resize") + 1] == "2048x"
+
+
+def test_tile_uses_magick_when_opted_in(fake_run):
+    calls = fake_run()
+    image_magick.tile("/tmp/src.jpg", "/tmp/tiled.tif", opts={"magick": True})
+    assert calls[0]["argv"][0] == "magick"
