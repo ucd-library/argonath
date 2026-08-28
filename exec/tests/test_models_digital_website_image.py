@@ -82,7 +82,7 @@ def fake_derivative(monkeypatch):
 
 @pytest.fixture
 def fake_image_magick(monkeypatch):
-    calls = {"thumbnail": [], "convert_format": [], "deskew": [], "prep_ocr": [], "tile": []}
+    calls = {"thumbnail": [], "convert_format": [], "deskew": [], "prep_ocr": [], "tile": [], "detect_skew_angle": []}
 
     def record(kind):
         def fn(src, dest, opts={}):
@@ -91,6 +91,10 @@ def fake_image_magick(monkeypatch):
                 f.write(b"fake-image-bytes")
             return {"dest_path": dest}
         return fn
+
+    def fake_detect_skew_angle(src, opts={}):
+        calls["detect_skew_angle"].append({"src": src, "opts": opts})
+        return 0.0
 
     def record_thumbnail():
         def fn(src, dest, width, opts={}):
@@ -111,16 +115,38 @@ def fake_image_magick(monkeypatch):
     monkeypatch.setattr(dw.image_magick, "deskew", record("deskew"))
     monkeypatch.setattr(dw.image_magick, "prep_ocr", record("prep_ocr"))
     monkeypatch.setattr(dw.image_magick, "tile", record("tile"))
+    monkeypatch.setattr(dw.image_magick, "detect_skew_angle", fake_detect_skew_angle)
     monkeypatch.setattr(dw.image_magick, "probe_dimensions", probe_dimensions)
     monkeypatch.setattr(dw.image_magick, "probe_all_frame_dimensions", probe_all_frame_dimensions)
     return calls
+
+
+@pytest.fixture
+def fake_djvu(monkeypatch):
+    """Stubs out digtk.lib.djvu (via pipeline.build_ocr_products()'s own
+    reference to it) so tests don't need real hOCR files on disk."""
+    def fake_parse_hocr(hocr_path):
+        return {"careas": []}
+
+    def fake_build_djvu_xml(page_structure, **kwargs):
+        return "<OBJECT/>"
+
+    def fake_compute_ocr_stats(page_structures, *, selected, opts={}):
+        return {"selected": selected, "original": {}, "deskewed": {}, "config": {}}
+
+    monkeypatch.setattr(pipeline.djvu, "parse_hocr", fake_parse_hocr)
+    monkeypatch.setattr(pipeline.djvu, "build_djvu_xml", fake_build_djvu_xml)
+    monkeypatch.setattr(pipeline.djvu, "compute_ocr_stats", fake_compute_ocr_stats)
 
 
 def fake_compare_orientations(selected):
     def fn(candidates, opts={}):
         return {
             "selected": selected,
-            "stats": {"original": {"count": 10}, "deskewed": {"count": 20}},
+            "stats": {
+                "original": {"count": 10, "hocr_path": "/tmp/orig.hocr"},
+                "deskewed": {"count": 20, "hocr_path": "/tmp/deskew.hocr"},
+            },
         }
     return fn
 
@@ -248,6 +274,22 @@ def test_select_orientation_generates_both_candidates(tmp_path, fake_image_magic
     assert {c["opts"]["deskew"] for c in prep_calls} == {False, True}
 
 
+def test_select_orientation_measures_angle_off_the_original_candidate(tmp_path, fake_image_magick, monkeypatch):
+    captured_opts = {}
+
+    def fake_compare(candidates, opts={}):
+        captured_opts.update(opts)
+        return {"selected": "original", "stats": {"original": {"count": 10}, "deskewed": {"count": 5}}}
+
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare)
+    pipeline.select_orientation("/tmp/src.jpg", str(tmp_path), opts={})
+
+    angle_calls = fake_image_magick["detect_skew_angle"]
+    assert len(angle_calls) == 1
+    assert angle_calls[0]["src"].endswith("orientation-original-src.jpg.jpg")
+    assert captured_opts["angle"] == 0.0
+
+
 def test_select_orientation_original_when_comparison_picks_original(tmp_path, fake_image_magick, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     result = pipeline.select_orientation("/tmp/src.jpg", str(tmp_path), opts={})
@@ -256,25 +298,28 @@ def test_select_orientation_original_when_comparison_picks_original(tmp_path, fa
 
 # --- generate() umbrella: single-image item ---------------------------------
 
-def test_generate_stages_source_exactly_once(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
+def test_generate_stages_source_exactly_once(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     dw.generate(ARK, opts={"widths": WIDTHS})
     assert len(fake_fs["read_stream_calls"]) == 1
 
 
-def test_generate_calls_compare_orientations_exactly_once(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
+def test_generate_calls_compare_orientations_exactly_once(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     calls = []
 
     def spy(candidates, opts={}):
         calls.append(candidates)
-        return {"selected": "original", "stats": {"original": {}, "deskewed": {}}}
+        return {
+            "selected": "original",
+            "stats": {"original": {"hocr_path": "/tmp/orig.hocr"}, "deskewed": {"hocr_path": "/tmp/deskew.hocr"}},
+        }
 
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", spy)
     dw.generate(ARK, opts={"widths": WIDTHS})
     assert len(calls) == 1
 
 
-def test_generate_applies_deskew_decision_to_every_width(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
+def test_generate_applies_deskew_decision_to_every_width(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("deskewed"))
     dw.generate(ARK, opts={"widths": WIDTHS})
 
@@ -284,14 +329,14 @@ def test_generate_applies_deskew_decision_to_every_width(fake_fs, fake_derivativ
     assert len(fake_image_magick["prep_ocr"]) == 3  # 2 orientation candidates + 1 final chosen prep image
 
 
-def test_generate_uses_resize_when_original_orientation_wins(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
+def test_generate_uses_resize_when_original_orientation_wins(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     dw.generate(ARK, opts={"widths": WIDTHS})
     assert len(fake_image_magick["deskew"]) == 0
     assert {c["width"] for c in fake_image_magick["thumbnail"]} == {256, 512, 1024}
 
 
-def test_generate_publishes_derivatives_and_ocr_as_separate_manifests(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
+def test_generate_publishes_derivatives_and_ocr_as_separate_manifests(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("deskewed"))
     result = dw.generate(ARK, opts={"widths": WIDTHS})
 
@@ -301,11 +346,11 @@ def test_generate_publishes_derivatives_and_ocr_as_separate_manifests(fake_fs, f
     )
     assert sorted(image_result["outputs"]) == ["large.jpg", "medium.jpg", "small.jpg", "tiled.tif"]
     assert result["ocr"]["dir"] == "cask:/silver/g/c/latest/item/ocr"
-    assert result["ocr"]["outputs"] == ["prep-deskew.jpg"]
+    assert sorted(result["ocr"]["outputs"]) == ["ocr-stats.json", "ocr.djvu", "prep-deskew.jpg"]
     assert result["orientation"]["photo"]["deskew"] is True
 
 
-def test_generate_records_orientation_decision_in_derivatives_manifest_params(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
+def test_generate_records_orientation_decision_in_derivatives_manifest_params(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("deskewed"))
     dw.generate(ARK, opts={"widths": WIDTHS})
     derivatives_manifest_call = next(
@@ -318,7 +363,7 @@ def test_generate_records_orientation_decision_in_derivatives_manifest_params(fa
 
 
 def test_generate_records_rich_manifest_content_for_original_small_medium_large_tiled_ocr(
-    fake_fs, fake_derivative, fake_image_magick, monkeypatch
+    fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch
 ):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     dw.generate(ARK, opts={"widths": WIDTHS})
@@ -343,13 +388,15 @@ def test_generate_records_rich_manifest_content_for_original_small_medium_large_
     }
     assert manifest["ocr"] == {
         "size": {"width": "100", "height": "200"},
-        "url": "cask://silver/g/c/latest/item/ocr/prep.jpg",
+        "imageSize": "large",
+        "url": "cask://silver/g/c/latest/item/ocr/ocr.djvu",
     }
 
 
 def test_generate_fails_before_any_publish_when_a_thumbnail_fails(fake_fs, fake_derivative, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     monkeypatch.setattr(dw.image_magick, "prep_ocr", lambda src, dest, opts={}: {"dest_path": dest})
+    monkeypatch.setattr(dw.image_magick, "detect_skew_angle", lambda src, opts={}: 0.0)
 
     def failing_thumbnail(src, dest, width, opts={}):
         raise RuntimeError("convert exploded")
@@ -362,7 +409,7 @@ def test_generate_fails_before_any_publish_when_a_thumbnail_fails(fake_fs, fake_
     assert fake_derivative == []
 
 
-def test_generate_cleans_up_temp_directory(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
+def test_generate_cleans_up_temp_directory(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     captured_dirs = []
     original_stage = pipeline.stage_sources
@@ -377,7 +424,7 @@ def test_generate_cleans_up_temp_directory(fake_fs, fake_derivative, fake_image_
     assert not os.path.exists(captured_dirs[0])
 
 
-def test_generate_writes_associated_media_sidecar_with_dimensions(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
+def test_generate_writes_associated_media_sidecar_with_dimensions(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     dw.generate(ARK, opts={"widths": WIDTHS})
 
@@ -394,7 +441,7 @@ def test_generate_writes_associated_media_sidecar_with_dimensions(fake_fs, fake_
         )
 
 
-def test_generate_merges_into_existing_sidecar(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
+def test_generate_merges_into_existing_sidecar(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     monkeypatch.setattr(pipeline.fs, "exists", lambda path: True)
     monkeypatch.setattr(pipeline.fs, "read", lambda path: b'{"@id": "' + ARK.encode() + b'", "ark": "' + ARK.encode() + b'", "name": "Existing Title"}')
@@ -409,7 +456,7 @@ def test_generate_merges_into_existing_sidecar(fake_fs, fake_derivative, fake_im
 
 # --- generate() umbrella: multi-image item ----------------------------------
 
-def test_generate_decides_orientation_independently_per_image(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
+def test_generate_decides_orientation_independently_per_image(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     use_multi_item(monkeypatch)
     calls = []
 
@@ -418,7 +465,13 @@ def test_generate_decides_orientation_independently_per_image(fake_fs, fake_deri
         # alternating by call order to prove each image gets its own decision
         calls.append(candidates)
         selected = "deskewed" if len(calls) == 1 else "original"
-        return {"selected": selected, "stats": {"original": {"count": 1}, "deskewed": {"count": 2}}}
+        return {
+            "selected": selected,
+            "stats": {
+                "original": {"count": 1, "hocr_path": "/tmp/orig.hocr"},
+                "deskewed": {"count": 2, "hocr_path": "/tmp/deskew.hocr"},
+            },
+        }
 
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", selective_compare)
     result = dw.generate(ARK, opts={"widths": WIDTHS})
@@ -428,7 +481,7 @@ def test_generate_decides_orientation_independently_per_image(fake_fs, fake_deri
     assert result["orientation"]["photo-b"]["deskew"] is False
 
 
-def test_generate_nests_multi_image_derivatives_by_source_filename(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
+def test_generate_nests_multi_image_derivatives_by_source_filename(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     use_multi_item(monkeypatch)
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
 
@@ -441,10 +494,13 @@ def test_generate_nests_multi_image_derivatives_by_source_filename(fake_fs, fake
         )
         assert sorted(result["derivatives"][filename]["outputs"]) == ["large.jpg", "medium.jpg", "small.jpg", "tiled.tif"]
     assert result["ocr"]["dir"] == "cask:/silver/g/c/latest/box-1/folder-3/ocr"
-    assert sorted(result["ocr"]["outputs"]) == ["photo-a-prep.jpg", "photo-b-prep.jpg"]
+    assert sorted(result["ocr"]["outputs"]) == [
+        "photo-a-ocr-stats.json", "photo-a-ocr.djvu", "photo-a-prep.jpg",
+        "photo-b-ocr-stats.json", "photo-b-ocr.djvu", "photo-b-prep.jpg",
+    ]
 
 
-def test_generate_associated_media_covers_every_image_for_multi_image_item(fake_fs, fake_derivative, fake_image_magick, monkeypatch):
+def test_generate_associated_media_covers_every_image_for_multi_image_item(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     use_multi_item(monkeypatch)
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
 

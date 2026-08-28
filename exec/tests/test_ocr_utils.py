@@ -182,6 +182,64 @@ def test_compare_orientations_honors_custom_word_count_threshold(monkeypatch):
     assert result["selected"] == "deskewed"
 
 
+def test_compare_orientations_exposes_hocr_path_per_candidate(monkeypatch):
+    stats = {
+        "/orig.jpg": {"count": 50, "avg": 60.0, "median": 60.0},
+        "/deskew.jpg": {"count": 150, "avg": 90.0, "median": 90.0},
+    }
+    monkeypatch.setattr(ocr_utils, "run_tesseract", lambda path, base, opts: {"hocr_path": path + ".hocr"})
+    monkeypatch.setattr(ocr_utils, "analyze_words", lambda hocr_path, opts: dict(stats[hocr_path[:-5]]))
+
+    result = ocr_utils.compare_orientations({"original": "/orig.jpg", "deskewed": "/deskew.jpg"})
+    assert result["stats"]["original"]["hocr_path"] == "/orig.jpg.hocr"
+    assert result["stats"]["deskewed"]["hocr_path"] == "/deskew.jpg.hocr"
+
+
+def test_compare_orientations_keeps_original_when_angle_below_threshold(monkeypatch):
+    """Deskewed clearly wins on count/confidence, but the page barely deviates
+    from level (angle below threshold) -- not worth correcting, matching the
+    reference implementation's angle-threshold gate."""
+    stats = {
+        "/orig.jpg": {"count": 50, "avg": 60.0, "median": 60.0},
+        "/deskew.jpg": {"count": 150, "avg": 90.0, "median": 90.0},
+    }
+    monkeypatch.setattr(ocr_utils, "run_tesseract", lambda path, base, opts: {"hocr_path": path + ".hocr"})
+    monkeypatch.setattr(ocr_utils, "analyze_words", lambda hocr_path, opts: dict(stats[hocr_path[:-5]]))
+
+    result = ocr_utils.compare_orientations(
+        {"original": "/orig.jpg", "deskewed": "/deskew.jpg"}, opts={"angle": 0.3, "angle_threshold": 1.1}
+    )
+    assert result["selected"] == "original"
+
+
+def test_compare_orientations_picks_deskewed_when_angle_exceeds_threshold(monkeypatch):
+    stats = {
+        "/orig.jpg": {"count": 50, "avg": 60.0, "median": 60.0},
+        "/deskew.jpg": {"count": 150, "avg": 90.0, "median": 90.0},
+    }
+    monkeypatch.setattr(ocr_utils, "run_tesseract", lambda path, base, opts: {"hocr_path": path + ".hocr"})
+    monkeypatch.setattr(ocr_utils, "analyze_words", lambda hocr_path, opts: dict(stats[hocr_path[:-5]]))
+
+    result = ocr_utils.compare_orientations(
+        {"original": "/orig.jpg", "deskewed": "/deskew.jpg"}, opts={"angle": -2.5, "angle_threshold": 1.1}
+    )
+    assert result["selected"] == "deskewed"
+
+
+def test_compare_orientations_skips_angle_gate_when_angle_not_provided(monkeypatch):
+    """A caller that doesn't measure an angle (e.g. a direct/legacy call site)
+    gets the old count/confidence-only behavior -- angle=None never blocks."""
+    stats = {
+        "/orig.jpg": {"count": 50, "avg": 60.0, "median": 60.0},
+        "/deskew.jpg": {"count": 150, "avg": 90.0, "median": 90.0},
+    }
+    monkeypatch.setattr(ocr_utils, "run_tesseract", lambda path, base, opts: {"hocr_path": path + ".hocr"})
+    monkeypatch.setattr(ocr_utils, "analyze_words", lambda hocr_path, opts: dict(stats[hocr_path[:-5]]))
+
+    result = ocr_utils.compare_orientations({"original": "/orig.jpg", "deskewed": "/deskew.jpg"})
+    assert result["selected"] == "deskewed"
+
+
 def test_run_tesseract_creates_parent_dirs(fake_run, tmp_path):
     fake_run()
     base = tmp_path / "sub" / "deeper" / "output"

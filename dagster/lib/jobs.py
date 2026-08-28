@@ -12,6 +12,7 @@ from lib.assets import (
     run_ocr,
     generate_metadata,
     index_for_rag,
+    index_for_dams_search,
 )
 
 reconcile_collection_job = dg.define_asset_job(
@@ -50,6 +51,12 @@ search_index_job = dg.define_asset_job(
     description="Index all partitioned items into the RAG store.",
 )
 
+dams_search_index_job = dg.define_asset_job(
+    name="dams_search_index_job",
+    selection=[index_for_dams_search],
+    description="Index all partitioned items into the DAMS website's Elasticsearch search index.",
+)
+
 full_pipeline_job = dg.define_asset_job(
     name="full_pipeline_job",
     selection=[
@@ -58,6 +65,7 @@ full_pipeline_job = dg.define_asset_job(
         run_ocr,
         generate_metadata,
         index_for_rag,
+        index_for_dams_search,
     ],
-    description="Run the full pipeline: ingest → derivatives → OCR → metadata → RAG.",
+    description="Run the full pipeline: ingest → derivatives → OCR → metadata → RAG + DAMS search index.",
 )

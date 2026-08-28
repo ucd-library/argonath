@@ -23,6 +23,7 @@ from lib.assets import (
     run_ocr,
     generate_metadata,
     index_for_rag,
+    index_for_dams_search,
 )
 from lib.jobs import (
     reconcile_collection_job,
@@ -31,6 +32,7 @@ from lib.jobs import (
     ocr_job,
     metadata_job,
     search_index_job,
+    dams_search_index_job,
     full_pipeline_job,
 )
 from lib.sensors import (
@@ -38,6 +40,7 @@ from lib.sensors import (
     ocr_on_derivatives,
     metadata_on_ocr,
     rag_on_metadata,
+    dams_search_on_derivatives,
 )
 from lib.schedules import (
     nightly_arda_index,
@@ -51,6 +54,7 @@ defs = dg.Definitions(
         run_ocr,
         generate_metadata,
         index_for_rag,
+        index_for_dams_search,
     ],
     jobs=[
         reconcile_collection_job,
@@ -59,6 +63,7 @@ defs = dg.Definitions(
         ocr_job,
         metadata_job,
         search_index_job,
+        dams_search_index_job,
         full_pipeline_job,
     ],
     sensors=[
@@ -66,6 +71,7 @@ defs = dg.Definitions(
         ocr_on_derivatives,
         metadata_on_ocr,
         rag_on_metadata,
+        dams_search_on_derivatives,
     ],
     schedules=[
         nightly_arda_index,

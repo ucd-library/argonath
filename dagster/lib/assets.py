@@ -166,3 +166,33 @@ def index_for_rag(context: dg.AssetExecutionContext, config: SearchIndexConfig):
     :param config: SearchIndexConfig with target gold app.
     """
     raise NotImplementedError("phase 0.7")
+
+
+@dg.asset(
+    partitions_def=items_partitions,
+    deps=[generate_derivatives],
+    group_name="dams_search",
+)
+def index_for_dams_search(context: dg.AssetExecutionContext):
+    """Index an item's schema.org metadata into the DAMS website's
+    Elasticsearch index - the same index fin's dbsync populates today (see
+    dams/services/fin/models/item/{model,transform}.js in the dams repo).
+
+    Deliberately depends on generate_derivatives, not generate_metadata: the
+    metadata phase's AI-drafted output is meant for human review before
+    publication, and this asset feeds the live public-facing search index -
+    it should only ever index reviewed/structural metadata, never an
+    unreviewed AI draft. Revisit this dependency if/when a "metadata
+    approved" step is added to the pipeline.
+
+    Distinct from index_for_rag above, which feeds an unrelated
+    LlamaIndex/pgvector RAG search space - named index_for_dams_search
+    rather than overloading index_for_rag's name so the two indexing
+    concerns (public website search vs. AI RAG search) don't get conflated.
+
+    :param context: Dagster asset execution context.
+    """
+    ark = context.partition_key.keys_by_dimension["item"]
+    result = exec(["digtk", "dams-index", "item", ark])
+    context.log.info(f"DAMS search index result: {result}")
+    return dg.Output(result)

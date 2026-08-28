@@ -14,12 +14,14 @@ Subcommands mirror the pipeline phases:
   digtk ingest      — ingest files into CaskFS
   digtk collection  — manage CaskFS collections (add/sync)
   digtk search      — LlamaIndex RAG indexing and querying
+  digtk dams-index  — index items into the DAMS website's Elasticsearch index
+  digtk gcs         — sync an item's derivatives into the legacy DAMS/fin GCS bucket layout
 """
 import sys
 
 import typer
 
-from digtk.commands import ai, audio, auth, collection, config, image, ocr, metadata, ingest, pdf, search, video
+from digtk.commands import ai, audio, auth, collection, config, dams_index, gcs, image, ocr, metadata, ingest, pdf, search, video
 from digtk.lib.banner import print_banner
 
 app = typer.Typer(
@@ -40,6 +42,8 @@ app.add_typer(metadata.app,   name="metadata")
 app.add_typer(ingest.app,     name="ingest")
 app.add_typer(collection.app, name="collection")
 app.add_typer(search.app,     name="search")
+app.add_typer(dams_index.app, name="dams-index")
+app.add_typer(gcs.app,        name="gcs")
 
 
 def main():

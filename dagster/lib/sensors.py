@@ -38,3 +38,16 @@ def rag_on_metadata(context: dg.SensorEvaluationContext):
     :param context: Dagster sensor evaluation context.
     """
     raise NotImplementedError("phase 0.7")
+
+
+@dg.sensor(job_name="dams_search_index_job")
+def dams_search_on_derivatives(context: dg.SensorEvaluationContext):
+    """Trigger dams_search_index_job when derivatives_job completes successfully.
+
+    Fires off derivatives_job, not metadata_job like rag_on_metadata does -
+    see index_for_dams_search's docstring in lib/assets.py for why the DAMS
+    search index deliberately doesn't wait on the AI metadata draft step.
+
+    :param context: Dagster sensor evaluation context.
+    """
+    raise NotImplementedError("not yet wired - new asset, added alongside the fin/argonath migration's dams-router work, not part of the original phased buildout")

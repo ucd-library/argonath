@@ -64,6 +64,9 @@ OCR_CONFIDENCE_THRESHOLD_ENV = "DIGTK_OCR_CONFIDENCE_THRESHOLD"
 # 0.4), which picks the deskewed vs. non-deskewed candidate by word count/confidence.
 OCR_ORIENTATION_WORD_COUNT_THRESHOLD_ENV = "DIGTK_OCR_ORIENTATION_WORD_COUNT_THRESHOLD"
 OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV = "DIGTK_OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD"
+# Minimum detected skew angle (degrees) before the deskewed candidate is even
+# eligible to win -- matches the reference implementation's DESKEW_ANGLE_THRESHOLD.
+OCR_ORIENTATION_ANGLE_THRESHOLD_ENV = "DIGTK_OCR_ORIENTATION_ANGLE_THRESHOLD"
 
 SAMWISE_API_URL_ENV = "SAMWISE_API_URL"
 SAMWISE_API_KEY_ENV = "SAMWISE_API_KEY"
@@ -131,6 +134,8 @@ CAPTIONS_LANGUAGE_ENV = "DIGTK_CAPTIONS_LANGUAGE"
 CAPTIONS_MODEL_ENV = "DIGTK_CAPTIONS_MODEL"
 CAPTIONS_WHISPER_BIN_ENV = "DIGTK_CAPTIONS_WHISPER_BIN"
 CAPTIONS_TIMEOUT_S_ENV = "DIGTK_CAPTIONS_TIMEOUT_S"
+
+GCS_BUCKET_ENV = "DIGTK_GCS_BUCKET"
 
 CONFIG_PATH_ENV = "DIGTK_CONFIG_PATH"
 
@@ -202,6 +207,8 @@ SETTINGS = [
     {"dotpath": "captions.timeout_s", "env": CAPTIONS_TIMEOUT_S_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_word_count_threshold", "env": OCR_ORIENTATION_WORD_COUNT_THRESHOLD_ENV, "cast": int, "secret": False},
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
+    {"dotpath": "ocr.orientation_angle_threshold", "env": OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, "cast": float, "secret": False},
+    {"dotpath": "gcs.bucket", "env": GCS_BUCKET_ENV, "cast": str, "secret": False},
 ]
 _SETTINGS_BY_DOTPATH = {setting["dotpath"]: setting for setting in SETTINGS}
 
@@ -326,6 +333,10 @@ CONFIG = {
         # original if it has more words above this confidence AND a better median.
         "orientation_word_count_threshold": _env(OCR_ORIENTATION_WORD_COUNT_THRESHOLD_ENV, 100, int),
         "orientation_word_confidence_threshold": _env(OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, 50.0, float),
+        # A deskewed candidate also needs a measured skew angle beyond this many
+        # degrees to be considered worth correcting at all -- matches the reference
+        # implementation's DESKEW_ANGLE_THRESHOLD default.
+        "orientation_angle_threshold": _env(OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, 1.1, float),
     },
     "samwise": {
         "api_url": _env(SAMWISE_API_URL_ENV, "http://samwise.library.ucdavis.edu/api"),
@@ -432,6 +443,13 @@ CONFIG = {
         "model": _env(CAPTIONS_MODEL_ENV, "small"),
         "whisper_bin": _env(CAPTIONS_WHISPER_BIN_ENV, "whisper"),
         "timeout_s": _env(CAPTIONS_TIMEOUT_S_ENV, 3600.0, float),
+    },
+    "gcs": {
+        # Legacy DAMS/fin's GCS_CLIENT_MEDIA_BUCKET default is dams-client-media-prod
+        # (dams/services/fin/Dockerfile) -- this is argonath's own parallel bucket,
+        # kept separate so a sync never touches production derivative data. See
+        # digtk.lib.gcs_sync's module docstring.
+        "bucket": _env(GCS_BUCKET_ENV, "dams-client-media-argonath"),
     },
 }
 
@@ -547,4 +565,9 @@ SearchChunkBufferOption = Annotated[int, typer.Option(
 SearchEmbedModelOption = Annotated[str | None, typer.Option(
     "--model", envvar=SEARCH_EMBED_MODEL_ENV,
     help=f"Embedding model to chunk with. Env: {SEARCH_EMBED_MODEL_ENV}.",
+)]
+
+GcsBucketOption = Annotated[str, typer.Option(
+    "--bucket", envvar=GCS_BUCKET_ENV,
+    help=f"Target GCS bucket for the derivative sync. Env: {GCS_BUCKET_ENV}.",
 )]
