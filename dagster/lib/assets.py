@@ -94,14 +94,14 @@ def generate_derivatives(context: dg.AssetExecutionContext, config: DerivativesC
     """Generate the full image-derivative set for an ingested item: thumbnails,
     a web JPEG, and an OCR-prep image, sharing one scan-orientation decision.
 
-    `digtk image derivatives` auto-detects orientation via a real Tesseract
+    `digtk public-dc image derivatives` auto-detects orientation via a real Tesseract
     comparison (deskewed vs. non-deskewed) rather than a fixed rule, and
     applies that single decision consistently across every output — see
     docs/cask-conventions.md's "Scan Orientation" section.
 
     Assumes this partition's item is an image item — there's no Dagster-level
     routing by media type yet. PDF/video/audio items are processed by invoking
-    `digtk pdf/video/audio derivatives` directly (see docs/cask-conventions.md's
+    `digtk public-dc pdf/video/audio derivatives` directly (see docs/cask-conventions.md's
     "Multi-Format Items" section); wiring that into Dagster is a deliberately
     separate, not-yet-scoped piece of work.
 
@@ -109,7 +109,7 @@ def generate_derivatives(context: dg.AssetExecutionContext, config: DerivativesC
     :param config: DerivativesConfig with thumbnail widths.
     """
     ark = context.partition_key.keys_by_dimension["item"]
-    result = exec(["digtk", "image", "derivatives", ark, "--widths", config.widths])
+    result = exec(["digtk", "public-dc", "image", "derivatives", ark, "--widths", config.widths])
     context.log.info(f"Derivatives result: {result}")
     return dg.Output(result)
 
@@ -193,6 +193,6 @@ def index_for_dams_search(context: dg.AssetExecutionContext):
     :param context: Dagster asset execution context.
     """
     ark = context.partition_key.keys_by_dimension["item"]
-    result = exec(["digtk", "dams-index", "item", ark])
+    result = exec(["digtk", "public-dc", "es", "upsert", ark])
     context.log.info(f"DAMS search index result: {result}")
     return dg.Output(result)

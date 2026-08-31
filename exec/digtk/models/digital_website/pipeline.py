@@ -260,8 +260,8 @@ def update_associated_media(item, media_objects, source_files, source_group):
     derivatives() umbrella runs independently, as its own CLI invocation. Only the
     entries this call's own `source_group` previously wrote are replaced; entries
     from a different group's earlier run are left untouched, so e.g. running `digtk
-    pdf derivatives` after `digtk image derivatives` against the same item doesn't
-    wipe out the image run's associatedMedia entries.
+    public-dc pdf derivatives` after `digtk public-dc image derivatives` against the
+    same item doesn't wipe out the image run's associatedMedia entries.
 
     Uses a plain dict read/merge/write rather than digtk.lib.schema.ItemMetadata
     (its to_jsonld/from_jsonld round-trip is itself an unimplemented phase-0.2

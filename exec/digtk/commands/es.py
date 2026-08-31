@@ -1,8 +1,8 @@
 """
-digtk dams-index — index items into the DAMS website's Elasticsearch index.
+digtk public-dc es — index items into the DAMS website's Elasticsearch index.
 
 Subcommands:
-  item  — index a single item by ark
+  upsert  — index a single item by ark
 
 Distinct from `digtk search` (LlamaIndex/pgvector RAG indexing/querying) -
 different index, different consumer. See digtk.lib.dams_index's module
@@ -20,7 +20,7 @@ app = typer.Typer(help="DAMS Elasticsearch indexing commands.", no_args_is_help=
 
 
 @app.command()
-def item(
+def upsert(
     ark: Annotated[str, typer.Argument(help="Item ARK to index.")],
 ):
     """Index a single item's schema.org metadata into the DAMS search index."""

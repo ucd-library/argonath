@@ -12,7 +12,7 @@ pattern digtk.models.digital_website.pdf uses for a PDF's own directory.
 This module only ever generates the stream itself — a video item's thumbnail, if it
 needs one, comes from a companion image bronze binary (supplied directly by the
 archiving team, e.g. a `.jpg` alongside the `.mp4`) processed independently by
-`digtk image derivatives`, under the ordinary Multi-Format Items convention (see
+`digtk public-dc image derivatives`, under the ordinary Multi-Format Items convention (see
 docs/cask-conventions.md) — there's no ffmpeg-extracted poster frame here.
 
 Each source video gets one VideoObject associatedMedia entry, tagged with its own
@@ -110,7 +110,7 @@ def hls(ark, opts={}):
 
 def derivatives(ark, opts={}):
     """Generate the full derivative set for every source video in the item — the
-    umbrella `digtk video derivatives` calls.
+    umbrella `digtk public-dc video derivatives` calls.
 
     Runs the HLS adaptive-bitrate ladder for every source video, publishing into its
     own `<video-filename>/streaming/` directory (see PUBLIC_FRONTEND_DIR and
