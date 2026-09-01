@@ -13,6 +13,7 @@ from lib.assets import (
     generate_metadata,
     index_for_rag,
     index_for_dams_search,
+    mark_pg_workflow_complete,
 )
 
 reconcile_collection_job = dg.define_asset_job(
@@ -57,6 +58,12 @@ dams_search_index_job = dg.define_asset_job(
     description="Index all partitioned items into the DAMS website's Elasticsearch search index.",
 )
 
+mark_pg_workflow_complete_job = dg.define_asset_job(
+    name="mark_pg_workflow_complete_job",
+    selection=[mark_pg_workflow_complete],
+    description="Write a fin workflow-completion marker directly into fin's Postgres for all partitioned items.",
+)
+
 full_pipeline_job = dg.define_asset_job(
     name="full_pipeline_job",
     selection=[
@@ -66,6 +73,7 @@ full_pipeline_job = dg.define_asset_job(
         generate_metadata,
         index_for_rag,
         index_for_dams_search,
+        mark_pg_workflow_complete,
     ],
-    description="Run the full pipeline: ingest → derivatives → OCR → metadata → RAG + DAMS search index.",
+    description="Run the full pipeline: ingest → derivatives → OCR → metadata → RAG + DAMS search index + fin workflow-table mark.",
 )

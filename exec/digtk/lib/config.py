@@ -137,6 +137,15 @@ CAPTIONS_TIMEOUT_S_ENV = "DIGTK_CAPTIONS_TIMEOUT_S"
 
 GCS_BUCKET_ENV = "DIGTK_GCS_BUCKET"
 
+# fin's own Postgres instance (database 'fcrepo') -- separate from
+# project-anduin's Postgres/pgvector the rest of digtk (search/RAG) talks to.
+# See digtk.lib.pg_workflow.
+FIN_PG_HOST_ENV = "DIGTK_FIN_PG_HOST"
+FIN_PG_PORT_ENV = "DIGTK_FIN_PG_PORT"
+FIN_PG_DATABASE_ENV = "DIGTK_FIN_PG_DATABASE"
+FIN_PG_USER_ENV = "DIGTK_FIN_PG_USER"
+FIN_PG_PASSWORD_ENV = "DIGTK_FIN_PG_PASSWORD"
+
 CONFIG_PATH_ENV = "DIGTK_CONFIG_PATH"
 
 
@@ -209,6 +218,11 @@ SETTINGS = [
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_angle_threshold", "env": OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "gcs.bucket", "env": GCS_BUCKET_ENV, "cast": str, "secret": False},
+    {"dotpath": "fin_pg.host", "env": FIN_PG_HOST_ENV, "cast": str, "secret": False},
+    {"dotpath": "fin_pg.port", "env": FIN_PG_PORT_ENV, "cast": int, "secret": False},
+    {"dotpath": "fin_pg.database", "env": FIN_PG_DATABASE_ENV, "cast": str, "secret": False},
+    {"dotpath": "fin_pg.user", "env": FIN_PG_USER_ENV, "cast": str, "secret": False},
+    {"dotpath": "fin_pg.password", "env": FIN_PG_PASSWORD_ENV, "cast": str, "secret": True},
 ]
 _SETTINGS_BY_DOTPATH = {setting["dotpath"]: setting for setting in SETTINGS}
 
@@ -450,6 +464,18 @@ CONFIG = {
         # kept separate so a sync never touches production derivative data. See
         # digtk.lib.gcs_sync's module docstring.
         "bucket": _env(GCS_BUCKET_ENV, "dams-client-media-argonath"),
+    },
+    "fin_pg": {
+        # fin's own Postgres instance (database 'fcrepo', user 'postgres' --
+        # matching fin/services/fin/node-utils/config.js's own defaults for
+        # those two). host/port default to a local-dev port-forward target
+        # (e.g. `kubectl port-forward svc/postgres 5432:5432 -n dams`), not a
+        # real network path -- see digtk.lib.pg_workflow's module docstring.
+        "host": _env(FIN_PG_HOST_ENV, "localhost"),
+        "port": _env(FIN_PG_PORT_ENV, 5432, int),
+        "database": _env(FIN_PG_DATABASE_ENV, "fcrepo"),
+        "user": _env(FIN_PG_USER_ENV, "postgres"),
+        "password_env": FIN_PG_PASSWORD_ENV,
     },
 }
 

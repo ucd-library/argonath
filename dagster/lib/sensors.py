@@ -51,3 +51,16 @@ def dams_search_on_derivatives(context: dg.SensorEvaluationContext):
     :param context: Dagster sensor evaluation context.
     """
     raise NotImplementedError("not yet wired - new asset, added alongside the fin/argonath migration's dams-router work, not part of the original phased buildout")
+
+
+@dg.sensor(job_name="mark_pg_workflow_complete_job")
+def mark_pg_workflow_complete_on_derivatives(context: dg.SensorEvaluationContext):
+    """Trigger mark_pg_workflow_complete_job when derivatives_job completes successfully.
+
+    Same trigger as dams_search_on_derivatives (derivatives_job, not
+    metadata_job) - see mark_pg_workflow_complete's docstring in
+    lib/assets.py.
+
+    :param context: Dagster sensor evaluation context.
+    """
+    raise NotImplementedError("not yet wired - new asset, added alongside the fin/argonath migration's direct-Postgres-write work, not part of the original phased buildout")

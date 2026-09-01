@@ -305,13 +305,19 @@ def _needs_media_wrapper(item):
     return image_count > 1
 
 
-def _workflow_marker(*, fin_path, bucket, gcs_subpath, workflow_name, params={}):
+def _workflow_marker(*, fin_path, bucket, gcs_subpath, workflow_name, params={}, state="completed"):
     """Builds a workflow-completion marker matching a fin `workflow` Postgres
     row's shape (fin/services/fin/node-utils/lib/workflow/postgres.js's
     `workflow` table columns: workflow_id, created, updated, type, name,
     state, data, error), for fin's workflowExistsInGcs()/loadWorkflowFromGcs()
     to pick up and treat as an already-completed Cloud Workflow run. See this
     module's docstring for the execution-testing caveat.
+
+    state defaults to "completed" since that's the only state this module's
+    own GCS-marker-upload path has ever needed. digtk.lib.pg_workflow reuses
+    this same builder to write directly into fin's Postgres for any of fin's
+    fin_workflow_state enum values (see that module), so the parameter exists
+    for its sake, not this module's.
 
     workflow_id is deterministic (uuid5 of fin_path+workflow_name) rather
     than random, so re-running a sync for the same item/workflow overwrites
@@ -332,6 +338,9 @@ def _workflow_marker(*, fin_path, bucket, gcs_subpath, workflow_name, params={})
     :param str workflow_name: One of WORKFLOW_NAME's values.
     :param dict params: Extra params to embed in the marker's data, mirroring
         what a real Cloud Workflow execution would have recorded.
+    :param str state: One of fin's fin_workflow_state enum values ('pending',
+        'init', 'running', 'completed', 'deleted', 'error'). Default
+        'completed' matches this module's own only use case.
     :returns: Marker dict, ready to json.dumps() and upload to
         'workflows{fin_path}/{workflow_name}.json'.
     :rtype: dict
@@ -343,7 +352,7 @@ def _workflow_marker(*, fin_path, bucket, gcs_subpath, workflow_name, params={})
         "id": workflow_id,
         "name": workflow_name,
         "type": "gc-workflow",
-        "state": "completed",
+        "state": state,
         "created": now,
         "updated": now,
         "error": None,

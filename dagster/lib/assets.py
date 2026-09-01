@@ -196,3 +196,35 @@ def index_for_dams_search(context: dg.AssetExecutionContext):
     result = exec(["digtk", "public-dc", "es", "upsert", ark])
     context.log.info(f"DAMS search index result: {result}")
     return dg.Output(result)
+
+
+@dg.asset(
+    partitions_def=items_partitions,
+    deps=[generate_derivatives],
+    group_name="dams_search",
+)
+def mark_pg_workflow_complete(context: dg.AssetExecutionContext):
+    """Write a workflow-completion marker directly into fin's Postgres
+    workflow.workflow table for this item, so fin's createWorkflow() sees it
+    as already done and skips re-running its (expensive, redundant) Cloud
+    Workflow derivative pipeline for it.
+
+    See digtk.lib.pg_workflow's module docstring for why this writes
+    directly to Postgres rather than going through digtk.lib.gcs_sync's
+    GCS-marker-upload path, and for what this does and doesn't solve --
+    notably, this alone does not stop fin's own dbsync from separately
+    overwriting an argonath-authored ES document on an unrelated fcrepo
+    touch; that's a distinct problem, not addressed by this asset.
+
+    Deliberately kept separate from index_for_dams_search rather than folded
+    into it: this asset's dependency (reachability to fin's own Postgres
+    instance) is unrelated to and independently more fragile than
+    index_for_dams_search's (the DAMS Elasticsearch index), so a failure
+    here shouldn't block or be blocked by that one.
+
+    :param context: Dagster asset execution context.
+    """
+    ark = context.partition_key.keys_by_dimension["item"]
+    result = exec(["digtk", "public-dc", "pg", "mark", "completed", ark])
+    context.log.info(f"Fin workflow-table mark result: {result}")
+    return dg.Output(result)

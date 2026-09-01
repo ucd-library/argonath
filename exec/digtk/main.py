@@ -11,7 +11,8 @@ Subcommands mirror the pipeline phases:
                         video (HLS stream, captions via local Whisper),
                         audio (transcode, waveform, captions via local Whisper),
                         gcs (sync derivatives into the legacy DAMS/fin GCS bucket layout),
-                        es (index items into the DAMS website's Elasticsearch index)
+                        es (index items into the DAMS website's Elasticsearch index),
+                        pg (write directly into fin's Postgres workflow table)
   digtk ocr         — OCR via Tesseract or ML fallback
   digtk metadata    — AI and human metadata generation
   digtk ingest      — ingest files into CaskFS
