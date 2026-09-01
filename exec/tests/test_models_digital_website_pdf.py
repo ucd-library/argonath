@@ -114,7 +114,7 @@ def fake_derivative(monkeypatch):
 
 @pytest.fixture
 def fake_image_magick(monkeypatch):
-    calls = {"thumbnail": [], "convert_format": [], "deskew": [], "prep_ocr": [], "tile": []}
+    calls = {"thumbnail": [], "convert_format": [], "deskew": [], "prep_ocr": [], "tile": [], "detect_skew_angle": []}
 
     def record(kind):
         def fn(src, dest, opts={}):
@@ -132,11 +132,16 @@ def fake_image_magick(monkeypatch):
             return {"dest_path": dest}
         return fn
 
+    def fake_detect_skew_angle(src, opts={}):
+        calls["detect_skew_angle"].append({"src": src, "opts": opts})
+        return 0.0
+
     monkeypatch.setattr(pd.image_magick, "thumbnail", record_thumbnail())
     monkeypatch.setattr(pd.image_magick, "convert_format", record("convert_format"))
     monkeypatch.setattr(pd.image_magick, "deskew", record("deskew"))
     monkeypatch.setattr(pd.image_magick, "prep_ocr", record("prep_ocr"))
     monkeypatch.setattr(pd.image_magick, "tile", record("tile"))
+    monkeypatch.setattr(pd.image_magick, "detect_skew_angle", fake_detect_skew_angle)
     monkeypatch.setattr(pd.image_magick, "probe_dimensions", lambda path, opts={}: {"width": 100, "height": 200})
     monkeypatch.setattr(
         pd.image_magick, "probe_all_frame_dimensions",
@@ -145,9 +150,34 @@ def fake_image_magick(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def fake_djvu(monkeypatch):
+    """Stubs out digtk.lib.djvu (via pipeline.build_ocr_products()'s own
+    reference to it) so tests don't need real hOCR files on disk -- mirrors
+    test_models_digital_website_pipeline.py's fixture of the same name."""
+    def fake_parse_hocr(hocr_path):
+        return {"careas": []}
+
+    def fake_build_djvu_xml(page_structure, **kwargs):
+        return "<OBJECT/>"
+
+    def fake_compute_ocr_stats(page_structures, *, selected, opts={}):
+        return {"selected": selected, "original": {}, "deskewed": {}, "config": {}}
+
+    monkeypatch.setattr(pipeline.djvu, "parse_hocr", fake_parse_hocr)
+    monkeypatch.setattr(pipeline.djvu, "build_djvu_xml", fake_build_djvu_xml)
+    monkeypatch.setattr(pipeline.djvu, "compute_ocr_stats", fake_compute_ocr_stats)
+
+
 def fake_compare_orientations(selected):
     def fn(candidates, opts={}):
-        return {"selected": selected, "stats": {"original": {"count": 10}, "deskewed": {"count": 20}}}
+        return {
+            "selected": selected,
+            "stats": {
+                "original": {"count": 10, "hocr_path": "/tmp/orig.hocr"},
+                "deskewed": {"count": 20, "hocr_path": "/tmp/deskew.hocr"},
+            },
+        }
     return fn
 
 
@@ -217,7 +247,7 @@ def test_prep_ocr_standalone_publishes_to_ocr_subdir(fake_fs, fake_pdf_render, f
 
 # --- derivatives() umbrella -----------------------------------------------------
 
-def test_derivatives_processes_every_page(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, monkeypatch):
+def test_derivatives_processes_every_page(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     result = pd.derivatives(ARK, opts={"widths": WIDTHS})
 
@@ -234,7 +264,7 @@ def test_derivatives_processes_every_page(fake_fs, fake_pdf_render, fake_derivat
     ]
 
 
-def test_derivatives_writes_aggregate_manifest(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, monkeypatch):
+def test_derivatives_writes_aggregate_manifest(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("deskewed"))
     pd.derivatives(ARK, opts={"widths": WIDTHS})
 
@@ -247,7 +277,7 @@ def test_derivatives_writes_aggregate_manifest(fake_fs, fake_pdf_render, fake_de
     assert manifest["params"]["orientation"]["1"]["deskew_selected"] is True
 
 
-def test_derivatives_writes_per_page_manifest(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, monkeypatch):
+def test_derivatives_writes_per_page_manifest(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     pd.derivatives(ARK, opts={"widths": WIDTHS})
 
@@ -259,7 +289,7 @@ def test_derivatives_writes_per_page_manifest(fake_fs, fake_pdf_render, fake_der
     assert manifest["params"]["page"] == 0
 
 
-def test_derivatives_records_rich_manifest_content_per_page(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, monkeypatch):
+def test_derivatives_records_rich_manifest_content_per_page(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     pd.derivatives(ARK, opts={"widths": WIDTHS})
 
@@ -283,11 +313,12 @@ def test_derivatives_records_rich_manifest_content_per_page(fake_fs, fake_pdf_re
     }
     assert manifest["ocr"] == {
         "size": {"width": "100", "height": "200"},
-        "url": "cask://silver/g/c/latest/item/ocr/page-000/document-page-000-prep.jpg",
+        "imageSize": "large",
+        "url": "cask://silver/g/c/latest/item/ocr/page-000/ocr.djvu",
     }
 
 
-def test_derivatives_writes_pages_array_on_aggregate_manifest(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, monkeypatch):
+def test_derivatives_writes_pages_array_on_aggregate_manifest(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     pd.derivatives(ARK, opts={"widths": WIDTHS})
 
@@ -302,13 +333,19 @@ def test_derivatives_writes_pages_array_on_aggregate_manifest(fake_fs, fake_pdf_
     assert manifest["pages"][1]["small"]["url"].endswith("/images/2/small.jpg")
 
 
-def test_derivatives_decides_orientation_independently_per_page(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, monkeypatch):
+def test_derivatives_decides_orientation_independently_per_page(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     calls = []
 
     def selective_compare(candidates, opts={}):
         calls.append(candidates)
         selected = "deskewed" if len(calls) == 1 else "original"
-        return {"selected": selected, "stats": {"original": {"count": 1}, "deskewed": {"count": 2}}}
+        return {
+            "selected": selected,
+            "stats": {
+                "original": {"count": 1, "hocr_path": "/tmp/orig.hocr"},
+                "deskewed": {"count": 2, "hocr_path": "/tmp/deskew.hocr"},
+            },
+        }
 
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", selective_compare)
     result = pd.derivatives(ARK, opts={"widths": WIDTHS})
@@ -319,7 +356,7 @@ def test_derivatives_decides_orientation_independently_per_page(fake_fs, fake_pd
     assert orientation["2"]["deskew"] is False
 
 
-def test_derivatives_associated_media_covers_every_page_with_position(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, monkeypatch):
+def test_derivatives_associated_media_covers_every_page_with_position(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     pd.derivatives(ARK, opts={"widths": WIDTHS})
 
@@ -331,7 +368,7 @@ def test_derivatives_associated_media_covers_every_page_with_position(fake_fs, f
         assert m["@type"] == "ImageObject"
 
 
-def test_derivatives_multi_pdf_item_nests_by_filename(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, monkeypatch):
+def test_derivatives_multi_pdf_item_nests_by_filename(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     use_multi_item(monkeypatch)
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
 

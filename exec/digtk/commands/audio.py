@@ -1,5 +1,5 @@
 """
-digtk audio — audio derivative commands.
+digtk public-dc audio — audio derivative commands.
 
 Subcommands:
   probe        — report ffprobe metadata (duration, codec, bitrate)

@@ -73,6 +73,83 @@ def test_output_name_prefixes_only_when_multi():
     assert pipeline.output_name("photo", "thumb-256.jpg", multi=False) == "thumb-256.jpg"
 
 
+# --- build_ocr_products() ---------------------------------------------------
+
+ORIENTATION = {
+    "deskew": False,
+    "angle": 0.4,
+    "stats": {
+        "original": {"count": 10, "avg": 90.0, "median": 90.0, "hocr_path": "/tmp/orig.hocr"},
+        "deskewed": {"count": 5, "avg": 60.0, "median": 60.0, "hocr_path": "/tmp/deskew.hocr"},
+    },
+}
+
+
+@pytest.fixture
+def fake_djvu(monkeypatch):
+    calls = {"parse_hocr": [], "build_djvu_xml": [], "compute_ocr_stats": []}
+
+    def fake_parse_hocr(hocr_path):
+        calls["parse_hocr"].append(hocr_path)
+        return {"careas": [], "_source": hocr_path}
+
+    def fake_build_djvu_xml(page_structure, **kwargs):
+        calls["build_djvu_xml"].append({"page_structure": page_structure, **kwargs})
+        return "<OBJECT/>"
+
+    def fake_compute_ocr_stats(page_structures, *, selected, opts={}):
+        calls["compute_ocr_stats"].append({"page_structures": page_structures, "selected": selected, "opts": opts})
+        return {"selected": selected, "original": {}, "deskewed": {}, "config": {}}
+
+    monkeypatch.setattr(pipeline.djvu, "parse_hocr", fake_parse_hocr)
+    monkeypatch.setattr(pipeline.djvu, "build_djvu_xml", fake_build_djvu_xml)
+    monkeypatch.setattr(pipeline.djvu, "compute_ocr_stats", fake_compute_ocr_stats)
+    return calls
+
+
+def test_build_ocr_products_writes_djvu_and_stats_files(tmp_path, fake_djvu):
+    outputs = pipeline.build_ocr_products(
+        ORIENTATION, str(tmp_path), "photo", False, {"width": 1024, "height": 1313},
+    )
+
+    assert [fn for fn, _ in outputs] == ["ocr.djvu", "ocr-stats.json"]
+    djvu_path = dict(outputs)["ocr.djvu"]
+    stats_path = dict(outputs)["ocr-stats.json"]
+    assert open(djvu_path).read() == "<OBJECT/>"
+    assert json.load(open(stats_path))["selected"] == "original"
+
+
+def test_build_ocr_products_uses_output_name_prefix_when_multi(tmp_path, fake_djvu):
+    outputs = pipeline.build_ocr_products(
+        ORIENTATION, str(tmp_path), "photo-a", True, {"width": 1024, "height": 1313},
+    )
+    assert [fn for fn, _ in outputs] == ["photo-a-ocr.djvu", "photo-a-ocr-stats.json"]
+
+
+def test_build_ocr_products_parses_hocr_for_both_orientation_candidates(tmp_path, fake_djvu):
+    pipeline.build_ocr_products(ORIENTATION, str(tmp_path), "photo", False, {"width": 1024, "height": 1313})
+    assert set(fake_djvu["parse_hocr"]) == {"/tmp/orig.hocr", "/tmp/deskew.hocr"}
+
+
+def test_build_ocr_products_computes_scale_factor_from_ocr_prep_size_and_large_width(tmp_path, fake_djvu):
+    pipeline.build_ocr_products(
+        ORIENTATION, str(tmp_path), "photo", False, {"width": 1024, "height": 1313},
+        opts={"ocr_prep_size": 2048},
+    )
+    assert fake_djvu["build_djvu_xml"][0]["scale_factor"] == pytest.approx(2.0)
+
+
+def test_build_ocr_products_builds_djvu_from_the_selected_orientation(tmp_path, fake_djvu):
+    deskewed_orientation = {**ORIENTATION, "deskew": True}
+    pipeline.build_ocr_products(deskewed_orientation, str(tmp_path), "photo", False, {"width": 1024, "height": 1313})
+    assert fake_djvu["build_djvu_xml"][0]["page_structure"]["_source"] == "/tmp/deskew.hocr"
+
+
+def test_build_ocr_products_forwards_measured_angle_to_stats(tmp_path, fake_djvu):
+    pipeline.build_ocr_products(ORIENTATION, str(tmp_path), "photo", False, {"width": 1024, "height": 1313})
+    assert fake_djvu["compute_ocr_stats"][0]["opts"]["angle"] == 0.4
+
+
 def test_cask_public_ref_converts_dispatch_prefix():
     internal = "cask:/silver/g/c/latest/item/derivatives/thumb-256.jpg"
     assert pipeline.cask_public_ref(internal) == "cask://silver/g/c/latest/item/derivatives/thumb-256.jpg"

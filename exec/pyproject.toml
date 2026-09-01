@@ -18,6 +18,7 @@ dependencies = [
     "rdflib>=7.0",
     "pymupdf>=1.24",
     "pikepdf>=9.0",
+    "google-cloud-storage>=2.16",
 ]
 
 [project.optional-dependencies]

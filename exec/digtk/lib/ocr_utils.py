@@ -153,17 +153,31 @@ def compare_orientations(candidates, opts={}):
     and decide which one is actually right-side-up/legible.
 
     The deskewed candidate wins only if it has both a higher word count and a
-    higher-or-equal median confidence than the original — and only if there's
-    enough combined OCR evidence (word_count_threshold) to trust the
-    comparison at all, rather than flipping orientation based on a couple of
-    noisy matches on a mostly-blank image.
+    higher-or-equal median confidence than the original, there's enough
+    combined OCR evidence (word_count_threshold) to trust the comparison at
+    all rather than flipping orientation based on a couple of noisy matches
+    on a mostly-blank image, *and* (when a measured skew angle is supplied)
+    the page is actually skewed enough to be worth correcting
+    (angle_threshold) — matching the reference implementation's three-signal
+    selection (word count, confidence, deskew angle), which this used to be
+    missing the third of.
 
     :param dict candidates: Exactly the keys "original" and "deskewed", each a
         local path to an OCR-prep candidate image.
     :param dict opts: Forwarded to run_tesseract()/analyze_words() (lang, psm,
         oem, dpi, timeout, confidence_threshold), plus 'word_count_threshold'
-        (int, default CONFIG["ocr"]["orientation_word_count_threshold"]).
+        (int, default CONFIG["ocr"]["orientation_word_count_threshold"]),
+        'angle' (float|None, default None) — the skew angle in degrees
+        measured off the "original" candidate (see
+        digtk.lib.image_magick.detect_skew_angle()); when omitted, the angle
+        gate is skipped entirely (treated as "unknown, don't block on it"),
+        preserving old behavior for callers that don't measure it. 'angle_threshold'
+        (float, default CONFIG["ocr"]["orientation_angle_threshold"]) — only
+        consulted when 'angle' is provided.
     :returns: {"selected": "original"|"deskewed", "stats": {"original": {...}, "deskewed": {...}}}
+        — each stats entry also carries "hocr_path" (the Tesseract hOCR file
+        that produced it), so callers building a real OCR text layer (e.g.
+        digtk.lib.djvu) can reuse it without re-running Tesseract.
     :rtype: dict
     :raises ValueError: If candidates doesn't have exactly "original" and "deskewed" keys.
     :raises TesseractError: If either Tesseract invocation fails or times out.
@@ -175,14 +189,19 @@ def compare_orientations(candidates, opts={}):
     for label, path in candidates.items():
         tesseract_result = run_tesseract(path, os.path.splitext(path)[0], opts)
         stats[label] = analyze_words(tesseract_result["hocr_path"], opts)
+        stats[label]["hocr_path"] = tesseract_result["hocr_path"]
 
     word_count_threshold = opts.get("word_count_threshold", CONFIG["ocr"]["orientation_word_count_threshold"])
+    angle_threshold = opts.get("angle_threshold", CONFIG["ocr"]["orientation_angle_threshold"])
+    angle = opts.get("angle")
+
     original, deskewed = stats["original"], stats["deskewed"]
     enough_evidence = (original["count"] + deskewed["count"]) >= word_count_threshold
     improved = deskewed["count"] > original["count"] and deskewed["median"] >= original["median"]
+    skewed_enough = angle is None or abs(angle) >= angle_threshold
 
     return {
-        "selected": "deskewed" if (enough_evidence and improved) else "original",
+        "selected": "deskewed" if (enough_evidence and improved and skewed_enough) else "original",
         "stats": stats,
     }
 

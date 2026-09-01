@@ -17,7 +17,7 @@ digtk.lib.derivative entry. Reads still go through digtk.lib.fs directly.
 import json
 import os
 
-from digtk.lib import derivative, fs, image_magick, ocr_utils, utils
+from digtk.lib import derivative, djvu, fs, image_magick, ocr_utils, utils
 from digtk.lib.config import CONFIG
 from digtk.lib.schema import SCHEMA_CONTEXT
 
@@ -260,8 +260,8 @@ def update_associated_media(item, media_objects, source_files, source_group):
     derivatives() umbrella runs independently, as its own CLI invocation. Only the
     entries this call's own `source_group` previously wrote are replaced; entries
     from a different group's earlier run are left untouched, so e.g. running `digtk
-    pdf derivatives` after `digtk image derivatives` against the same item doesn't
-    wipe out the image run's associatedMedia entries.
+    public-dc pdf derivatives` after `digtk public-dc image derivatives` against the
+    same item doesn't wipe out the image run's associatedMedia entries.
 
     Uses a plain dict read/merge/write rather than digtk.lib.schema.ItemMetadata
     (its to_jsonld/from_jsonld round-trip is itself an unimplemented phase-0.2
@@ -347,18 +347,25 @@ def generate_thumbnail_set(local_src, tmp_dir, widths, stem, opts={}):
 def select_orientation(local_src, tmp_dir, opts={}):
     """Decide scan orientation for one image via a real OCR comparison.
 
-    Generates both OCR-prep candidates (deskewed and non-deskewed), then hands
-    them to digtk.lib.ocr_utils.compare_orientations() — the same shared,
-    decoupled primitive the (separate, later) OCR phase will call on its own.
-    Runs once per source image — a multi-source item decides orientation
-    independently for each of its sources, since there's no reliable signal
-    (yet) that sources sharing an item are a sequential document rather than
-    independent captures that happen to share a folder.
+    Generates both OCR-prep candidates (deskewed and non-deskewed), measures
+    the actual skew angle off the non-deskewed one (image_magick's -deskew
+    artifact only exists within its own convert invocation — see
+    image_magick.detect_skew_angle()'s docstring — so this can't be read back
+    from either candidate after the fact), then hands both to
+    digtk.lib.ocr_utils.compare_orientations() — the same shared, decoupled
+    primitive the (separate, later) OCR phase will call on its own. Runs once
+    per source image — a multi-source item decides orientation independently
+    for each of its sources, since there's no reliable signal (yet) that
+    sources sharing an item are a sequential document rather than independent
+    captures that happen to share a folder.
 
     :param str local_src: Local path to the staged source image (or a rasterized PDF page).
     :param str tmp_dir: Local directory to write candidate images into.
-    :param dict opts: Forwarded to image_magick.prep_ocr() and ocr_utils.compare_orientations().
-    :returns: {"deskew": bool, "stats": {"original": {...}, "deskewed": {...}}}
+    :param dict opts: Forwarded to image_magick.prep_ocr(),
+        image_magick.detect_skew_angle(), and ocr_utils.compare_orientations().
+    :returns: {"deskew": bool, "angle": float, "stats": {"original": {...},
+        "deskewed": {...}}} — each stats entry also carries "hocr_path" (see
+        ocr_utils.compare_orientations()).
     :rtype: dict
     """
     candidates = {}
@@ -367,5 +374,62 @@ def select_orientation(local_src, tmp_dir, opts={}):
         image_magick.prep_ocr(local_src, path, opts={**opts, "deskew": apply_deskew})
         candidates[label] = path
 
-    comparison = ocr_utils.compare_orientations(candidates, opts=opts)
-    return {"deskew": comparison["selected"] == "deskewed", "stats": comparison["stats"]}
+    angle = image_magick.detect_skew_angle(candidates["original"], opts)
+    comparison = ocr_utils.compare_orientations(candidates, opts={**opts, "angle": angle})
+    return {"deskew": comparison["selected"] == "deskewed", "angle": angle, "stats": comparison["stats"]}
+
+
+def build_ocr_products(orientation, tmp_dir, stem, multi, large_size, opts={}):
+    """Build the real djvu OCR text-layer + stats.json for one source, out of
+    the hOCR select_orientation() already produced deciding orientation —
+    this is the "for now, replicate legacy" OCR feature (see
+    digtk.lib.gcs_sync.py's module docstring); it deliberately reuses that
+    already-run Tesseract pass rather than running OCR a third time, which is
+    why this only works when called right after select_orientation() in the
+    same tmp_dir/process.
+
+    :param dict orientation: select_orientation()'s return -- {"deskew": bool,
+        "angle": float, "stats": {"original": {..., "hocr_path": str},
+        "deskewed": {..., "hocr_path": str}}}.
+    :param str tmp_dir: Local directory to write the djvu/stats files into.
+    :param str stem: This source's filename stem — see output_name().
+    :param bool multi: True if this item has more than one source binary —
+        see output_name(); ocr.djvu/ocr-stats.json land in one "ocr" subdir
+        shared by every source in the item, same as the OCR-prep JPEG, so
+        they need the same disambiguating prefix.
+    :param dict large_size: {"width": int, "height": int} — the published
+        "large" product's actual probed dimensions, used to compute the
+        word-bbox rescale factor (OCR-prep render width / large's width) —
+        computed from real values rather than assumed to always be 2x, in
+        case the two independent config defaults (image.ocr_prep_size,
+        image.thumbnail_widths) ever drift apart.
+    :param dict opts: 'ocr_prep_size' (int, default
+        CONFIG["image"]["ocr_prep_size"]) for the scale-factor computation;
+        otherwise forwarded to digtk.lib.djvu.build_djvu_xml()/compute_ocr_stats().
+    :returns: [(filename, local_path), ...] — exactly the ocr.djvu and
+        ocr-stats.json entries (in that order).
+    :rtype: list[tuple[str, str]]
+    """
+    selected = "deskewed" if orientation["deskew"] else "original"
+    page_structures = {label: djvu.parse_hocr(stats["hocr_path"]) for label, stats in orientation["stats"].items()}
+
+    ocr_prep_size = opts.get("ocr_prep_size", CONFIG["image"]["ocr_prep_size"])
+    scale_factor = ocr_prep_size / large_size["width"]
+
+    djvu_xml = djvu.build_djvu_xml(
+        page_structures[selected], scale_factor=scale_factor,
+        dpi=opts.get("dpi"), confidence_threshold=opts.get("confidence_threshold"),
+    )
+    stats = djvu.compute_ocr_stats(page_structures, selected=selected, opts={**opts, "angle": orientation["angle"]})
+
+    djvu_filename = output_name(stem, "ocr.djvu", multi)
+    stats_filename = output_name(stem, "ocr-stats.json", multi)
+    djvu_path = os.path.join(tmp_dir, djvu_filename)
+    stats_path = os.path.join(tmp_dir, stats_filename)
+
+    with open(djvu_path, "w", encoding="utf-8") as f:
+        f.write(djvu_xml)
+    with open(stats_path, "w", encoding="utf-8") as f:
+        json.dump(stats, f, indent=2)
+
+    return [(djvu_filename, djvu_path), (stats_filename, stats_path)]

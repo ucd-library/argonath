@@ -303,6 +303,13 @@ def generate(ark, opts={}):
             size_by_label = {label: image_magick.probe_dimensions(local_path) for label, (fn, local_path) in zip(pipeline.THUMBNAIL_SIZE_LABELS, thumb_set)}
             images_dir = pipeline.derivative_dir(item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images")
             ocr_dir = pipeline.derivative_dir(item, "ocr")
+
+            utils.log(f"[{i}/{total}] {stem}: building OCR text layer...")
+            ocr_products = pipeline.build_ocr_products(orientation, tmp_dir, stem, multi, size_by_label["large"], opts)
+            for ocr_filename, ocr_local_path in ocr_products:
+                ocr_outputs.append((ocr_filename, ocr_local_path, src["bronze_path"]))
+            djvu_filename = ocr_products[0][0]
+
             manifest_extra = {
                 "original": {
                     "size": pipeline.size_as_strings(image_magick.probe_dimensions(src["local_path"])),
@@ -320,8 +327,9 @@ def generate(ark, opts={}):
                     "url": pipeline.cask_public_ref(f"{images_dir}/tiled.tif"),
                 },
                 "ocr": {
-                    "size": pipeline.size_as_strings(image_magick.probe_dimensions(prep_path)),
-                    "url": pipeline.cask_public_ref(f"{ocr_dir}/{prep_filename}"),
+                    "size": pipeline.size_as_strings(size_by_label["large"]),
+                    "imageSize": "large",
+                    "url": pipeline.cask_public_ref(f"{ocr_dir}/{djvu_filename}"),
                 },
             }
 

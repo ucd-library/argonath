@@ -2,14 +2,17 @@
 Entry point for the `digtk` media processing CLI.
 
 Subcommands mirror the pipeline phases:
-  digtk auth      — manage the CaskFS connection (login/whoami/logout)
-  digtk config    — manage persistent digtk settings (set/show)
-  digtk ai        — ad hoc Samwise AI queries, for testing (chat/embed)
-  digtk image     — image derivatives (thumbnails, conversion, deskew, OCR prep)
-  digtk pdf       — PDF derivatives (per-page thumbnails, conversion, deskew, OCR prep)
-  digtk video     — video derivatives (HLS stream, captions via local Whisper)
-  digtk audio     — audio derivatives (transcode, waveform, captions via local Whisper)
-  digtk ocr       — OCR via Tesseract or ML fallback
+  digtk auth        — manage the CaskFS connection (login/whoami/logout)
+  digtk config      — manage persistent digtk settings (set/show)
+  digtk ai          — ad hoc Samwise AI queries, for testing (chat/embed)
+  digtk public-dc   — commands specific to the public Digital Collections website:
+                        image (thumbnails, conversion, deskew, OCR prep),
+                        pdf (per-page thumbnails, conversion, deskew, OCR prep),
+                        video (HLS stream, captions via local Whisper),
+                        audio (transcode, waveform, captions via local Whisper),
+                        gcs (sync derivatives into the legacy DAMS/fin GCS bucket layout),
+                        es (index items into the DAMS website's Elasticsearch index)
+  digtk ocr         — OCR via Tesseract or ML fallback
   digtk metadata    — AI and human metadata generation
   digtk ingest      — ingest files into CaskFS
   digtk collection  — manage CaskFS collections (add/sync)
@@ -19,7 +22,7 @@ import sys
 
 import typer
 
-from digtk.commands import ai, audio, auth, collection, config, image, ocr, metadata, ingest, pdf, search, video
+from digtk.commands import ai, auth, collection, config, ocr, metadata, ingest, public_dc, search
 from digtk.lib.banner import print_banner
 
 app = typer.Typer(
@@ -31,10 +34,7 @@ app = typer.Typer(
 app.add_typer(auth.app,       name="auth")
 app.add_typer(config.app,     name="config")
 app.add_typer(ai.app,         name="ai")
-app.add_typer(image.app,      name="image")
-app.add_typer(pdf.app,        name="pdf")
-app.add_typer(video.app,      name="video")
-app.add_typer(audio.app,      name="audio")
+app.add_typer(public_dc.app,  name="public-dc")
 app.add_typer(ocr.app,        name="ocr")
 app.add_typer(metadata.app,   name="metadata")
 app.add_typer(ingest.app,     name="ingest")

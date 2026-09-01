@@ -249,7 +249,7 @@ def prep_ocr(ark, opts={}):
 
 def derivatives(ark, opts={}):
     """Generate the full derivative set for every page of every source PDF in the
-    item — the umbrella `digtk pdf derivatives` calls.
+    item — the umbrella `digtk public-dc pdf derivatives` calls.
 
     For each source PDF: rasterizes every page, decides scan orientation independently
     per page via a real OCR comparison (same digtk.models.digital_website.pipeline primitive
@@ -351,6 +351,16 @@ def derivatives(ark, opts={}):
                 images_dir = pipeline.derivative_dir(item, f"{images_base}/{page_no}")
                 ocr_dir = pipeline.derivative_dir(item, f"{ocr_prefix}ocr/{page_tag}")
                 ocr_filename = os.path.basename(prep_path)
+
+                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: building OCR text layer...")
+                # Each page already publishes into its own page_tag-unique ocr/
+                # subdir, so djvu/stats never need output_name()'s multi-source
+                # filename prefix -- multi=False always here.
+                ocr_products = pipeline.build_ocr_products(
+                    orientation, tmp_dir, f"{stem}-{page_tag}", False, size_by_label["large"], opts
+                )
+                djvu_filename = ocr_products[0][0]
+
                 page_manifest_extra = {
                     "page": page_no,
                     "extractDensity": density,
@@ -366,8 +376,9 @@ def derivatives(ark, opts={}):
                         "url": pipeline.cask_public_ref(f"{images_dir}/tiled.tif"),
                     },
                     "ocr": {
-                        "size": pipeline.size_as_strings(image_magick.probe_dimensions(prep_path)),
-                        "url": pipeline.cask_public_ref(f"{ocr_dir}/{ocr_filename}"),
+                        "size": pipeline.size_as_strings(size_by_label["large"]),
+                        "imageSize": "large",
+                        "url": pipeline.cask_public_ref(f"{ocr_dir}/{djvu_filename}"),
                     },
                 }
                 page_manifest_entries.append(page_manifest_extra)
@@ -382,8 +393,11 @@ def derivatives(ark, opts={}):
                         "link_relation": _LINK_RELATION["derivatives"],
                     },
                 )
+                ocr_outputs = [(ocr_filename, prep_path, src["bronze_path"])] + [
+                    (fn, local_path, src["bronze_path"]) for fn, local_path in ocr_products
+                ]
                 ocr_result = pipeline.publish(
-                    item, f"{ocr_prefix}ocr/{page_tag}", [(ocr_filename, prep_path, src["bronze_path"])],
+                    item, f"{ocr_prefix}ocr/{page_tag}", ocr_outputs,
                     command=command,
                     params={"page": page_index, "orientation": {"deskew_selected": apply_deskew}},
                     opts={"link_relation": _LINK_RELATION["ocr"]},

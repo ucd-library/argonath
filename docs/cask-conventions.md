@@ -117,7 +117,7 @@ unaffected by this and remain flat, shared directories.
 
 ### Scan Orientation
 
-`digtk image derivatives` (the command `derivatives_job` runs) decides an item's
+`digtk public-dc image derivatives` (the command `derivatives_job` runs) decides an item's
 scan orientation once, using a real OCR comparison rather than a fixed rule: it
 generates both a deskewed and non-deskewed OCR-prep candidate, runs Tesseract
 against each, and keeps whichever has both a higher word count and a higher (or
@@ -145,7 +145,7 @@ returns every bronze binary regardless of format; each format-specific pipeline
 (`digtk.models.digital_website.image`, `.pdf`, `.video`, `.audio`, `.captions`)
 filters down to its own subset via
 `digtk.models.digital_website.pipeline.filter_binaries_by_format()` and ignores the rest,
-so running `digtk image derivatives <ark>` and `digtk pdf derivatives <ark>`
+so running `digtk public-dc image derivatives <ark>` and `digtk public-dc pdf derivatives <ark>`
 independently against such an item is both safe and the intended way to process it —
 **each format gets the full derivative workflow run against it, redundantly**,
 matching how the legacy DAMS/Fedora pipeline handled this shape (its
@@ -163,7 +163,7 @@ pipeline against the same item leaves both sets of associatedMedia entries in
 
 ### PDF Pagination
 
-`digtk pdf derivatives` rasterizes every page of a PDF bronze item (via PyMuPDF,
+`digtk public-dc pdf derivatives` rasterizes every page of a PDF bronze item (via PyMuPDF,
 normalized to a fixed target pixel width regardless of the PDF's native page size),
 then runs each rasterized page through the same thumbnail/deskew/OCR-prep pipeline
 described above for images — a rasterized page is just a local image file by that
@@ -211,7 +211,7 @@ that case: `{stem}/ocr/page-000/...`.
 
 ### Deep-Zoom Tiles
 
-`digtk image derivatives`/`digtk pdf derivatives` generate a pyramidal
+`digtk public-dc image derivatives`/`digtk public-dc pdf derivatives` generate a pyramidal
 (multi-resolution), tiled TIFF via ImageMagick's `ptif:` output coder as part of
 their standard set — ported byte-for-byte from the reference
 dams/services/image-utils pipeline's `generate-image-products.sh`
@@ -242,7 +242,7 @@ pyramid, not a flat viewable JPEG like the others) — only the small/medium/lar
 set gets ImageObject entries.
 
 `digtk.lib.image_magick.tile()` is still available directly for anyone scripting
-around this, but there's no standalone `digtk image|pdf tile` command — running
+around this, but there's no standalone `digtk public-dc image|pdf tile` command — running
 just the tile step alone would overwrite that directory's manifest with one
 describing only `tiled.tif`, so regenerating it is a `derivatives()`/`generate()`
 re-run.
@@ -303,13 +303,13 @@ below), with two deliberate differences:
   generated at its own configured size (`CONFIG["image"]["ocr_prep_size"]`), not
   derived from picking one of small/medium/large the way legacy's was.
 
-`thumbnails()` (the ad hoc `digtk image thumbnail` command) does not generate this
+`thumbnails()` (the ad hoc `digtk public-dc image thumbnail` command) does not generate this
 content — only `generate()`/`derivatives()`'s full run has the tile and OCR-prep
 context this needs.
 
 ### PDF Manifest Content
 
-`digtk pdf derivatives` gives each page's own
+`digtk public-dc pdf derivatives` gives each page's own
 `public-frontend-derivatives/<pdf-filename>/images/<n>/manifest.json` the same kind
 of rich content as an image's manifest (above) — `small`/`medium`/`large`/`tiled`/
 `ocr` keys, each a `{"size", "url"}` pair — plus two PDF-specific keys, `page` and
@@ -368,7 +368,7 @@ out for images:
 
 ### Video Streaming
 
-`digtk video derivatives` transcodes a video bronze item into an HLS
+`digtk public-dc video derivatives` transcodes a video bronze item into an HLS
 adaptive-bitrate stream (multiple resolution rungs plus a master playlist) — many
 small files, not a simple width-keyed set like image thumbnails. Each source video
 gets its own directory under `public-frontend-derivatives/`, named after its own
@@ -389,10 +389,10 @@ silver/[group]/[collection]/[time]/[item]/
             └── 1080p.m3u8 + 1080p.mp4
 ```
 
-This is the only derivative `digtk video derivatives` generates — there's no
+This is the only derivative `digtk public-dc video derivatives` generates — there's no
 ffmpeg-extracted poster frame. A video item's thumbnail, if it needs one, comes
 from a companion image bronze binary supplied directly by the archiving team (e.g.
-a `.jpg` alongside the `.mp4`), processed independently by `digtk image
+a `.jpg` alongside the `.mp4`), processed independently by `digtk public-dc image
 derivatives` under the ordinary Multi-Format Items convention (above) — its
 small/medium/large set lands at `public-frontend-derivatives/images/<that
 filename>/images/...`, same as any other image source, entirely unrelated to the
@@ -405,7 +405,7 @@ meant as a public identifier.
 
 ### Audio Transcoding and Waveforms
 
-`digtk audio derivatives` transcodes an audio bronze item to another format and
+`digtk public-dc audio derivatives` transcodes an audio bronze item to another format and
 renders a waveform image. Each source audio file gets its own directory under
 `public-frontend-derivatives/`, named after its own bronze filename (same
 disambiguation-for-free pattern PDF/video use) — flat inside, with no further
@@ -424,7 +424,7 @@ silver/[group]/[collection]/[time]/[item]/
 
 ### Captions/Transcripts
 
-`digtk video derivatives`/`digtk audio derivatives` run local Whisper ASR against
+`digtk public-dc video derivatives`/`digtk public-dc audio derivatives` run local Whisper ASR against
 every source video/audio file as part of their standard derivative set —
 `digtk.models.digital_website.captions.transcribe_sources()` is called directly
 using the sources already staged for HLS or transcode/waveform generation (no

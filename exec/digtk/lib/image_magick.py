@@ -286,6 +286,40 @@ def deskew(src_path, dest_path, opts={}):
     return {"argv": argv, "dest_path": dest_path}
 
 
+def detect_skew_angle(src_path, opts={}):
+    """Measure the skew angle ImageMagick's `-deskew` operator would correct.
+
+    `-deskew` sets a `deskew:angle` image artifact describing the detected
+    correction angle, but that artifact only exists within the convert
+    invocation that ran `-deskew` -- it is not preserved in a saved output
+    file's own metadata (confirmed: reading `%[deskew:angle]` back via a
+    separate `identify` call on an already-deskewed file raises "unknown
+    image property"). So this always issues its own dedicated convert call
+    against an `info:` pseudo-destination (no real image is rendered/written)
+    rather than trying to read the angle off deskew()'s or prep_ocr()'s output:
+
+    `convert <src>[frame] -deskew {threshold}% -format "%[deskew:angle]" info:`
+
+    :param str src_path: Local source image path.
+    :param dict opts: 'threshold' (int, default CONFIG["image"]["deskew_threshold"],
+        percent), 'frame' (int|None), 'timeout' (float), 'magick' (bool) — see
+        _use_magick().
+    :returns: Detected skew angle in degrees (the sign/direction follows
+        ImageMagick's own convention; callers comparing against a threshold
+        should compare the absolute value).
+    :rtype: float
+    :raises ImageMagickError: If `convert` fails or times out.
+    """
+    threshold = opts.get("threshold", CONFIG["image"]["deskew_threshold"])
+    src = _frame_suffix(src_path, opts.get("frame"))
+
+    argv = convert_argv(opts) + [
+        src, "-deskew", f"{threshold}%", "-format", "%[deskew:angle]", "info:",
+    ]
+    stdout = run(argv, opts)
+    return float(stdout.strip())
+
+
 def prep_ocr(src_path, dest_path, opts={}):
     """Prepare an image for OCR: resize, set DPI, and fuzz-whiten the background.
 
