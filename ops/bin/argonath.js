@@ -32,13 +32,15 @@ processCmd
   .command('collection <name>')
   .description('Trigger a pipeline job for an entire collection.')
   .option('--space <space>', 'App space.', 'digital-dev')
-  .option('--job <job>', 'Job name: full, derivatives, ocr, metadata, rag.', 'full')
+  .option('--job <job>', 'Job name: full, derivatives, ocr, metadata, alt, tag-pdf, rag.', 'full')
   .action(async (name, opts) => {
     const jobMap = {
       full:        'full_pipeline_job',
       derivatives: 'derivatives_job',
       ocr:         'ocr_job',
       metadata:    'metadata_job',
+      alt:         'alt_text_job',
+      'tag-pdf':   'tag_pdf_job',
       rag:         'search_index_job',
     };
     const jobName = jobMap[opts.job] || opts.job;
@@ -55,13 +57,15 @@ processCmd
   .command('item <ark>')
   .description('Trigger a pipeline job for a single item by ARK.')
   .requiredOption('--collection <collection>', 'Collection key, format "[group]/[collection]".')
-  .option('--job <job>', 'Job name: full, derivatives, ocr, metadata, rag.', 'full')
+  .option('--job <job>', 'Job name: full, derivatives, ocr, metadata, alt, tag-pdf, rag.', 'full')
   .action(async (ark, opts) => {
     const jobMap = {
       full:        'full_pipeline_job',
       derivatives: 'derivatives_job',
       ocr:         'ocr_job',
       metadata:    'metadata_job',
+      alt:         'alt_text_job',
+      'tag-pdf':   'tag_pdf_job',
       rag:         'search_index_job',
     };
     const jobName = jobMap[opts.job] || opts.job;

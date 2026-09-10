@@ -73,6 +73,16 @@ def test_output_name_prefixes_only_when_multi():
     assert pipeline.output_name("photo", "thumb-256.jpg", multi=False) == "thumb-256.jpg"
 
 
+def test_page_tag_pads_to_at_least_three_digits():
+    assert pipeline.page_tag(0, 5) == "page-000"
+    assert pipeline.page_tag(4, 5) == "page-004"
+
+
+def test_page_tag_widens_padding_for_large_counts():
+    assert pipeline.page_tag(0, 1500) == "page-0000"
+    assert pipeline.page_tag(1499, 1500) == "page-1499"
+
+
 # --- build_ocr_products() ---------------------------------------------------
 
 ORIENTATION = {

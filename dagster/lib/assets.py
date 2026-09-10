@@ -13,6 +13,8 @@ from lib.configs import (
     DerivativesConfig,
     OcrConfig,
     SearchIndexConfig,
+    AltTextConfig,
+    TagPdfConfig,
 )
 from lib.utils import exec
 
@@ -133,6 +135,68 @@ def run_ocr(context: dg.AssetExecutionContext, config: OcrConfig):
                    "--psm",  str(config.psm),
                    "--oem",  str(config.oem)])
     context.log.info(f"OCR result: {result}")
+    return dg.Output(result)
+
+
+@dg.asset(
+    partitions_def=items_partitions,
+    deps=[generate_derivatives],
+    group_name="accessibility",
+)
+def generate_alt_text(context: dg.AssetExecutionContext, config: AltTextConfig):
+    """Generate AI alt text for an item's image(s)/PDF page(s) using Samwise vision.
+
+    Depends on generate_derivatives, not run_ocr/generate_metadata: it only
+    needs the "large" display JPEG(s) generate_derivatives (image items) or
+    `digtk public-dc pdf derivatives` (PDF items, run separately — see
+    generate_derivatives' own docstring on multi-format items) already
+    publish, not OCR text or the (still-unimplemented, phase 0.6) AI metadata
+    draft — see digtk.models.accessibility's module docstring.
+
+    :param context: Dagster asset execution context.
+    :param config: AltTextConfig with collection_context, want_description, max_alt_chars.
+    """
+    ark = context.partition_key.keys_by_dimension["item"]
+    cmd = ["digtk", "accessibility", "alt-text", ark, "--max-alt-chars", str(config.max_alt_chars)]
+    if config.collection_context:
+        cmd += ["--collection-context", config.collection_context]
+    if config.want_description:
+        cmd += ["--want-description"]
+    result = exec(cmd)
+    context.log.info(f"Alt-text result: {result}")
+    return dg.Output(result)
+
+
+@dg.asset(
+    partitions_def=items_partitions,
+    deps=[generate_derivatives],
+    group_name="accessibility",
+)
+def tag_accessible_pdf(context: dg.AssetExecutionContext, config: TagPdfConfig):
+    """Assemble a searchable, PDF/UA-1-tagged PDF for an item's PDF binary(ies).
+
+    Depends on generate_derivatives the same way generate_alt_text does — a
+    soft/approximate signal, not a real one: there is no Dagster asset for
+    PDF derivative generation yet (see generate_derivatives' own docstring on
+    multi-format items), so `digtk public-dc pdf derivatives` must have been
+    run out of band before this asset can succeed. It fails with a clear
+    FileNotFoundError (missing OCR manifest) otherwise. Optionally reads back
+    generate_alt_text's output for richer /Figure tagging, but doesn't
+    require it — see digtk.models.accessibility.tag_pdf's own docstring.
+
+    :param context: Dagster asset execution context.
+    :param config: TagPdfConfig with lang, strict, tables, validate.
+    """
+    ark = context.partition_key.keys_by_dimension["item"]
+    cmd = ["digtk", "accessibility", "tag-pdf", ark, "--lang", config.lang]
+    if config.strict:
+        cmd.append("--strict")
+    if config.tables:
+        cmd.append("--tables")
+    if not config.validate:
+        cmd.append("--no-validate")
+    result = exec(cmd)
+    context.log.info(f"PDF tagging result: {result}")
     return dg.Output(result)
 
 

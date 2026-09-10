@@ -132,6 +132,13 @@ def test_ocr_orientation_defaults():
     assert ocr["orientation_word_confidence_threshold"] == 50.0
 
 
+def test_alt_defaults():
+    """max_chars matches alt_utils.DEFAULT_MAX_ALT_CHARS; want_description off by
+    default since it changes generate_alt()'s prompt/return shape."""
+    assert config.CONFIG["alt"]["max_chars"] == 150
+    assert config.CONFIG["alt"]["want_description"] is False
+
+
 def test_rag_chunking_defaults():
     """Pins the common RAG chunking defaults (1000/200 chars) and the RAG-specific
     embedding model (distinct from samwise.embed_model) — regression test for the

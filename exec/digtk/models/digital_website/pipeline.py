@@ -92,6 +92,21 @@ def parse_widths(widths):
     return sorted(widths)
 
 
+def page_tag(page_index, count):
+    """Zero-padded page directory name, wide enough for the item's own page count.
+
+    Shared by digital_website.pdf (naming its ocr/page-NNN publish dirs) and
+    any other per-page PDF consumer (e.g. accessibility.tag_pdf, reading those
+    same published paths back) that needs to reconstruct the identical name.
+
+    :param int page_index: 0-indexed page number.
+    :param int count: Total page count (pad width scales with this, minimum 3 digits).
+    :rtype: str
+    """
+    pad = max(3, len(str(max(count - 1, 0))))
+    return f"page-{page_index:0{pad}d}"
+
+
 def output_name(stem, base_name, multi):
     """Disambiguate an output filename when an item has more than one source binary.
 

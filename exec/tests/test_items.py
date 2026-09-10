@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from digtk.lib import fs, items
@@ -87,3 +89,46 @@ def test_resolve_forwards_opts_to_find_by_subject(monkeypatch):
     items.resolve(ARK, opts={"predicate": "custom"})
     assert seen["subject"] == ARK
     assert seen["opts"] == {"predicate": "custom"}
+
+
+def test_metadata_maps_sidecar_fields(monkeypatch):
+    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [
+        "/bronze/digital-collections/my-coll/latest/box-1/photo.tiff.jsonld.json",
+    ])
+    monkeypatch.setattr(fs, "read", lambda path: json.dumps({
+        "name": "Wine menu", "description": "A signed menu",
+        "dateCreated": "1973", "creator": "Society",
+    }).encode())
+
+    assert items.metadata(ARK) == {
+        "title": "Wine menu", "description": "A signed menu",
+        "date": "1973", "creator": "Society",
+    }
+
+
+def test_metadata_reads_only_first_binarys_sidecar(monkeypatch):
+    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [
+        "/bronze/a/b/latest/i1/photo-a.tiff.jsonld.json",
+        "/bronze/a/b/latest/i1/photo-b.tiff.jsonld.json",
+    ])
+    seen = {}
+
+    def fake_read(path):
+        seen["path"] = path
+        return json.dumps({"name": "Box 1"}).encode()
+
+    monkeypatch.setattr(fs, "read", fake_read)
+    metadata = items.metadata(ARK)
+    assert seen["path"] == "cask:/bronze/a/b/latest/i1/photo-a.tiff.jsonld.json"
+    assert metadata["title"] == "Box 1"
+
+
+def test_metadata_defaults_missing_fields_to_none(monkeypatch):
+    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [
+        "/bronze/a/b/latest/i1/photo.tiff.jsonld.json",
+    ])
+    monkeypatch.setattr(fs, "read", lambda path: json.dumps({}).encode())
+
+    assert items.metadata(ARK) == {
+        "title": None, "description": None, "date": None, "creator": None,
+    }

@@ -19,6 +19,7 @@ deals with pagination or the response envelope directly. CaskFS's API is
 still under active development; if its shape changes again, that's the layer
 to fix, not here.
 """
+import json
 from dataclasses import dataclass
 
 from digtk.lib import fs
@@ -112,3 +113,31 @@ def resolve(ark, opts={}):
         item_path=item_path,
         bronze_binary_paths=[f"cask:{p}" for p in binary_paths],
     )
+
+
+def metadata(ark, opts={}):
+    """Read an item's existing bronze descriptive metadata.
+
+    Reads binary [0]'s bronze sidecar only, same as dams_index.build_document()
+    does for item-level fields — bronze is immutable/append-only and every
+    binary sharing an ARK was ingested from the same source record, so the
+    first binary's sidecar is treated as authoritative for item-level fields
+    across this codebase.
+
+    :param str ark: ARK identifier, e.g. 'ark:/87287/d7abc1234'.
+    :param dict opts: Forwarded to resolve().
+    :returns: {"title": str|None, "description": str|None, "date": str|None,
+        "creator": the sidecar's raw 'creator' value|None} — mapped from the
+        sidecar's schema.org 'name'/'description'/'dateCreated'/'creator' keys.
+    :rtype: dict
+    :raises LookupError: If no bronze sidecar matches the ARK (see resolve()).
+    """
+    location = resolve(ark, opts)
+    sidecar_path = location.bronze_binary_paths[0] + SIDECAR_SUFFIX
+    doc = json.loads(fs.read(sidecar_path))
+    return {
+        "title": doc.get("name"),
+        "description": doc.get("description"),
+        "date": doc.get("dateCreated"),
+        "creator": doc.get("creator"),
+    }

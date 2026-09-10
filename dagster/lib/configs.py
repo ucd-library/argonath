@@ -114,3 +114,37 @@ class SearchIndexConfig(Config):
     :param str app: Gold app to read from when indexing.
     """
     app: GOLD_APPS = Field("arda", description="Gold app to index from.")
+
+
+class AltTextConfig(Config):
+    """Config for the generate_alt_text asset.
+
+    collection_context/want_description/max_alt_chars are per-run rather than
+    pulled from a persisted per-collection registry — digtk has no such
+    registry yet (see digtk.lib.config's module docstring).
+
+    :param str collection_context: Collection-specific prompt context (what this
+        collection is), passed through to digtk.models.alt_utils.build_alt_prompt().
+    :param bool want_description: Also generate a 2-4 sentence catalog description.
+    :param int max_alt_chars: Maximum alt-text length in characters.
+    """
+    collection_context: str = Field("", description="Collection-specific prompt context.")
+    want_description: bool = Field(False, description="Also generate a catalog description.")
+    max_alt_chars: int = Field(150, description="Maximum alt-text length in characters.")
+
+
+class TagPdfConfig(Config):
+    """Config for the tag_accessible_pdf asset.
+
+    :param str lang: Document language for tagging (BCP-47, e.g. en-US).
+    :param bool strict: Demote lines the layout doesn't account for to
+        untagged artifacts instead of paragraphs.
+    :param bool tables: Vision layout pass per page: tag data tables as
+        Table/TR/TD (one extra Samwise call per page, cached).
+    :param bool validate: Run veraPDF on the tagged PDF and include the
+        compliance result.
+    """
+    lang: str = Field("en-US", description="Document language for tagging.")
+    strict: bool = Field(False, description="Demote unaccounted-for lines to artifacts.")
+    tables: bool = Field(False, description="Vision layout pass for Table/TR/TD structure.")
+    validate: bool = Field(True, description="Run veraPDF on the tagged PDF.")

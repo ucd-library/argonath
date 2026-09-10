@@ -37,17 +37,6 @@ _LINK_RELATION = {
 }
 
 
-def _page_tag(page_index, count):
-    """Zero-padded page directory name, wide enough for the item's own page count.
-
-    :param int page_index: 0-indexed page number.
-    :param int count: Total page count (pad width scales with this, minimum 3 digits).
-    :rtype: str
-    """
-    pad = max(3, len(str(max(count - 1, 0))))
-    return f"page-{page_index:0{pad}d}"
-
-
 def _rasterize(pdf_path, page_index, tmp_dir, stem, page_tag, opts):
     """Rasterize one PDF page to a local image, named to avoid collisions across
     sources/pages sharing one temp directory.
@@ -319,7 +308,7 @@ def derivatives(ark, opts={}):
 
             for page_index in range(count):
                 page_no = page_index + 1
-                page_tag = _page_tag(page_index, count)  # still used for the (unchanged) ocr/ path
+                page_tag = pipeline.page_tag(page_index, count)  # still used for the (unchanged) ocr/ path
                 utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: rasterizing...")
                 raster = _rasterize(pdf_path, page_index, tmp_dir, stem, page_tag, opts)
                 raster_path = raster["dest_path"]

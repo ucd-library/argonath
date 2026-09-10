@@ -73,6 +73,13 @@ SAMWISE_API_KEY_ENV = "SAMWISE_API_KEY"
 SAMWISE_LLM_MODEL_ENV = "DIGTK_SAMWISE_LLM_MODEL"
 SAMWISE_EMBED_MODEL_ENV = "DIGTK_SAMWISE_EMBED_MODEL"
 
+# Global defaults for digtk.models.alt_utils's generate_alt() opts — collection-specific
+# tuning (collection_context, name_people, transcribe_text, extra_instructions) stays
+# per-run (CLI flag / Dagster job config) since there's no per-collection settings
+# registry yet to back a persisted default for those.
+ALT_MAX_CHARS_ENV = "DIGTK_ALT_MAX_CHARS"
+ALT_WANT_DESCRIPTION_ENV = "DIGTK_ALT_WANT_DESCRIPTION"
+
 CASK_API_URL_ENV = "CASK_API_URL"
 CASK_API_KEY_ENV = "CASK_API_KEY"
 CREDENTIALS_PATH_ENV = "DIGTK_CREDENTIALS_PATH"
@@ -93,6 +100,9 @@ PDF_TARGET_PIXEL_WIDTH_ENV = "DIGTK_PDF_TARGET_PIXEL_WIDTH"
 PDF_DEFAULT_DENSITY_ENV = "DIGTK_PDF_DEFAULT_DENSITY"
 PDF_RASTER_FORMAT_ENV = "DIGTK_PDF_RASTER_FORMAT"
 PDF_PDFINFO_BIN_ENV = "DIGTK_PDF_PDFINFO_BIN"
+
+ACCESSIBILITY_VERAPDF_BIN_ENV = "DIGTK_VERAPDF_BIN"
+ACCESSIBILITY_TAG_LOOKAHEAD_ENV = "DIGTK_TAG_LOOKAHEAD"
 
 IMAGE_THUMBNAIL_WIDTHS_ENV = "DIGTK_IMAGE_THUMBNAIL_WIDTHS"
 IMAGE_CONVERT_FORMAT_ENV = "DIGTK_IMAGE_CONVERT_FORMAT"
@@ -155,6 +165,8 @@ SETTINGS = [
     {"dotpath": "samwise.api_key", "env": SAMWISE_API_KEY_ENV, "cast": str, "secret": True},
     {"dotpath": "samwise.llm_model", "env": SAMWISE_LLM_MODEL_ENV, "cast": str, "secret": False},
     {"dotpath": "samwise.embed_model", "env": SAMWISE_EMBED_MODEL_ENV, "cast": str, "secret": False},
+    {"dotpath": "alt.max_chars", "env": ALT_MAX_CHARS_ENV, "cast": int, "secret": False},
+    {"dotpath": "alt.want_description", "env": ALT_WANT_DESCRIPTION_ENV, "cast": _cast_bool, "secret": False},
     {"dotpath": "ark.naan", "env": ARK_NAAN_ENV, "cast": str, "secret": False},
     {"dotpath": "ark.shoulder", "env": ARK_SHOULDER_ENV, "cast": str, "secret": False},
     {"dotpath": "ark.noid_alphabet", "env": ARK_NOID_ALPHABET_ENV, "cast": str, "secret": False},
@@ -168,6 +180,8 @@ SETTINGS = [
     {"dotpath": "pdf.default_density", "env": PDF_DEFAULT_DENSITY_ENV, "cast": int, "secret": False},
     {"dotpath": "pdf.raster_format", "env": PDF_RASTER_FORMAT_ENV, "cast": str, "secret": False},
     {"dotpath": "pdf.pdfinfo_bin", "env": PDF_PDFINFO_BIN_ENV, "cast": str, "secret": False},
+    {"dotpath": "accessibility.verapdf_bin", "env": ACCESSIBILITY_VERAPDF_BIN_ENV, "cast": str, "secret": False},
+    {"dotpath": "accessibility.tag_lookahead", "env": ACCESSIBILITY_TAG_LOOKAHEAD_ENV, "cast": int, "secret": False},
     {"dotpath": "image.thumbnail_widths", "env": IMAGE_THUMBNAIL_WIDTHS_ENV, "cast": str, "secret": False},
     {"dotpath": "image.convert_format", "env": IMAGE_CONVERT_FORMAT_ENV, "cast": str, "secret": False},
     {"dotpath": "image.dpi", "env": IMAGE_DPI_ENV, "cast": int, "secret": False},
@@ -344,6 +358,11 @@ CONFIG = {
         "llm_model": _env(SAMWISE_LLM_MODEL_ENV, "qwen3.6-fast:35b"),
         "embed_model": _env(SAMWISE_EMBED_MODEL_ENV, "qwen3-embed:4b"),
     },
+    "alt": {
+        # max_chars matches digtk.models.alt_utils.DEFAULT_MAX_ALT_CHARS.
+        "max_chars": _env(ALT_MAX_CHARS_ENV, 150, int),
+        "want_description": _env(ALT_WANT_DESCRIPTION_ENV, False, _cast_bool),
+    },
     "auth": {
         "credentials_path": _env(
             CREDENTIALS_PATH_ENV, str(Path.home() / ".digtk" / "credentials.json")
@@ -381,6 +400,11 @@ CONFIG = {
         "default_density": _env(PDF_DEFAULT_DENSITY_ENV, 600, int),
         "raster_format": _env(PDF_RASTER_FORMAT_ENV, "tif"),
         "pdfinfo_bin": _env(PDF_PDFINFO_BIN_ENV, "pdfinfo"),
+    },
+    "accessibility": {
+        "verapdf_bin": _env(ACCESSIBILITY_VERAPDF_BIN_ENV, "verapdf"),
+        # Matches digtk.models.pdf_tag.DEFAULT_LOOKAHEAD.
+        "tag_lookahead": _env(ACCESSIBILITY_TAG_LOOKAHEAD_ENV, 40, int),
     },
     "image": {
         "thumbnail_widths": _env(IMAGE_THUMBNAIL_WIDTHS_ENV, "256,512,1024"),
@@ -506,6 +530,16 @@ ImageFuzzThresholdOption = Annotated[int, typer.Option(
 ImageThumbnailQualityOption = Annotated[int, typer.Option(
     "--quality", envvar=IMAGE_THUMBNAIL_QUALITY_ENV,
     help=f"JPEG quality (1-100). Env: {IMAGE_THUMBNAIL_QUALITY_ENV}.",
+)]
+
+AltMaxCharsOption = Annotated[int, typer.Option(
+    "--max-alt-chars", envvar=ALT_MAX_CHARS_ENV,
+    help=f"Maximum alt-text length in characters. Env: {ALT_MAX_CHARS_ENV}.",
+)]
+
+AltWantDescriptionOption = Annotated[bool, typer.Option(
+    "--want-description", envvar=ALT_WANT_DESCRIPTION_ENV,
+    help=f"Also generate a 2-4 sentence catalog description. Env: {ALT_WANT_DESCRIPTION_ENV}.",
 )]
 
 VideoResolutionsOption = Annotated[str, typer.Option(
