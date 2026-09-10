@@ -90,6 +90,36 @@ def test_write_bytes_replace_puts():
     b.write_bytes("/bronze/x.jpg", b"abc", opts={"replace": True})
 
 
+def test_write_bytes_defaults_jsonld_json_paths_to_ld_mimetype():
+    """Regression test: Python's mimetypes module only looks at the last
+    extension, so a '.jsonld.json' path guesses "application/json" — the
+    wrong Content-Type for CaskFS's own JSON-LD sidecar convention, which
+    made its RDF harvester try to parse the raw JSON as if it were already
+    N-Quads/Turtle and fail outright (caskfs's Rdf.detectMimeType() special-
+    cases this same extension for exactly this reason)."""
+    seen = {}
+
+    def handler(request):
+        seen["content_type"] = request.headers.get("content-type")
+        return httpx.Response(201, json={"file": {}})
+
+    b = backend(handler)
+    b.write_bytes("/silver/g/c/latest/item/item.jsonld.json", b"{}")
+    assert seen["content_type"] == "application/ld+json"
+
+
+def test_write_bytes_explicit_mime_type_overrides_jsonld_json_default():
+    seen = {}
+
+    def handler(request):
+        seen["content_type"] = request.headers.get("content-type")
+        return httpx.Response(201, json={"file": {}})
+
+    b = backend(handler)
+    b.write_bytes("/silver/g/c/latest/item/item.jsonld.json", b"{}", opts={"mime_type": "application/json"})
+    assert seen["content_type"] == "application/json"
+
+
 def test_write_bytes_sends_partition_keys_bucket_and_metadata():
     seen = {}
 
