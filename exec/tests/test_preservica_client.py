@@ -1,6 +1,7 @@
 import httpx
 import pytest
 
+from digtk.lib import auth, preservica
 from digtk.lib.preservica.client import PreservicaAuthError, PreservicaClient, PreservicaRequestError
 
 BASE_URL = "http://preservica.test"
@@ -8,6 +9,61 @@ BASE_URL = "http://preservica.test"
 
 def client(handler, **opts):
     return PreservicaClient(BASE_URL, "user", "pass", {"transport": httpx.MockTransport(handler), **opts})
+
+
+# --- build_client (digtk.lib.preservica) ---------------------------------
+
+def test_build_client_raises_when_credentials_incomplete(monkeypatch):
+    monkeypatch.setattr(auth, "resolve_preservica", lambda: {"base_url": BASE_URL})
+    with pytest.raises(ValueError, match="Preservica"):
+        preservica.build_client()
+
+
+def test_build_client_builds_configured_client(monkeypatch):
+    monkeypatch.setattr(auth, "resolve_preservica", lambda: {
+        "base_url": BASE_URL, "username": "user", "password": "pass",
+    })
+    c = preservica.build_client()
+    assert isinstance(c, PreservicaClient)
+    assert c.base_url == BASE_URL
+    assert c.username == "user"
+
+
+def test_build_client_error_lists_settable_dotpaths(monkeypatch):
+    monkeypatch.setattr(auth, "resolve_preservica", lambda: {})
+    with pytest.raises(ValueError, match=r"preservica\.concurrency=\d+"):
+        preservica.build_client()
+
+
+# --- settings_summary (digtk.lib.preservica) ------------------------------
+
+def test_settings_summary_only_includes_preservica_dotpaths():
+    settings = preservica.settings_summary()
+    assert settings.keys() == {
+        "preservica.tenant",
+        "preservica.username",
+        "preservica.password",
+        "preservica.base_url",
+        "preservica.request_timeout_s",
+        "preservica.concurrency",
+        "preservica.page_size",
+        "preservica.token_refresh_buffer_s",
+        "preservica.max_retries",
+        "preservica.retry_backoff_s",
+    }
+
+
+def test_settings_summary_reports_password_as_set_or_not_without_leaking_value(monkeypatch):
+    monkeypatch.delenv("PRESERVICA_PASSWORD", raising=False)
+    assert preservica.settings_summary()["preservica.password"] == "(not set)"
+
+    monkeypatch.setenv("PRESERVICA_PASSWORD", "super-secret")
+    assert preservica.settings_summary()["preservica.password"] == "***set***"
+
+
+def test_settings_summary_matches_resolved_config_values():
+    from digtk.lib.config import CONFIG
+    assert preservica.settings_summary()["preservica.concurrency"] == CONFIG["preservica"]["concurrency"]
 
 
 def login_response(token="tok1", refresh="reftok1", valid_for=15):
@@ -42,6 +98,24 @@ def test_login_raises_on_failure():
 
     c = client(handler)
     with pytest.raises(PreservicaAuthError, match="bad creds"):
+        c.login()
+
+
+def test_login_raises_clear_error_on_empty_body_instead_of_json_decode_error():
+    def handler(request):
+        return httpx.Response(404, text="")
+
+    c = client(handler)
+    with pytest.raises(PreservicaAuthError, match="non-JSON response"):
+        c.login()
+
+
+def test_login_raises_clear_error_on_html_body():
+    def handler(request):
+        return httpx.Response(500, text="<html><body>Internal Server Error</body></html>")
+
+    c = client(handler)
+    with pytest.raises(PreservicaAuthError, match="HTTP 500"):
         c.login()
 
 
@@ -119,6 +193,87 @@ def test_request_raises_preservica_request_error_on_non_401_failure():
     assert exc_info.value.status == 500
 
 
+def test_request_retries_on_transient_gateway_error_then_succeeds():
+    calls = {"n": 0}
+
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(502)
+        return httpx.Response(200, text="ok-after-retry")
+
+    c = client(handler, retry_backoff_s=0)
+    resp = c.request("GET", f"{BASE_URL}/api/entity/x")
+    assert resp.text == "ok-after-retry"
+    assert calls["n"] == 2
+
+
+def test_request_gives_up_after_max_retries_on_persistent_gateway_error():
+    calls = {"n": 0}
+
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        calls["n"] += 1
+        return httpx.Response(502)
+
+    c = client(handler, retry_backoff_s=0, max_retries=2)
+    with pytest.raises(PreservicaRequestError) as exc_info:
+        c.request("GET", f"{BASE_URL}/api/entity/x")
+    assert exc_info.value.status == 502
+    assert calls["n"] == 3  # initial attempt + 2 retries
+
+
+def test_request_does_not_retry_non_retryable_status():
+    calls = {"n": 0}
+
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        calls["n"] += 1
+        return httpx.Response(404)
+
+    c = client(handler, retry_backoff_s=0, max_retries=3)
+    with pytest.raises(PreservicaRequestError) as exc_info:
+        c.request("GET", f"{BASE_URL}/api/entity/x")
+    assert exc_info.value.status == 404
+    assert calls["n"] == 1
+
+
+def test_request_retries_on_dropped_connection_then_succeeds():
+    calls = {"n": 0}
+
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+        return httpx.Response(200, text="ok-after-retry")
+
+    c = client(handler, retry_backoff_s=0)
+    resp = c.request("GET", f"{BASE_URL}/api/entity/x")
+    assert resp.text == "ok-after-retry"
+    assert calls["n"] == 2
+
+
+def test_request_gives_up_after_max_retries_on_persistent_dropped_connection():
+    calls = {"n": 0}
+
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        calls["n"] += 1
+        raise httpx.RemoteProtocolError("boom")
+
+    c = client(handler, retry_backoff_s=0, max_retries=1)
+    with pytest.raises(httpx.RemoteProtocolError):
+        c.request("GET", f"{BASE_URL}/api/entity/x")
+    assert calls["n"] == 2  # initial attempt + 1 retry
+
+
 def test_refresh_access_token_falls_back_to_login_on_failure():
     calls = {"login": 0}
 
@@ -128,6 +283,24 @@ def test_refresh_access_token_falls_back_to_login_on_failure():
             return login_response(token=f"tok{calls['login']}")
         if request.url.path == "/api/accesstoken/refresh":
             return httpx.Response(200, json={"success": False})
+        return httpx.Response(200, text="ok")
+
+    c = client(handler)
+    c.login()
+    c.refresh_access_token()
+    assert calls["login"] == 2
+    assert c.token == "tok2"
+
+
+def test_refresh_access_token_falls_back_to_login_on_non_json_response():
+    calls = {"login": 0}
+
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            calls["login"] += 1
+            return login_response(token=f"tok{calls['login']}")
+        if request.url.path == "/api/accesstoken/refresh":
+            return httpx.Response(502, text="")
         return httpx.Response(200, text="ok")
 
     c = client(handler)
@@ -152,6 +325,17 @@ def test_get_auth_proactively_refreshes_near_expiry(monkeypatch):
     monkeypatch.setattr("time.monotonic", lambda: c.obtained_at + c.valid_for_s - 30)
     c.request("GET", f"{BASE_URL}/api/entity/x")
     assert c.token == "tok2"
+
+
+def test_access_token_triggers_lazy_login_and_returns_token():
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response(token="tok1")
+        return httpx.Response(200, text="ok")
+
+    c = client(handler)
+    assert c.access_token() == "tok1"
+    assert c.token == "tok1"
 
 
 # --- entity API -----------------------------------------------------------

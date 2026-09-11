@@ -13,13 +13,14 @@ using the same env var name (this also documents it in --help); library code wit
 CLI surface (digtk.lib.ai, digtk.lib.auth, digtk.lib.ark, ...) just reads CONFIG
 directly and gets the same env override for free, without needing any Typer plumbing.
 
-Secrets (bearer tokens, API keys) are deliberately kept out of CONFIG's resolved
-values — only their *env var names* are recorded here (SAMWISE_API_KEY_ENV,
-CASK_API_KEY_ENV) — see digtk.lib.auth for why a token must never be a CLI flag or a
-default that could get logged (shell history, process listings). A secret set via
-`digtk config set samwise.api_key` is written to the home config file (which gets the
-same owner-only permissions as ~/.digtk/credentials.json) and is only ever surfaced
-back to a caller as an env var, never as a CONFIG value.
+Secrets (bearer tokens, API keys, passwords) are deliberately kept out of CONFIG's
+resolved values — only their *env var names* are recorded here (SAMWISE_API_KEY_ENV,
+CASK_API_KEY_ENV, PRESERVICA_PASSWORD_ENV) — see digtk.lib.auth for why a token must
+never be a CLI flag or a default that could get logged (shell history, process
+listings). A secret set via `digtk config set samwise.api_key` (or
+`preservica.password`) is written to the home config file (which gets the same
+owner-only permissions as ~/.digtk/credentials.json) with hidden-input prompting, and
+is only ever surfaced back to a caller as an env var, never as a CONFIG value.
 """
 import json
 import os
@@ -77,6 +78,9 @@ CASK_API_URL_ENV = "CASK_API_URL"
 CASK_API_KEY_ENV = "CASK_API_KEY"
 CREDENTIALS_PATH_ENV = "DIGTK_CREDENTIALS_PATH"
 
+GATEWAY_URL_ENV = "DIGTK_GATEWAY_URL"
+AUTH_LOGIN_TIMEOUT_ENV = "DIGTK_AUTH_LOGIN_TIMEOUT_S"
+
 # Preservica connection secrets (tenant/username/password) are resolved by
 # digtk.lib.auth the same way as CASK_API_URL/CASK_API_KEY above — env var
 # overrides ~/.digtk/credentials.json, never a CLI flag, never in CONFIG/SETTINGS.
@@ -88,6 +92,8 @@ PRESERVICA_REQUEST_TIMEOUT_S_ENV = "DIGTK_PRESERVICA_REQUEST_TIMEOUT_S"
 PRESERVICA_CONCURRENCY_ENV = "DIGTK_PRESERVICA_CONCURRENCY"
 PRESERVICA_PAGE_SIZE_ENV = "DIGTK_PRESERVICA_PAGE_SIZE"
 PRESERVICA_TOKEN_REFRESH_BUFFER_S_ENV = "DIGTK_PRESERVICA_TOKEN_REFRESH_BUFFER_S"
+PRESERVICA_MAX_RETRIES_ENV = "DIGTK_PRESERVICA_MAX_RETRIES"
+PRESERVICA_RETRY_BACKOFF_S_ENV = "DIGTK_PRESERVICA_RETRY_BACKOFF_S"
 
 ARK_NAAN_ENV = "DIGTK_ARK_NAAN"
 ARK_SHOULDER_ENV = "DIGTK_ARK_SHOULDER"
@@ -167,6 +173,8 @@ SETTINGS = [
     {"dotpath": "samwise.api_key", "env": SAMWISE_API_KEY_ENV, "cast": str, "secret": True},
     {"dotpath": "samwise.llm_model", "env": SAMWISE_LLM_MODEL_ENV, "cast": str, "secret": False},
     {"dotpath": "samwise.embed_model", "env": SAMWISE_EMBED_MODEL_ENV, "cast": str, "secret": False},
+    {"dotpath": "gateway.url", "env": GATEWAY_URL_ENV, "cast": str, "secret": False},
+    {"dotpath": "auth.login_timeout_s", "env": AUTH_LOGIN_TIMEOUT_ENV, "cast": float, "secret": False},
     {"dotpath": "ark.naan", "env": ARK_NAAN_ENV, "cast": str, "secret": False},
     {"dotpath": "ark.shoulder", "env": ARK_SHOULDER_ENV, "cast": str, "secret": False},
     {"dotpath": "ark.noid_alphabet", "env": ARK_NOID_ALPHABET_ENV, "cast": str, "secret": False},
@@ -221,10 +229,16 @@ SETTINGS = [
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_angle_threshold", "env": OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "gcs.bucket", "env": GCS_BUCKET_ENV, "cast": str, "secret": False},
+    {"dotpath": "preservica.tenant", "env": PRESERVICA_TENANT_ENV, "cast": str, "secret": False},
+    {"dotpath": "preservica.username", "env": PRESERVICA_USERNAME_ENV, "cast": str, "secret": False},
+    {"dotpath": "preservica.password", "env": PRESERVICA_PASSWORD_ENV, "cast": str, "secret": True},
+    {"dotpath": "preservica.base_url", "env": PRESERVICA_BASE_URL_ENV, "cast": str, "secret": False},
     {"dotpath": "preservica.request_timeout_s", "env": PRESERVICA_REQUEST_TIMEOUT_S_ENV, "cast": float, "secret": False},
     {"dotpath": "preservica.concurrency", "env": PRESERVICA_CONCURRENCY_ENV, "cast": int, "secret": False},
     {"dotpath": "preservica.page_size", "env": PRESERVICA_PAGE_SIZE_ENV, "cast": int, "secret": False},
     {"dotpath": "preservica.token_refresh_buffer_s", "env": PRESERVICA_TOKEN_REFRESH_BUFFER_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "preservica.max_retries", "env": PRESERVICA_MAX_RETRIES_ENV, "cast": int, "secret": False},
+    {"dotpath": "preservica.retry_backoff_s", "env": PRESERVICA_RETRY_BACKOFF_S_ENV, "cast": float, "secret": False},
 ]
 _SETTINGS_BY_DOTPATH = {setting["dotpath"]: setting for setting in SETTINGS}
 
@@ -337,6 +351,14 @@ def _seed_env_from_home_config(path, settings):
 
 _seed_env_from_home_config(HOME_CONFIG_PATH, SETTINGS)
 
+# Computed once, ahead of the CONFIG literal below, so 'preservica.base_url' can
+# fall back to the tenant-derived default (Preservica's Starter tier derives the
+# tenant from the hostname) without recomputing 'preservica.tenant' twice.
+_PRESERVICA_TENANT_DEFAULT = _env(PRESERVICA_TENANT_ENV, "")
+_PRESERVICA_BASE_URL_DEFAULT = _env(PRESERVICA_BASE_URL_ENV, "") or (
+    f"https://{_PRESERVICA_TENANT_DEFAULT}.preservica.com" if _PRESERVICA_TENANT_DEFAULT else ""
+)
+
 
 CONFIG = {
     "ocr": {
@@ -366,6 +388,12 @@ CONFIG = {
         ),
         "api_url_env": CASK_API_URL_ENV,
         "api_key_env": CASK_API_KEY_ENV,
+        "login_timeout_s": _env(AUTH_LOGIN_TIMEOUT_ENV, 300.0, float),
+    },
+    # Anduin auth gateway that `digtk auth login`'s browser-based OIDC flow talks to.
+    # The stored CaskFS api_url is gateway.url + "/cask" — see digtk.lib.auth.login().
+    "gateway": {
+        "url": _env(GATEWAY_URL_ENV, "https://argonath.library.ucdavis.edu"),
     },
     "ark": {
         "naan": _env(ARK_NAAN_ENV, "87287"),
@@ -468,22 +496,37 @@ CONFIG = {
         "bucket": _env(GCS_BUCKET_ENV, "dams-client-media-argonath"),
     },
     "preservica": {
-        # tenant/username/password/base_url values themselves are resolved by
-        # digtk.lib.auth.resolve_preservica(), not read here — kept out of CONFIG's
-        # resolved values entirely, same as CaskFS's own credentials (see
-        # digtk.lib.auth's module docstring for why). Only the env var *names* are
-        # recorded here, mirroring CONFIG["auth"]["api_url_env"]/"api_key_env" above,
-        # so digtk.lib.auth stays the single module that resolves any of them.
+        # Unlike CaskFS's OIDC-issued session token (which has its own browser-login
+        # flow and credentials.json), Preservica has no separate credential store —
+        # tenant/username/base_url are plain dotpath settings like everything else in
+        # CONFIG, persisted via `digtk config set preservica.<name> <value>` same as
+        # e.g. samwise.api_url. 'password' is marked secret in SETTINGS (hidden-input
+        # prompt, never displayed by `digtk config show`/`digtk preservica config`) so
+        # its resolved value is deliberately NOT stored here — only its env var name
+        # is, mirroring CONFIG["samwise"]["api_key_env"] — see digtk.lib.auth.
+        "tenant": _PRESERVICA_TENANT_DEFAULT,
         "tenant_env": PRESERVICA_TENANT_ENV,
+        "username": _env(PRESERVICA_USERNAME_ENV, ""),
         "username_env": PRESERVICA_USERNAME_ENV,
         "password_env": PRESERVICA_PASSWORD_ENV,
+        "base_url": _PRESERVICA_BASE_URL_DEFAULT,
         "base_url_env": PRESERVICA_BASE_URL_ENV,
-        # Non-secret tuning knobs, matching preservica-etl's lib/config.js defaults
-        # (requestTimeoutMs, concurrency, tokenRefreshBufferMs).
+        # Non-secret tuning knobs. request_timeout_s/page_size/token_refresh_buffer_s
+        # match preservica-etl's lib/config.js defaults (requestTimeoutMs, page size,
+        # tokenRefreshBufferMs); concurrency is lowered from that port's 8 to 2 —
+        # Preservica's Starter tier was observed to 502/drop connections on bitstream
+        # `/content` downloads under 8-way concurrent load (see max_retries below,
+        # which is the other half of the mitigation).
         "request_timeout_s": _env(PRESERVICA_REQUEST_TIMEOUT_S_ENV, 30.0, float),
-        "concurrency": _env(PRESERVICA_CONCURRENCY_ENV, 8, int),
+        "concurrency": _env(PRESERVICA_CONCURRENCY_ENV, 2, int),
         "page_size": _env(PRESERVICA_PAGE_SIZE_ENV, 100, int),
         "token_refresh_buffer_s": _env(PRESERVICA_TOKEN_REFRESH_BUFFER_S_ENV, 60.0, float),
+        # Not in preservica-etl: that port never retried, but Preservica's Starter
+        # tier has turned out to intermittently 502/drop-connection on bitstream
+        # `/content` downloads under concurrent load (observed in practice), so
+        # PreservicaClient.request() retries transient failures with backoff.
+        "max_retries": _env(PRESERVICA_MAX_RETRIES_ENV, 4, int),
+        "retry_backoff_s": _env(PRESERVICA_RETRY_BACKOFF_S_ENV, 1.0, float),
     },
 }
 

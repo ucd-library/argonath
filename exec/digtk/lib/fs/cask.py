@@ -91,6 +91,35 @@ class CaskBackend:
             raise ValueError(message)
         raise CaskFsError(status, response.text)
 
+    def _parse_json_response(self, res, action):
+        """Parse a CaskFS response body as JSON, for a response that already
+        passed _raise_for_status() (so a 2xx/3xx status, not a mapped API error).
+
+        An empty body is treated as a valid no-content success (some endpoints —
+        writes and deletes especially — may reply 204/200 with nothing further to
+        report), not an error. A genuinely non-empty-but-unparseable body (HTML,
+        garbage, a truncated response) means something about the connection
+        itself is wrong — a stale/misconfigured CASK_API_URL hitting the wrong
+        service, a proxy in between, etc — so that raises a clear CaskFsError
+        rather than letting a cryptic json.JSONDecodeError propagate.
+
+        :param httpx.Response res: Response to parse.
+        :param str action: Short description for the error message, e.g. 'write'.
+        :returns: Parsed JSON body, or {} if the body was empty.
+        :rtype: dict
+        :raises CaskFsError: If the body is non-empty but not valid JSON.
+        """
+        if not res.text:
+            return {}
+        try:
+            return res.json()
+        except ValueError:
+            raise CaskFsError(
+                res.status_code,
+                f"non-JSON response from CaskFS {action} ({res.text[:200]!r}) — "
+                f"check CASK_API_URL and the CaskFS connection (see `digtk auth whoami`)",
+            )
+
     def read_bytes(self, path):
         """Read a CaskFS file fully into memory.
 
@@ -122,7 +151,9 @@ class CaskBackend:
         :param str path: CaskFS-absolute path.
         :param bytes|iterator[bytes] body: Content to send as the request body.
         :param dict opts: 'partition_keys', 'bucket', 'metadata', 'mime_type'.
-        :returns: The canonical file record from the response ('file' key), or the raw response body.
+        :returns: The canonical file record from the response ('file' key), the raw
+            response body if there's no 'file' key, or {} if the server replied
+            with no body at all (e.g. 204 No Content on a successful write).
         :rtype: dict
         """
         params = {}
@@ -143,7 +174,7 @@ class CaskBackend:
             content=body,
         )
         self._raise_for_status(res)
-        result = res.json()
+        result = self._parse_json_response(res, "write")
         return result.get("file", result)
 
     def write_bytes(self, path, data, opts={}):
@@ -171,7 +202,7 @@ class CaskBackend:
         return self._write(method, path, chunks, opts)
 
     def exists(self, path):
-        """Check whether a path exists in CaskFS.
+        """Check whether a path exists in CaskFS, whether it's a file or a directory.
 
         :param str path: CaskFS-absolute path.
         :returns: True if the path exists.
@@ -180,7 +211,10 @@ class CaskBackend:
         res = self._client.get(f"{self.base_url}/fs{path}", params={"metadata": "true"})
         if res.status_code == 404:
             return False
-        self._raise_for_status(res)
+        try:
+            self._raise_for_status(res)
+        except IsADirectoryError:
+            return True
         return True
 
     def ls(self, path, opts={}):
@@ -229,7 +263,8 @@ class CaskBackend:
 
         :param str path: CaskFS-absolute path.
         :param dict opts: 'directory' (bool) to delete a directory tree, 'soft_delete' (bool).
-        :returns: Server response body.
+        :returns: Server response body, or {} if the server replied with no body
+            (e.g. 204 No Content on a successful delete).
         :rtype: dict
         """
         params = {}
@@ -239,7 +274,7 @@ class CaskBackend:
             params["softDelete"] = "true"
         res = self._client.request("DELETE", f"{self.base_url}/fs{path}", params=params)
         self._raise_for_status(res)
-        return res.json()
+        return self._parse_json_response(res, "delete")
 
     def add_derivative_link(self, path, source_path, opts={}):
         """Record CaskFS derivative-link lineage: `path` was derived from `source_path`.
@@ -266,7 +301,7 @@ class CaskBackend:
             body["metadata"] = opts["metadata"]
         res = self._client.post(f"{self.base_url}/lineage/add", json=body)
         self._raise_for_status(res)
-        return res.json()
+        return self._parse_json_response(res, "add_derivative_link")
 
     def find_by_subject(self, subject, opts={}):
         """Find files whose RDF graph contains a triple with the given subject,

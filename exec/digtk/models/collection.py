@@ -42,9 +42,8 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from digtk.lib import auth, fs
+from digtk.lib import fs, preservica
 from digtk.lib.config import CONFIG
-from digtk.lib.preservica import PreservicaClient
 
 CURRENT_TIME = "CURRENT_TIME"
 CURRENT_DATE = "CURRENT_DATE"
@@ -326,20 +325,31 @@ def _copy_bronze_dir(root, src_rel, dest_rel):
 
 # --- Preservica import (phase 1: by-ref) -------------------------------------
 
-def _build_preservica_client():
-    """Build a PreservicaClient from resolved Preservica credentials.
+def _record_error(ctx, ref, stage, message):
+    """Record a per-entity/per-file error and immediately surface it via
+    ctx['on_progress'] — a full walk can take many minutes, so errors need to be
+    visible as they happen rather than only in the manifest returned at the end.
 
-    :returns: Configured client.
-    :rtype: digtk.lib.preservica.PreservicaClient
-    :raises ValueError: If no Preservica connection is configured.
+    :param dict ctx: Walk context — see _walk_preservica_folder().
+    :param str ref: Entity ref the error occurred on.
+    :param str stage: Short stage name (e.g. 'entity', 'download').
+    :param str message: Error message.
     """
-    creds = auth.resolve_preservica()
-    if not (creds.get("base_url") and creds.get("username") and creds.get("password")):
-        raise ValueError(
-            "No Preservica connection configured. Set PRESERVICA_TENANT (or "
-            "PRESERVICA_BASE_URL), PRESERVICA_USERNAME, and PRESERVICA_PASSWORD."
-        )
-    return PreservicaClient(creds["base_url"], creds["username"], creds["password"])
+    ctx["manifest"]["errors"].append({"ref": ref, "stage": stage, "message": message})
+    ctx["on_progress"](f"Error [{stage}] {ref}: {message}")
+
+
+def _record_warning(ctx, ref, stage, message):
+    """Record a per-entity warning and immediately surface it via
+    ctx['on_progress'] (see _record_error()).
+
+    :param dict ctx: Walk context — see _walk_preservica_folder().
+    :param str ref: Entity ref the warning applies to.
+    :param str stage: Short stage name.
+    :param str message: Warning message.
+    """
+    ctx["manifest"]["warnings"].append({"ref": ref, "stage": stage, "message": message})
+    ctx["on_progress"](f"Warning [{stage}] {ref}: {message}")
 
 
 def _fetch_and_write_identifiers(client, data_type, ref, root, entity_dir, ctx):
@@ -359,7 +369,7 @@ def _fetch_and_write_identifiers(client, data_type, ref, root, entity_dir, ctx):
         _write_bronze_json(root, f"{entity_dir}/identifiers.json", identifiers)
         return identifiers
     except Exception as e:
-        ctx["manifest"]["errors"].append({"ref": ref, "stage": "identifiers", "message": str(e)})
+        _record_error(ctx, ref, "identifiers", str(e))
         return []
 
 
@@ -377,7 +387,33 @@ def _fetch_and_write_metadata(client, entity, root, entity_dir, ctx):
         resolved = [client.get_metadata_fragment(f["url"]) for f in entity.get("metadataFragmentRefs") or []]
         _write_bronze_json(root, f"{entity_dir}/metadata.json", resolved)
     except Exception as e:
-        ctx["manifest"]["errors"].append({"ref": entity["ref"], "stage": "metadata", "message": str(e)})
+        _record_error(ctx, entity["ref"], "metadata", str(e))
+
+
+def _fixity_unchanged(root, media_rel, fixity):
+    """Whether `media_rel` is already present in bronze with a fixity sidecar
+    matching Preservica's current `fixity` for that file — i.e. it's safe to
+    skip re-downloading (see PreservicaClient.get_bitstream_detail()'s docstring,
+    which is exactly what makes this cheap: Preservica already computes and
+    stores the checksum, so no local hashing is needed).
+
+    :param str root: fs-compatible bronze 'latest' root.
+    :param str media_rel: Media file path, relative to `root`.
+    :param dict|None fixity: {'algorithm', 'value'} from Preservica for this file.
+    :returns: True if the existing file + sidecar match `fixity`.
+    :rtype: bool
+    """
+    if not fixity or not fixity.get("value"):
+        return False
+    if not fs.exists(f"{root}/{media_rel}"):
+        return False
+    existing = _read_bronze_json(root, f"{media_rel}.fixity.json")
+    if not existing:
+        return False
+    return (
+        (existing.get("algorithm") or "").lower() == (fixity.get("algorithm") or "").lower()
+        and existing.get("value") == fixity.get("value")
+    )
 
 
 def _walk_preservica_item(client, io_ref, root, ctx):
@@ -388,7 +424,10 @@ def _walk_preservica_item(client, io_ref, root, ctx):
     :param PreservicaClient client: Client instance.
     :param str io_ref: Information object ref.
     :param str root: fs-compatible bronze 'latest' root.
-    :param dict ctx: 'manifest' ({'items', 'errors', 'warnings'}), 'concurrency'.
+    :param dict ctx: 'manifest' ({'items', 'errors', 'warnings'}), 'concurrency',
+        'on_progress' (callable(str), see preservica_import()), 'skip_unchanged'
+        (bool — skip re-downloading a file whose Preservica fixity matches an
+        already-written local copy, see _fixity_unchanged()).
     """
     entity_dir = f"by-ref/{io_ref}"
     try:
@@ -401,9 +440,10 @@ def _walk_preservica_item(client, io_ref, root, ctx):
         }
         _write_bronze_json(root, f"{entity_dir}/entity.json", entity)
     except Exception as e:
-        ctx["manifest"]["errors"].append({"ref": io_ref, "stage": "entity", "message": str(e)})
+        _record_error(ctx, io_ref, "entity", str(e))
         return
 
+    ctx["on_progress"](f"item  {io_ref}  {entity['title'] or '(untitled)'}")
     ctx["manifest"]["items"].append({"ref": io_ref, "type": "IO", "title": entity["title"]})
 
     identifiers = _fetch_and_write_identifiers(client, "information-objects", io_ref, root, entity_dir, ctx)
@@ -413,20 +453,24 @@ def _walk_preservica_item(client, io_ref, root, ctx):
         representations = client.resolve_all_content(io_ref, raw)
         _write_bronze_json(root, f"{entity_dir}/representations.json", representations)
     except Exception as e:
-        ctx["manifest"]["errors"].append({"ref": io_ref, "stage": "resolveAllContent", "message": str(e)})
+        _record_error(ctx, io_ref, "resolveAllContent", str(e))
         representations = []
 
     def _download_one(file):
+        media_rel = f"{entity_dir}/media/{file['representationType']}/{file['filename']}"
+        if ctx["skip_unchanged"] and _fixity_unchanged(root, media_rel, file.get("fixity")):
+            ctx["on_progress"](f"  skip unchanged {file['filename']}")
+            return
         try:
             data = client.download_file(file["downloadUrl"])
-            media_rel = f"{entity_dir}/media/{file['representationType']}/{file['filename']}"
             fs.write(f"{root}/{media_rel}", data=data, opts={"replace": True})
             if file.get("fixity"):
                 _write_bronze_json(root, f"{media_rel}.fixity.json", file["fixity"])
         except Exception as e:
-            ctx["manifest"]["errors"].append({"ref": io_ref, "stage": "download", "message": str(e)})
+            _record_error(ctx, io_ref, "download", f"{file.get('filename')}: {e}")
 
     if representations:
+        ctx["on_progress"](f"  downloading {len(representations)} file(s) for {io_ref}")
         with ThreadPoolExecutor(max_workers=ctx["concurrency"]) as executor:
             list(executor.map(_download_one, representations))
 
@@ -435,12 +479,10 @@ def _walk_preservica_item(client, io_ref, root, ctx):
             fs.write(f"{root}/{entity_dir}/media/thumbnail", data=thumb, opts={"replace": True})
 
     if not any(_is_ark(i.get("value") or "") for i in identifiers):
-        ctx["manifest"]["warnings"].append({
-            "ref": io_ref, "stage": "identifiers", "message": "no ARK-shaped identifier found",
-        })
+        _record_warning(ctx, io_ref, "identifiers", "no ARK-shaped identifier found")
 
 
-def _walk_preservica_folder(client, so_ref, root, ctx):
+def _walk_preservica_folder(client, so_ref, root, ctx, raw=None):
     """Recursively walk one Preservica structural object into by-ref/: entity
     detail, identifiers, metadata, and children list, then recurse into
     sub-folders (bounded by ctx['max_depth']) and leaf-fetch items.
@@ -448,11 +490,17 @@ def _walk_preservica_folder(client, so_ref, root, ctx):
     :param PreservicaClient client: Client instance.
     :param str so_ref: Structural object ref.
     :param str root: fs-compatible bronze 'latest' root.
-    :param dict ctx: 'max_depth', 'depth', 'manifest' ({'items', 'errors', 'warnings'}), 'concurrency'.
+    :param dict ctx: 'max_depth', 'depth', 'manifest' ({'items', 'errors', 'warnings'}),
+        'concurrency', 'on_progress' (callable(str), see preservica_import()).
+    :param dict|None raw: Already-fetched EntityResponse for `so_ref`, if the
+        caller needed it anyway (see preservica_import()'s collection-name
+        defaulting, which fetches the root entity to slugify its title) — avoids
+        fetching the same entity twice. Only meaningful for the initial call;
+        recursive calls into children always fetch fresh.
     """
     entity_dir = f"by-ref/{so_ref}"
     try:
-        raw = client.get_entity("structural-objects", so_ref)
+        raw = raw if raw is not None else client.get_entity("structural-objects", so_ref)
         entity = {
             "ref": so_ref,
             "title": (raw.get("StructuralObject") or {}).get("Title"),
@@ -461,9 +509,10 @@ def _walk_preservica_folder(client, so_ref, root, ctx):
         }
         _write_bronze_json(root, f"{entity_dir}/entity.json", entity)
     except Exception as e:
-        ctx["manifest"]["errors"].append({"ref": so_ref, "stage": "entity", "message": str(e)})
+        _record_error(ctx, so_ref, "entity", str(e))
         return
 
+    ctx["on_progress"](f"folder  {so_ref}  {entity['title'] or '(untitled)'}")
     ctx["manifest"]["items"].append({"ref": so_ref, "type": "SO", "title": entity["title"]})
 
     _fetch_and_write_identifiers(client, "structural-objects", so_ref, root, entity_dir, ctx)
@@ -473,7 +522,7 @@ def _walk_preservica_folder(client, so_ref, root, ctx):
         children = client.get_children(so_ref)
         _write_bronze_json(root, f"{entity_dir}/children.json", children)
     except Exception as e:
-        ctx["manifest"]["errors"].append({"ref": so_ref, "stage": "children", "message": str(e)})
+        _record_error(ctx, so_ref, "children", str(e))
         children = []
 
     for child in children:
@@ -484,7 +533,7 @@ def _walk_preservica_folder(client, so_ref, root, ctx):
             _walk_preservica_item(client, child["ref"], root, ctx)
 
 
-def preservica_import(ref, collection, group, opts={}):
+def preservica_import(ref, collection=None, group="preservica", opts={}):
     """Recursively walk a Preservica collection into bronze's by-ref/ layout — a
     near-verbatim, ref-keyed relocation of Preservica's own Entity API responses
     (entity.json, identifiers.json, metadata.json, children.json,
@@ -492,40 +541,70 @@ def preservica_import(ref, collection, group, opts={}):
     schema.org or other reinterpretation happens here — XML descriptive metadata
     is translated to JSON one-to-one (see digtk.lib.preservica.xml).
 
-    Every run re-walks the whole subtree from `ref` and overwrites by-ref/ in
-    place: there is no local staging cache and no content-hash-based incremental
-    diffing in this version (both are natural follow-ups if re-walking a large
-    collection on every run becomes too slow). Per-entity/per-file errors are
-    recorded in the returned manifest rather than aborting the whole walk, so one
-    bad item doesn't block the rest of the collection.
+    Every run re-walks the whole subtree from `ref` and re-fetches/overwrites
+    every entity's JSON (entity/identifiers/metadata/children/representations) in
+    by-ref/ — there is no incremental diffing of those in this version (a natural
+    follow-up if re-walking a large collection's structure on every run becomes
+    too slow). File downloads are the one exception: with `opts['skip_unchanged']`
+    (opt-in, default off) a file whose Preservica-reported fixity already matches
+    an existing local copy is left alone instead of re-downloaded — see
+    _fixity_unchanged(). Per-entity/per-file errors are recorded in the returned
+    manifest rather than aborting the whole walk, so one bad item doesn't block
+    the rest of the collection.
 
     :param str ref: Root Preservica structural object ref to walk.
-    :param str collection: Collection name.
+    :param str|None collection: Collection name. Defaults to a slugified version
+        of the root entity's own Preservica title (mirrors preservica-etl's
+        resolveSlug()) — this fetches the root entity to read its title, so no
+        extra request is made once the walk itself reaches it.
     :param str group: Bronze group namespace.
     :param dict opts: 'max_depth' (int, default unlimited — maximum folder
         recursion depth), 'dest_root' (str, optional — see
         _bronze_collection_root()), 'concurrency' (int, default
         CONFIG['preservica']['concurrency'] — max concurrent file downloads per
         item), 'client' (digtk.lib.preservica.PreservicaClient, injectable for
-        tests — defaults to one built from digtk.lib.auth.resolve_preservica()).
-    :returns: {'items': [{'ref', 'type', 'title'}, ...], 'errors': [...], 'warnings': [...]}.
+        tests — defaults to one built from digtk.lib.auth.resolve_preservica()),
+        'on_progress' (callable(str), optional — invoked with a human-readable
+        line as each folder/item is walked; defaults to a no-op, so callers that
+        don't care about live progress see no behavior change), 'skip_unchanged'
+        (bool, default False — opt-in fixity check to skip re-downloading files
+        that haven't changed since the last import; see _fixity_unchanged()).
+    :returns: {'collection': str (the resolved name), 'items': [{'ref', 'type',
+        'title'}, ...], 'errors': [...], 'warnings': [...]}.
     :rtype: dict
     :raises ValueError: If Preservica credentials cannot be resolved and no
         `opts['client']` was given.
     """
-    client = opts.get("client") or _build_preservica_client()
+    client = opts.get("client") or preservica.build_client()
     max_depth = opts.get("max_depth")
     max_depth = float("inf") if max_depth is None else max_depth
-    root = _bronze_latest_root(collection, group, opts)
+    on_progress = opts.get("on_progress") or (lambda message: None)
+    skip_unchanged = bool(opts.get("skip_unchanged"))
 
-    manifest = {"items": [], "errors": [], "warnings": []}
+    root_raw = None
+    if not collection:
+        root_raw = client.get_entity("structural-objects", ref)
+        title = (root_raw.get("StructuralObject") or {}).get("Title")
+        collection = _slugify(title or ref) or ref
+
+    root = _bronze_latest_root(collection, group, opts)
+    on_progress(f"Importing '{collection}' from ref {ref} into {root}")
+
+    manifest = {"collection": collection, "items": [], "errors": [], "warnings": []}
     ctx = {
         "max_depth": max_depth,
         "depth": 0,
         "manifest": manifest,
         "concurrency": opts.get("concurrency", CONFIG["preservica"]["concurrency"]),
+        "on_progress": on_progress,
+        "skip_unchanged": skip_unchanged,
     }
-    _walk_preservica_folder(client, ref, root, ctx)
+    _walk_preservica_folder(client, ref, root, ctx, raw=root_raw)
+
+    on_progress(
+        f"Walked {len(manifest['items'])} entities "
+        f"({len(manifest['errors'])} error(s), {len(manifest['warnings'])} warning(s))"
+    )
 
     _write_bronze_json(_bronze_collection_root(collection, group, opts), "manifest.json", {
         "sourceType": "preservica",

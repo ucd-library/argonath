@@ -20,6 +20,11 @@ from digtk.lib.preservica import xml as pxml
 
 _CONFIG = CONFIG["preservica"]
 
+# Gateway-level statuses worth retrying — transient, not a real client/permission
+# error like 401/403/404. Observed in practice on Preservica's Starter tier under
+# concurrent bitstream `/content` downloads (see PreservicaClient.request()).
+_RETRYABLE_STATUSES = {502, 503, 504}
+
 
 class PreservicaAuthError(RuntimeError):
     """Raised when Preservica login fails outright (bad credentials, tenant, etc.)."""
@@ -46,8 +51,11 @@ class PreservicaClient:
     :param str password: Preservica password.
     :param dict opts: 'timeout_s' (per-request timeout, default CONFIG['preservica']
         ['request_timeout_s']), 'token_refresh_buffer_s' (default CONFIG['preservica']
-        ['token_refresh_buffer_s']), 'transport' (optional httpx.BaseTransport, used by
-        tests to mock the HTTP layer via httpx.MockTransport).
+        ['token_refresh_buffer_s']), 'max_retries' (default CONFIG['preservica']
+        ['max_retries'] — retry attempts for a transient gateway error/dropped
+        connection, see request()), 'retry_backoff_s' (default CONFIG['preservica']
+        ['retry_backoff_s'] — base delay, doubled each retry), 'transport' (optional
+        httpx.BaseTransport, used by tests to mock the HTTP layer via httpx.MockTransport).
     """
 
     def __init__(self, base_url, username, password, opts={}):
@@ -56,6 +64,8 @@ class PreservicaClient:
         self.password = password
         self.timeout_s = opts.get("timeout_s", _CONFIG["request_timeout_s"])
         self.refresh_buffer_s = opts.get("token_refresh_buffer_s", _CONFIG["token_refresh_buffer_s"])
+        self.max_retries = opts.get("max_retries", _CONFIG["max_retries"])
+        self.retry_backoff_s = opts.get("retry_backoff_s", _CONFIG["retry_backoff_s"])
         self._client = httpx.Client(timeout=self.timeout_s, transport=opts.get("transport"))
 
         self.token = None
@@ -67,18 +77,42 @@ class PreservicaClient:
         # logins or consume the single-use refresh token twice.
         self._auth_lock = threading.Lock()
 
+    def _parse_auth_response(self, resp, action):
+        """Parse an Access Token API JSON response, raising a clear
+        PreservicaAuthError — rather than letting a cryptic json.JSONDecodeError
+        propagate — if the body isn't valid JSON at all (e.g. empty, or an HTML
+        error page), which usually means base_url/tenant is wrong rather than
+        anything to do with the request's own JSON payload.
+
+        :param httpx.Response resp: The login/refresh response.
+        :param str action: 'login' or 'refresh', for the error message.
+        :returns: Parsed JSON body.
+        :rtype: dict
+        :raises PreservicaAuthError: If the body isn't valid JSON.
+        """
+        try:
+            return resp.json()
+        except ValueError as e:
+            snippet = resp.text[:200] if resp.text else "(empty body)"
+            raise PreservicaAuthError(
+                f"Preservica {action} returned a non-JSON response (HTTP {resp.status_code}): "
+                f"{snippet!r}. Check preservica.base_url/tenant/username/password "
+                f"(see `digtk preservica config`)."
+            ) from e
+
     def login(self):
         """Log in to the Access Token API.
 
         The `tenant` form param is deliberately omitted — see module docstring.
 
-        :raises PreservicaAuthError: If the login response reports failure.
+        :raises PreservicaAuthError: If the login response reports failure, or
+            isn't valid JSON at all (see _parse_auth_response()).
         """
         resp = self._client.post(
             f"{self.base_url}/api/accesstoken/login",
             data={"username": self.username, "password": self.password},
         )
-        body = resp.json()
+        body = self._parse_auth_response(resp, "login")
         if not body.get("success"):
             raise PreservicaAuthError(f"Preservica login failed: {body.get('message', 'unknown error')}")
         self._store_token(body)
@@ -87,14 +121,19 @@ class PreservicaClient:
         """Exchange the current (single-use) refresh token for a new access token.
 
         Falls back to a full login() if the refresh itself reports failure (e.g.
-        the refresh token expired).
+        the refresh token expired) or returns a non-JSON response (see
+        _parse_auth_response()).
         """
         resp = self._client.post(
             f"{self.base_url}/api/accesstoken/refresh",
             data={"refresh-token": self.refresh_token_},
             headers={"Preservica-Access-Token": self.token},
         )
-        body = resp.json()
+        try:
+            body = self._parse_auth_response(resp, "refresh")
+        except PreservicaAuthError:
+            self.login()
+            return
         if not body.get("success"):
             self.login()
             return
@@ -127,19 +166,50 @@ class PreservicaClient:
                 self.refresh_access_token()
             return self.token
 
+    def access_token(self):
+        """Return a valid Preservica access token, logging in or refreshing as needed.
+
+        Public wrapper around `_get_auth()` for callers that just need a token
+        to hand off elsewhere (e.g. `digtk preservica token`, for manually
+        replaying a request with curl outside this client's retry logic).
+
+        :returns: A valid access token.
+        :rtype: str
+        """
+        return self._get_auth()
+
     def request(self, method, url, **kwargs):
         """Make an authenticated request against the Entity API, retrying once on
-        a 401 (in case the proactive refresh missed a clock-skew edge case).
+        a 401 (in case the proactive refresh missed a clock-skew edge case, see
+        _request()) and, separately, retrying up to `self.max_retries` times with
+        exponential backoff (`self.retry_backoff_s * 2**attempt`) on a transient
+        gateway error (502/503/504) or a dropped/reset connection — Preservica's
+        Starter tier has been observed to intermittently fail bitstream `/content`
+        downloads this way under concurrent load, with no indication it's anything
+        but transient.
 
         :param str method: HTTP method.
         :param str url: Full URL to request.
         :param kwargs: Extra httpx.Client.request() kwargs (e.g. 'params').
         :returns: The response.
         :rtype: httpx.Response
-        :raises PreservicaRequestError: If the response is a non-2xx status
-            (after the single 401 retry).
+        :raises PreservicaRequestError: If the response is a non-2xx status (after
+            the single 401 retry) and, for a retryable status, every retry too.
+        :raises httpx.TransportError: If every retry also fails at the transport
+            level (connection dropped/reset/refused).
         """
-        return self._request(method, url, kwargs, is_retry=False)
+        attempt = 0
+        while True:
+            try:
+                return self._request(method, url, kwargs, is_retry=False)
+            except PreservicaRequestError as e:
+                if e.status not in _RETRYABLE_STATUSES or attempt >= self.max_retries:
+                    raise
+            except httpx.TransportError:
+                if attempt >= self.max_retries:
+                    raise
+            attempt += 1
+            time.sleep(self.retry_backoff_s * (2 ** (attempt - 1)))
 
     def _request(self, method, url, kwargs, is_retry):
         """

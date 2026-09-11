@@ -215,8 +215,11 @@ class _FakePreservicaClient:
         self.files = {}             # downloadUrl -> bytes
         self.thumbnails = {}        # ref -> bytes|None
         self.raise_for = {}         # ref -> Exception, raised from get_entity
+        self.get_entity_calls = []  # [(data_type, ref), ...] — for asserting no double-fetch
+        self.download_calls = []    # [downloadUrl, ...] — for asserting skip-unchanged behavior
 
     def get_entity(self, data_type, ref, opts={}):
+        self.get_entity_calls.append((data_type, ref))
         if ref in self.raise_for:
             raise self.raise_for[ref]
         entity = self.entities[ref]
@@ -239,6 +242,7 @@ class _FakePreservicaClient:
         return self.representations.get(io_ref, [])
 
     def download_file(self, download_url):
+        self.download_calls.append(download_url)
         return self.files[download_url]
 
     def get_thumbnail(self, ref):
@@ -306,6 +310,48 @@ def test_preservica_import_writes_by_ref_layout(tmp_path):
     assert "walkedAt" in run_manifest
 
 
+def test_preservica_import_defaults_collection_from_root_title(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Old Vines_New Lands", "type": "SO"}
+    client.children["root-ref"] = []
+
+    manifest = collection.preservica_import(
+        "root-ref", group="preservica", opts={"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert manifest["collection"] == "old-vines-new-lands"
+    root = tmp_path / "bronze" / "preservica" / "old-vines-new-lands" / "latest"
+    assert (root / "by-ref" / "root-ref" / "entity.json").exists()
+    # The root entity is only fetched once — reused for both slug-resolution and the walk.
+    assert client.get_entity_calls.count(("structural-objects", "root-ref")) == 1
+
+
+def test_preservica_import_defaults_collection_to_ref_when_title_missing(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": None, "type": "SO"}
+    client.children["root-ref"] = []
+
+    manifest = collection.preservica_import(
+        "root-ref", group="preservica", opts={"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert manifest["collection"] == "root-ref"
+
+
+def test_preservica_import_explicit_collection_skips_extra_fetch(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Old Vines_New Lands", "type": "SO"}
+    client.children["root-ref"] = []
+
+    manifest = collection.preservica_import(
+        "root-ref", "explicit-name", "preservica",
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert manifest["collection"] == "explicit-name"
+    assert client.get_entity_calls.count(("structural-objects", "root-ref")) == 1
+
+
 def test_preservica_import_warns_when_no_ark(tmp_path):
     client = _FakePreservicaClient()
     client.entities["root-ref"] = {"title": "Root", "type": "SO"}
@@ -362,6 +408,66 @@ def test_preservica_import_respects_max_depth(tmp_path):
     assert (root / "by-ref" / "root-ref" / "entity.json").exists()
     assert not (root / "by-ref" / "sub-folder" / "entity.json").exists()
     assert not any(i["ref"] == "sub-folder" for i in manifest["items"])
+
+
+def _client_with_one_downloadable_file():
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["io-1"] = {"title": "Item One", "type": "IO"}
+    client.children["root-ref"] = [{"ref": "io-1", "title": "Item One", "type": "IO"}]
+    client.representations["io-1"] = [{
+        "representationType": "Preservation", "contentObjectRef": "co-1", "mimeGroup": "image",
+        "filename": "page1.tif", "downloadUrl": "http://x/f1", "fileSize": 9,
+        "fixity": {"algorithm": "SHA1", "value": "abc123"},
+    }]
+    client.files["http://x/f1"] = b"tiffbytes"
+    return client
+
+
+def test_preservica_import_redownloads_unchanged_file_by_default(tmp_path):
+    client = _client_with_one_downloadable_file()
+    opts = {"client": client, "dest_root": str(tmp_path)}
+
+    collection.preservica_import("root-ref", "my-collection", "preservica", opts)
+    collection.preservica_import("root-ref", "my-collection", "preservica", opts)
+
+    assert client.download_calls == ["http://x/f1", "http://x/f1"]
+
+
+def test_preservica_import_skip_unchanged_skips_matching_file(tmp_path):
+    client = _client_with_one_downloadable_file()
+    opts = {"client": client, "dest_root": str(tmp_path), "skip_unchanged": True}
+
+    collection.preservica_import("root-ref", "my-collection", "preservica", opts)
+    collection.preservica_import("root-ref", "my-collection", "preservica", opts)
+
+    assert client.download_calls == ["http://x/f1"]
+
+
+def test_preservica_import_skip_unchanged_redownloads_when_fixity_changes(tmp_path):
+    client = _client_with_one_downloadable_file()
+    opts = {"client": client, "dest_root": str(tmp_path), "skip_unchanged": True}
+    collection.preservica_import("root-ref", "my-collection", "preservica", opts)
+
+    client.representations["io-1"][0]["fixity"] = {"algorithm": "SHA1", "value": "different"}
+    client.files["http://x/f1"] = b"newbytes"
+    collection.preservica_import("root-ref", "my-collection", "preservica", opts)
+
+    assert client.download_calls == ["http://x/f1", "http://x/f1"]
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    media_path = root / "by-ref" / "io-1" / "media" / "Preservation" / "page1.tif"
+    assert media_path.read_bytes() == b"newbytes"
+
+
+def test_preservica_import_skip_unchanged_always_downloads_without_fixity(tmp_path):
+    client = _client_with_one_downloadable_file()
+    client.representations["io-1"][0]["fixity"] = None
+    opts = {"client": client, "dest_root": str(tmp_path), "skip_unchanged": True}
+
+    collection.preservica_import("root-ref", "my-collection", "preservica", opts)
+    collection.preservica_import("root-ref", "my-collection", "preservica", opts)
+
+    assert client.download_calls == ["http://x/f1", "http://x/f1"]
 
 
 def test_preservica_import_raises_without_client_or_credentials(tmp_path, monkeypatch):

@@ -117,6 +117,25 @@ def test_write_bytes_conflict_raises_file_exists():
         b.write_bytes("/bronze/x.jpg", b"abc")
 
 
+def test_write_bytes_empty_success_body_returns_empty_dict():
+    """A 204/200 with no body is a valid no-content success, not an error —
+    regression test for json.JSONDecodeError leaking out of a successful write."""
+    def handler(request):
+        return httpx.Response(201, text="")
+
+    b = backend(handler)
+    assert b.write_bytes("/bronze/x.jpg", b"abc") == {}
+
+
+def test_write_bytes_non_json_success_body_raises_clear_caskfs_error():
+    def handler(request):
+        return httpx.Response(200, text="<html>not json</html>")
+
+    b = backend(handler)
+    with pytest.raises(CaskFsError, match="non-JSON response"):
+        b.write_bytes("/bronze/x.jpg", b"abc")
+
+
 def test_write_stream_sends_chunks_as_body():
     seen = {}
 
@@ -141,6 +160,19 @@ def test_exists_true_and_false():
     b = backend(handler)
     assert b.exists("/f") is True
     assert b.exists("/f") is False
+
+
+def test_exists_true_for_directory_path():
+    """/fs is a file endpoint, so a directory path gets back a 409
+    wrongResourceType — that still means the path exists, not an error."""
+    def handler(request):
+        return httpx.Response(409, json={
+            "message": "This path corresponds to a directory, not a file.",
+            "details": {"wrongResourceType": True, "requestedResourceType": "file"},
+        })
+
+    b = backend(handler)
+    assert b.exists("/bronze/adir") is True
 
 
 def test_ls_normalizes_files_and_directories():
@@ -192,6 +224,14 @@ def test_delete_sends_query_opts():
     assert seen["method"] == "DELETE"
     assert seen["params"] == {"directory": "true", "softDelete": "true"}
     assert result == {"success": True}
+
+
+def test_delete_empty_success_body_returns_empty_dict():
+    def handler(request):
+        return httpx.Response(204, text="")
+
+    b = backend(handler)
+    assert b.delete("/bronze/g/c") == {}
 
 
 def test_permission_denied_raises_permission_error():
@@ -346,3 +386,11 @@ def test_add_derivative_link_missing_source_raises_file_not_found():
     b = backend(handler)
     with pytest.raises(FileNotFoundError):
         b.add_derivative_link("/silver/x.jpg", "/bronze/nope.tiff")
+
+
+def test_add_derivative_link_empty_success_body_returns_empty_dict():
+    def handler(request):
+        return httpx.Response(200, text="")
+
+    b = backend(handler)
+    assert b.add_derivative_link("/silver/x.jpg", "/bronze/x.tiff") == {}
