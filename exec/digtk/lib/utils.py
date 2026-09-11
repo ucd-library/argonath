@@ -1,15 +1,53 @@
 """
 Shared CLI utilities: JSON result output and progress logging.
 
-All digtk commands stream progress lines to stdout and print a JSON object
-as the final line. Dagster assets call exec(["digtk", ...]) and read that
-last line as the structured result.
+Every digtk command streams human-readable progress lines to stdout via log(),
+then finishes with result()/error(). Whether that final call *also* prints a
+structured JSON line is controlled by the process-wide output mode (see
+set_output_mode()):
+
+- 'json' always prints it — this is what Dagster's exec() bridge relies on
+  (dagster/lib/utils.py passes --output json explicitly when it shells out, so
+  it never depends on the auto-detection below).
+- 'text' never prints it, just the log() lines already printed — for a clean
+  interactive CLI experience.
+- The default, 'auto' (None here), prints JSON only when stdout isn't a
+  terminal (piped, redirected, or a subprocess — which is also true whenever
+  Dagster invokes digtk, even without --output json) and skips it in an
+  interactive terminal.
+
+main.py's root --output option calls set_output_mode() once before any
+subcommand runs.
 """
 import json
 import sys
 from datetime import datetime, timezone
 
 from digtk.lib import derivative
+
+_output_mode = None  # None = auto (isatty-based); 'json' or 'text' once set explicitly.
+
+
+def set_output_mode(mode):
+    """Set the process-wide output mode for result()/error().
+
+    :param str|None mode: 'json', 'text', or None for auto (see module docstring).
+    """
+    global _output_mode
+    _output_mode = mode
+
+
+def _json_enabled():
+    """
+    :returns: Whether result()/error() should print their structured JSON line,
+        under the current output mode.
+    :rtype: bool
+    """
+    if _output_mode == "json":
+        return True
+    if _output_mode == "text":
+        return False
+    return not sys.stdout.isatty()
 
 
 def log(message):
@@ -21,21 +59,27 @@ def log(message):
 
 
 def result(data):
-    """Print a structured JSON result as the final stdout line and exit 0.
+    """Print a structured JSON result as the final stdout line, if JSON output is
+    enabled (see _json_enabled()), and exit 0.
 
     :param dict data: Result payload. Should include at minimum {"status": "success"}.
     """
-    print(json.dumps(data), flush=True)
+    if _json_enabled():
+        print(json.dumps(data), flush=True)
     raise SystemExit(0)
 
 
 def error(message, code=1):
-    """Print a structured JSON error as the final stdout line and exit non-zero.
+    """Report an error and exit non-zero: a structured JSON line if JSON output
+    is enabled (see _json_enabled()), else a plain message to stderr.
 
     :param str message: Error description.
     :param int code: Exit code (default 1).
     """
-    print(json.dumps({"status": "error", "error": message}), flush=True)
+    if _json_enabled():
+        print(json.dumps({"status": "error", "error": message}), flush=True)
+    else:
+        print(f"Error: {message}", file=sys.stderr, flush=True)
     raise SystemExit(code)
 
 

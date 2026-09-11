@@ -32,6 +32,25 @@ around it by calling a lower-level API directly.
   `embed()` for embeddings, `chunk_text()`/`chunk_and_embed()` for RAG chunking. Use
   this instead of calling the `openai` SDK or Samwise's API directly.
 
+## Library vs. Model Code
+
+- `exec/digtk/lib/` — core, reusable, source/domain-agnostic libraries: I/O primitives, external
+  service clients, generic parsing/algorithms. A `lib` module should never encode what a
+  "collection" or "item" means in argonath, and should not orchestrate multi-step business
+  processes — it should be usable the same way regardless of which pipeline calls it.
+- `exec/digtk/models/` — argonath's own business logic and domain concepts, built on top of
+  `lib/`. When new work is really "how argonath structures/imports/represents a collection"
+  rather than "a generic reusable primitive," it belongs in `models/`, extending an existing
+  model where one already owns the concept (e.g. anything about collection-shaped bronze layout —
+  by-ref, by-tree, etc. — extends `models/collection.py`) rather than creating a new parallel
+  lib module for it.
+
+This matches the existing split: `lib.fs` / `lib.derivative` / `lib.ai` are generic and
+domain-agnostic; `models.collection` already owns "what does it mean to add/structure a
+collection in bronze," including for new source systems (e.g. Preservica) — a new source gets
+its own `lib` client (e.g. `lib.preservica` for auth/API access), but the bronze layout logic
+that uses it lives in `models.collection`, not in the source-specific lib.
+
 ## Testing
 
 Any change to `exec/digtk/lib/**` (adding, modifying, or removing behavior) requires
