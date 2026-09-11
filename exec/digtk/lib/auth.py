@@ -216,6 +216,7 @@ def save_cask_environments(data, path=None):
     path = path or _cask_environments_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2))
+    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
 
 def update_cask_env(env_name, token, user, api_url, path=None):
