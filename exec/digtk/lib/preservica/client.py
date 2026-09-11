@@ -312,14 +312,14 @@ class PreservicaClient:
         return [{"schemaUri": pxml.attr_of(f, "schema"), "url": pxml.text_of(f)} for f in fragments]
 
     def get_metadata_fragment(self, fragment_url):
-        """Fetch one descriptive metadata fragment's raw XML and one-to-one parsed form.
+        """Fetch one descriptive metadata fragment's raw XML, verbatim.
 
         :param str fragment_url: Fragment URL from list_metadata_fragments().
-        :returns: {'schemaUri': str|None, 'rawXml': str, 'parsed': dict}
-        :rtype: dict
+        :returns: Raw XML response body.
+        :rtype: str
         """
         resp = self.request("GET", fragment_url)
-        return pxml.parse_metadata_fragment(resp.text)
+        return resp.text
 
     def get_identifiers(self, data_type, ref):
         """List external (third-party) identifiers attached to an entity.

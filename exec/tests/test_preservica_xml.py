@@ -107,13 +107,38 @@ def test_attr_of_non_dict_node_is_none():
     assert xml.attr_of("plain text", "ref") is None
 
 
-def test_parse_metadata_fragment_keeps_raw_xml_and_parses_schema_uri():
+def test_strip_attributes_removes_prefixed_keys_recursively():
+    value = {"@_ref": "r1", "title": "T", "nested": {"@_type": "IO", "value": "v"}}
+    assert xml.strip_attributes(value) == {"title": "T", "nested": {"value": "v"}}
+
+
+def test_strip_attributes_recurses_into_lists():
+    value = [{"@_ref": "r1", "title": "a"}, {"@_ref": "r2", "title": "b"}]
+    assert xml.strip_attributes(value) == [{"title": "a"}, {"title": "b"}]
+
+
+def test_strip_attributes_leaves_scalars_unchanged():
+    assert xml.strip_attributes("plain text") == "plain text"
+
+
+def test_parse_metadata_content_extracts_content_only():
     raw_xml = (
         '<?xml version="1.0"?>'
         '<MetadataResponse><MetadataContainer schemaUri="http://www.openarchives.org/OAI/2.0/oai_dc/">'
         '<Content><dc><title>T</title></dc></Content></MetadataContainer></MetadataResponse>'
     )
-    fragment = xml.parse_metadata_fragment(raw_xml)
-    assert fragment["schemaUri"] == "http://www.openarchives.org/OAI/2.0/oai_dc/"
-    assert fragment["rawXml"] == raw_xml
-    assert fragment["parsed"]["MetadataResponse"]["MetadataContainer"]["Content"]["dc"]["title"] == "T"
+    assert xml.parse_metadata_content(raw_xml) == {"dc": {"title": "T"}}
+
+
+def test_parse_metadata_content_strips_attribute_keys():
+    raw_xml = (
+        '<MetadataResponse><MetadataContainer schemaUri="http://oai_dc">'
+        '<Content><dc xmlns:xsi="http://x" xsi:foo="bar"><title>T</title></dc></Content>'
+        "</MetadataContainer></MetadataResponse>"
+    )
+    assert xml.parse_metadata_content(raw_xml) == {"dc": {"title": "T"}}
+
+
+def test_parse_metadata_content_empty_when_no_content():
+    raw_xml = "<MetadataResponse><MetadataContainer schemaUri=\"http://x\"/></MetadataResponse>"
+    assert xml.parse_metadata_content(raw_xml) == {}

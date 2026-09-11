@@ -409,7 +409,7 @@ def test_list_metadata_fragments_empty_when_no_metadata_link():
     assert c.list_metadata_fragments({}) == []
 
 
-def test_get_metadata_fragment_returns_raw_and_parsed():
+def test_get_metadata_fragment_returns_raw_xml_verbatim():
     raw_xml = (
         '<MetadataResponse><MetadataContainer schemaUri="http://oai_dc">'
         "<Content><dc><title>T</title></dc></Content></MetadataContainer></MetadataResponse>"
@@ -421,10 +421,7 @@ def test_get_metadata_fragment_returns_raw_and_parsed():
         return httpx.Response(200, text=raw_xml)
 
     c = client(handler)
-    fragment = c.get_metadata_fragment(f"{BASE_URL}/metadata/frag1")
-    assert fragment["schemaUri"] == "http://oai_dc"
-    assert fragment["rawXml"] == raw_xml
-    assert fragment["parsed"]["MetadataResponse"]["MetadataContainer"]["Content"]["dc"]["title"] == "T"
+    assert c.get_metadata_fragment(f"{BASE_URL}/metadata/frag1") == raw_xml
 
 
 def test_get_identifiers():

@@ -210,7 +210,7 @@ class _FakePreservicaClient:
         self.entities = {}          # ref -> {'title', 'type', 'fragment_refs': [...]}
         self.children = {}          # ref -> [{'ref', 'title', 'type'}]
         self.identifiers = {}       # ref -> [{'type', 'value'}]
-        self.metadata_fragments = {}  # url -> {'schemaUri', 'rawXml', 'parsed'}
+        self.metadata_fragments = {}  # url -> raw XML string
         self.representations = {}   # ref -> [...]
         self.files = {}             # downloadUrl -> bytes
         self.thumbnails = {}        # ref -> bytes|None
@@ -259,9 +259,10 @@ def test_preservica_import_writes_by_ref_layout(tmp_path):
     client.entities["io-1"] = {"title": "Item One", "type": "IO", "fragment_refs": [
         {"schemaUri": "http://oai_dc", "url": "http://x/frag1"},
     ]}
-    client.metadata_fragments["http://x/frag1"] = {
-        "schemaUri": "http://oai_dc", "rawXml": "<dc/>", "parsed": {"dc": {"title": "Item One"}},
-    }
+    client.metadata_fragments["http://x/frag1"] = (
+        "<MetadataResponse><MetadataContainer schemaUri=\"http://oai_dc\">"
+        "<Content><dc><title>Item One</title></dc></Content></MetadataContainer></MetadataResponse>"
+    )
     client.children["root-ref"] = [{"ref": "io-1", "title": "Item One", "type": "IO"}]
     client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc123"}]
     client.representations["io-1"] = [{
@@ -294,7 +295,7 @@ def test_preservica_import_writes_by_ref_layout(tmp_path):
     assert io_entity["title"] == "Item One"
     assert io_entity["type"] == "IO"
     assert _read_json(str(root / "by-ref" / "io-1" / "identifiers.json")) == client.identifiers["io-1"]
-    assert _read_json(str(root / "by-ref" / "io-1" / "metadata.json")) == [client.metadata_fragments["http://x/frag1"]]
+    assert (root / "by-ref" / "io-1" / "metadata" / "0.xml").read_text() == client.metadata_fragments["http://x/frag1"]
     assert _read_json(str(root / "by-ref" / "io-1" / "representations.json")) == client.representations["io-1"]
 
     media_path = root / "by-ref" / "io-1" / "media" / "Preservation" / "page1.tif"
@@ -527,6 +528,85 @@ def test_preservica_tree_is_idempotent_and_rebuilds_from_scratch(tmp_path):
 def test_preservica_tree_raises_without_prior_import(tmp_path):
     with pytest.raises(FileNotFoundError):
         collection.preservica_tree("no-such-collection", "preservica", {"dest_root": str(tmp_path)})
+
+
+def test_preservica_tree_converts_metadata_and_skips_fixity_files(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["io-1"] = {"title": "Old Vines_New Lands", "type": "IO", "fragment_refs": [
+        {"schemaUri": "http://oai_dc", "url": "http://x/frag1"},
+    ]}
+    client.metadata_fragments["http://x/frag1"] = (
+        '<MetadataResponse><MetadataContainer schemaUri="http://oai_dc">'
+        "<Content><dc><title>Old Vines</title></dc></Content></MetadataContainer></MetadataResponse>"
+    )
+    client.children["root-ref"] = [{"ref": "io-1", "title": "Old Vines_New Lands", "type": "IO"}]
+    client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc123"}]
+    client.representations["io-1"] = [{
+        "representationType": "Preservation", "contentObjectRef": "co-1", "mimeGroup": "image",
+        "filename": "page1.tif", "downloadUrl": "http://x/f1", "fileSize": 9,
+        "fixity": {"algorithm": "SHA1", "value": "abc123"},
+    }]
+    client.files["http://x/f1"] = b"tiffbytes"
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica",
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    item_dir = (
+        tmp_path / "bronze" / "preservica" / "my-collection" / "latest" / "tree" / "old-vines-new-lands"
+    )
+    assert (item_dir / "Preservation" / "page1.tif").read_bytes() == b"tiffbytes"
+    assert not (item_dir / "Preservation" / "page1.tif.fixity.json").exists()
+    assert _read_json(str(item_dir / "metadata.json")) == {"dc": {"title": "Old Vines"}}
+
+
+def test_preservica_tree_converts_metadata_for_folders_too(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["sub-folder"] = {"title": "Sub Folder", "type": "SO", "fragment_refs": [
+        {"schemaUri": "http://oai_dc", "url": "http://x/frag1"},
+    ]}
+    client.metadata_fragments["http://x/frag1"] = (
+        '<MetadataResponse><MetadataContainer schemaUri="http://oai_dc">'
+        "<Content><dc><title>Sub Folder</title></dc></Content></MetadataContainer></MetadataResponse>"
+    )
+    client.children["root-ref"] = [{"ref": "sub-folder", "title": "Sub Folder", "type": "SO"}]
+    client.children["sub-folder"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica",
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    folder_dir = tmp_path / "bronze" / "preservica" / "my-collection" / "latest" / "tree" / "sub-folder"
+    assert _read_json(str(folder_dir / "metadata.json")) == {"dc": {"title": "Sub Folder"}}
+
+
+def test_preservica_tree_raises_on_multiple_metadata_fragments(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["io-1"] = {"title": "Item One", "type": "IO", "fragment_refs": [
+        {"schemaUri": "http://oai_dc", "url": "http://x/frag1"},
+        {"schemaUri": "http://oai_dc", "url": "http://x/frag2"},
+    ]}
+    fragment_xml = (
+        "<MetadataResponse><MetadataContainer><Content><dc/></Content></MetadataContainer></MetadataResponse>"
+    )
+    client.metadata_fragments["http://x/frag1"] = fragment_xml
+    client.metadata_fragments["http://x/frag2"] = fragment_xml
+    client.children["root-ref"] = [{"ref": "io-1", "title": "Item One", "type": "IO"}]
+    client.representations["io-1"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica",
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+    with pytest.raises(ValueError, match="metadata fragments"):
+        collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
 
 
 # --- local_to_bronze_tree ------------------------------------------------------

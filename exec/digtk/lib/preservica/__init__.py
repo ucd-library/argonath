@@ -24,7 +24,7 @@ from digtk.lib.preservica.xml import (
     as_list,
     attr_of,
     parse,
-    parse_metadata_fragment,
+    parse_metadata_content,
     text_of,
 )
 
@@ -38,7 +38,7 @@ __all__ = [
     "as_list",
     "attr_of",
     "parse",
-    "parse_metadata_fragment",
+    "parse_metadata_content",
     "text_of",
 ]
 

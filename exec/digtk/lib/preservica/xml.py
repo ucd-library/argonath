@@ -128,16 +128,32 @@ def attr_of(node, name):
     return None if value is None else str(value)
 
 
-def parse_metadata_fragment(raw_xml):
-    """Build the one-to-one {schemaUri, rawXml, parsed} shape for a descriptive
-    metadata fragment (e.g. Dublin Core), written verbatim into bronze's metadata.json.
+def strip_attributes(value):
+    """Recursively remove '@_'-prefixed attribute keys from a parsed XML value.
+
+    :param value: A parsed XML value (dict, list, or scalar).
+    :returns: The same structure with every '@_'-prefixed dict key dropped.
+    """
+    if isinstance(value, dict):
+        return {k: strip_attributes(v) for k, v in value.items() if not k.startswith("@_")}
+    if isinstance(value, list):
+        return [strip_attributes(v) for v in value]
+    return value
+
+
+def parse_metadata_content(raw_xml):
+    """Parse a descriptive metadata fragment's raw XML down to just its Content
+    payload (e.g. {'dc': {...}}), with '@_' attribute keys stripped.
+
+    by-ref/ keeps a metadata fragment's raw XML verbatim (see
+    digtk.models.collection._fetch_and_write_metadata()); this is only used when
+    converting that raw XML into bronze's tree/ layout (see
+    digtk.models.collection.preservica_tree()).
 
     :param str raw_xml: The fragment's raw XML body (a MetadataResponse envelope).
-    :returns: {'schemaUri': str|None, 'rawXml': str, 'parsed': dict} — raw XML is
-        always preserved alongside the parsed form, nothing is discarded.
+    :returns: The fragment's Content, with attribute keys stripped.
     :rtype: dict
     """
     parsed = parse(raw_xml)
     container = (parsed.get("MetadataResponse") or {}).get("MetadataContainer") or {}
-    schema_uri = attr_of(container, "schemaUri") or container.get("SchemaUri")
-    return {"schemaUri": schema_uri, "rawXml": raw_xml, "parsed": parsed}
+    return strip_attributes(container.get("Content") or {})

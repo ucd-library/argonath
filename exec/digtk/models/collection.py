@@ -25,14 +25,17 @@ that uses them lives here, alongside the original `add()` upload path:
   destination can be real CaskFS ('cask:/...') or, for local dev/testing, a plain
   local directory (see `opts['dest_root']`). `preservica_import()` walks a Preservica
   collection into bronze's by-ref/ (ref-keyed, near-verbatim relocation of
-  Preservica's own Entity API responses — no schema.org or other reinterpretation,
-  only one-to-one XML->JSON translation for descriptive metadata, see
-  digtk.lib.preservica.xml). `preservica_tree()` rebuilds bronze's tree/ (human-
-  readable, slugified-title-keyed, byte-identical to by-ref/) purely from what's
-  already in bronze — no network calls. `local_to_bronze_tree()` is a debug/dev
-  helper that materializes a local directory straight into tree/ only (no by-ref/,
-  since there's no source-system ref to key it by) — it shares its tree-building
-  logic with preservica_tree() via the private helpers below.
+  Preservica's own Entity API responses — no schema.org or other reinterpretation;
+  descriptive metadata is kept as raw XML, verbatim, see digtk.lib.preservica.xml).
+  `preservica_tree()` rebuilds bronze's tree/ (human-readable, slugified-title-keyed)
+  purely from what's already in bronze — no network calls. Media files are
+  byte-identical copies of by-ref/'s (fixity sidecars excluded), and each
+  fragment's raw XML is converted to a plain metadata.json (just its Content,
+  attribute keys stripped — see digtk.lib.preservica.parse_metadata_content()).
+  `local_to_bronze_tree()` is a debug/dev helper that materializes a local
+  directory straight into tree/ only (no by-ref/, since there's no source-system
+  ref to key it by) — it shares its tree-building logic with preservica_tree()
+  via the private helpers below.
 """
 import hashlib
 import json
@@ -293,12 +296,38 @@ def _unique_tree_slug(title, key, used_slugs):
     return candidate
 
 
+_TREE_LINK_METADATA = "preservica_tree rebuild"
+
+
+def _link_tree_source(root, dest_rel, source_rel):
+    """Record CaskFS lineage from a tree/ file just written back to the by-ref/
+    file it was copied or derived from. A no-op when `root` is a local
+    dest_root override (dev/testing without touching CaskFS — see
+    _bronze_collection_root()), since fs.add_derivative_link() only accepts
+    'cask:' paths.
+
+    :param str root: fs-compatible bronze 'latest' root.
+    :param str dest_rel: tree/ file just written, relative to `root`.
+    :param str source_rel: by-ref/ file it was copied/derived from, relative to `root`.
+    """
+    if not root.startswith("cask:"):
+        return
+    fs.add_derivative_link(
+        f"{root}/{dest_rel}",
+        f"{root}/{source_rel}",
+        {"metadata": _TREE_LINK_METADATA},
+    )
+
+
 def _copy_bronze_dir(root, src_rel, dest_rel):
     """Recursively copy every file under one bronze directory to another,
     preserving relative structure — both located under the same fs-compatible
     `root`. Used to materialize a tree/ item's binary files as byte-identical
     copies of by-ref/'s media/ (dedupes for free once both are in content-
-    addressed CaskFS).
+    addressed CaskFS). Fixity sidecars ('*.fixity.json') are not copied — they
+    describe by-ref/'s own copy and would just be dead weight in tree/. Each
+    copied file gets a CaskFS lineage link back to its by-ref/ source (see
+    _link_tree_source()).
 
     Paths are rebuilt from `root` rather than reused from fs.ls()'s DirEntry.path
     directly — CaskFS's backend returns that field as its own CaskFS-absolute
@@ -315,12 +344,15 @@ def _copy_bronze_dir(root, src_rel, dest_rel):
     for entry in fs.ls(src_path):
         if entry.kind == "directory":
             _copy_bronze_dir(root, f"{src_rel}/{entry.name}", f"{dest_rel}/{entry.name}")
+        elif entry.name.endswith(".fixity.json"):
+            continue
         else:
             fs.write(
                 f"{root}/{dest_rel}/{entry.name}",
                 src=f"{root}/{src_rel}/{entry.name}",
                 opts={"replace": True},
             )
+            _link_tree_source(root, f"{dest_rel}/{entry.name}", f"{src_rel}/{entry.name}")
 
 
 # --- Preservica import (phase 1: by-ref) -------------------------------------
@@ -374,8 +406,11 @@ def _fetch_and_write_identifiers(client, data_type, ref, root, entity_dir, ctx):
 
 
 def _fetch_and_write_metadata(client, entity, root, entity_dir, ctx):
-    """Fetch and write one entity's descriptive metadata fragments into by-ref/,
-    one-to-one (see digtk.lib.preservica.xml) — no schema.org reinterpretation.
+    """Fetch and write one entity's descriptive metadata fragments into by-ref/ as
+    raw XML, verbatim — one file per fragment under 'metadata/', 0-indexed
+    (metadata/0.xml, metadata/1.xml, ...). No parsing happens at import time;
+    that's deferred to preservica_tree() (see digtk.lib.preservica.parse_metadata_content),
+    which converts a fragment's raw XML into tree/'s metadata.json.
 
     :param PreservicaClient client: Client instance.
     :param dict entity: {'ref', 'metadataFragmentRefs', ...} — see _walk_preservica_folder()/_walk_preservica_item().
@@ -384,10 +419,12 @@ def _fetch_and_write_metadata(client, entity, root, entity_dir, ctx):
     :param dict ctx: Walk context — see _walk_preservica_folder().
     """
     try:
-        resolved = [client.get_metadata_fragment(f["url"]) for f in entity.get("metadataFragmentRefs") or []]
-        _write_bronze_json(root, f"{entity_dir}/metadata.json", resolved)
+        raw_fragments = [client.get_metadata_fragment(f["url"]) for f in entity.get("metadataFragmentRefs") or []]
     except Exception as e:
         _record_error(ctx, entity["ref"], "metadata", str(e))
+        return
+    for index, raw_xml in enumerate(raw_fragments):
+        fs.write(f"{root}/{entity_dir}/metadata/{index}.xml", data=raw_xml.encode(), opts={"replace": True})
 
 
 def _fixity_unchanged(root, media_rel, fixity):
@@ -536,10 +573,11 @@ def _walk_preservica_folder(client, so_ref, root, ctx, raw=None):
 def preservica_import(ref, collection=None, group="preservica", opts={}):
     """Recursively walk a Preservica collection into bronze's by-ref/ layout — a
     near-verbatim, ref-keyed relocation of Preservica's own Entity API responses
-    (entity.json, identifiers.json, metadata.json, children.json,
+    (entity.json, identifiers.json, metadata/<n>.xml, children.json,
     representations.json, media/<RepresentationType>/<file>(+.fixity.json)). No
-    schema.org or other reinterpretation happens here — XML descriptive metadata
-    is translated to JSON one-to-one (see digtk.lib.preservica.xml).
+    schema.org or other reinterpretation happens here — descriptive metadata is
+    kept as raw XML, verbatim; conversion to JSON happens later, when building
+    tree/ (see preservica_tree() / digtk.lib.preservica.parse_metadata_content()).
 
     Every run re-walks the whole subtree from `ref` and re-fetches/overwrites
     every entity's JSON (entity/identifiers/metadata/children/representations) in
@@ -622,6 +660,42 @@ def preservica_import(ref, collection=None, group="preservica", opts={}):
 
 # --- Bronze tree layout (phase 2: Preservica by-ref -> tree; phase 3: local disk -> tree) --
 
+def _copy_metadata_to_tree(root, entity_dir, dest_rel):
+    """Convert one entity's by-ref/ raw-XML metadata fragment into tree/'s
+    metadata.json — just the fragment's Content payload (e.g. {'dc': {...}}),
+    with '@_' attribute keys stripped (see
+    digtk.lib.preservica.parse_metadata_content()). A no-op if the entity has
+    no metadata fragments.
+
+    Every argonath Preservica collection so far has at most one descriptive
+    metadata fragment per entity — more than one is surfaced loudly as a
+    ValueError rather than silently guessing a merge shape for tree/. The
+    written metadata.json gets a CaskFS lineage link back to the raw XML
+    fragment it was derived from (see _link_tree_source()).
+
+    :param str root: fs-compatible bronze 'latest' root.
+    :param str entity_dir: 'by-ref/<ref>', relative to `root`.
+    :param str dest_rel: Destination tree/ directory, relative to `root`.
+    :raises ValueError: If the entity has more than one metadata fragment.
+    """
+    metadata_dir = f"{entity_dir}/metadata"
+    if not fs.exists(f"{root}/{metadata_dir}"):
+        return
+    fragments = sorted(fs.ls(f"{root}/{metadata_dir}"), key=lambda entry: entry.name)
+    if not fragments:
+        return
+    if len(fragments) > 1:
+        raise ValueError(
+            f"{entity_dir} has {len(fragments)} metadata fragments — preservica_tree() "
+            "only supports a single fragment per entity"
+        )
+    fragment_rel = f"{metadata_dir}/{fragments[0].name}"
+    raw_xml = fs.read(f"{root}/{fragment_rel}").decode()
+    content = preservica.parse_metadata_content(raw_xml)
+    _write_bronze_json(root, f"{dest_rel}/metadata.json", content)
+    _link_tree_source(root, f"{dest_rel}/metadata.json", fragment_rel)
+
+
 def _build_tree_from_by_ref(so_ref, root, dest_rel):
     """Recursively rebuild one folder's worth of tree/ entries from by-ref/'s
     already-current children.json — always a full rebuild (see
@@ -629,7 +703,8 @@ def _build_tree_from_by_ref(so_ref, root, dest_rel):
     never leaves a stale directory behind. Each item/sub-folder's own
     identifiers.json is copied in verbatim (Preservica's raw identifier list,
     unchanged) as the only identity-carrying file — the exact same bytes by-ref/
-    already has, so it dedups for free in CaskFS.
+    already has, so it dedups for free in CaskFS. It also gets a CaskFS lineage
+    link back to that by-ref/ source (see _link_tree_source()).
 
     :param str so_ref: Structural object ref to recurse from.
     :param str root: fs-compatible bronze 'latest' root.
@@ -642,7 +717,8 @@ def _build_tree_from_by_ref(so_ref, root, dest_rel):
     count = 0
 
     for child in children:
-        child_identifiers = _read_bronze_json(root, f"by-ref/{child['ref']}/identifiers.json", [])
+        identifiers_rel = f"by-ref/{child['ref']}/identifiers.json"
+        child_identifiers = _read_bronze_json(root, identifiers_rel, [])
         key = _resolve_identifier_key(child_identifiers, child["ref"])["key"]
         slug = _unique_tree_slug(child["title"], key, used_slugs)
         child_dest_rel = f"{dest_rel}/{slug}"
@@ -650,11 +726,16 @@ def _build_tree_from_by_ref(so_ref, root, dest_rel):
         if child["type"] == "SO":
             if child_identifiers:
                 _write_bronze_json(root, f"{child_dest_rel}/identifiers.json", child_identifiers)
+                _link_tree_source(root, f"{child_dest_rel}/identifiers.json", identifiers_rel)
+            _copy_metadata_to_tree(root, f"by-ref/{child['ref']}", child_dest_rel)
             count += 1
             count += _build_tree_from_by_ref(child["ref"], root, child_dest_rel)
         elif child["type"] == "IO":
             _copy_bronze_dir(root, f"by-ref/{child['ref']}/media", child_dest_rel)
             _write_bronze_json(root, f"{child_dest_rel}/identifiers.json", child_identifiers)
+            if child_identifiers:
+                _link_tree_source(root, f"{child_dest_rel}/identifiers.json", identifiers_rel)
+            _copy_metadata_to_tree(root, f"by-ref/{child['ref']}", child_dest_rel)
             count += 1
 
     return count
