@@ -19,6 +19,7 @@ dependencies = [
     "pymupdf>=1.24",
     "pikepdf>=9.0",
     "google-cloud-storage>=2.16",
+    "xmltodict>=0.13",
 ]
 
 [project.optional-dependencies]

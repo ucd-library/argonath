@@ -77,6 +77,18 @@ CASK_API_URL_ENV = "CASK_API_URL"
 CASK_API_KEY_ENV = "CASK_API_KEY"
 CREDENTIALS_PATH_ENV = "DIGTK_CREDENTIALS_PATH"
 
+# Preservica connection secrets (tenant/username/password) are resolved by
+# digtk.lib.auth the same way as CASK_API_URL/CASK_API_KEY above — env var
+# overrides ~/.digtk/credentials.json, never a CLI flag, never in CONFIG/SETTINGS.
+PRESERVICA_TENANT_ENV = "PRESERVICA_TENANT"
+PRESERVICA_USERNAME_ENV = "PRESERVICA_USERNAME"
+PRESERVICA_PASSWORD_ENV = "PRESERVICA_PASSWORD"
+PRESERVICA_BASE_URL_ENV = "PRESERVICA_BASE_URL"
+PRESERVICA_REQUEST_TIMEOUT_S_ENV = "DIGTK_PRESERVICA_REQUEST_TIMEOUT_S"
+PRESERVICA_CONCURRENCY_ENV = "DIGTK_PRESERVICA_CONCURRENCY"
+PRESERVICA_PAGE_SIZE_ENV = "DIGTK_PRESERVICA_PAGE_SIZE"
+PRESERVICA_TOKEN_REFRESH_BUFFER_S_ENV = "DIGTK_PRESERVICA_TOKEN_REFRESH_BUFFER_S"
+
 ARK_NAAN_ENV = "DIGTK_ARK_NAAN"
 ARK_SHOULDER_ENV = "DIGTK_ARK_SHOULDER"
 ARK_NOID_ALPHABET_ENV = "DIGTK_ARK_NOID_ALPHABET"
@@ -209,6 +221,10 @@ SETTINGS = [
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_angle_threshold", "env": OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "gcs.bucket", "env": GCS_BUCKET_ENV, "cast": str, "secret": False},
+    {"dotpath": "preservica.request_timeout_s", "env": PRESERVICA_REQUEST_TIMEOUT_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "preservica.concurrency", "env": PRESERVICA_CONCURRENCY_ENV, "cast": int, "secret": False},
+    {"dotpath": "preservica.page_size", "env": PRESERVICA_PAGE_SIZE_ENV, "cast": int, "secret": False},
+    {"dotpath": "preservica.token_refresh_buffer_s", "env": PRESERVICA_TOKEN_REFRESH_BUFFER_S_ENV, "cast": float, "secret": False},
 ]
 _SETTINGS_BY_DOTPATH = {setting["dotpath"]: setting for setting in SETTINGS}
 
@@ -450,6 +466,24 @@ CONFIG = {
         # kept separate so a sync never touches production derivative data. See
         # digtk.lib.gcs_sync's module docstring.
         "bucket": _env(GCS_BUCKET_ENV, "dams-client-media-argonath"),
+    },
+    "preservica": {
+        # tenant/username/password/base_url values themselves are resolved by
+        # digtk.lib.auth.resolve_preservica(), not read here — kept out of CONFIG's
+        # resolved values entirely, same as CaskFS's own credentials (see
+        # digtk.lib.auth's module docstring for why). Only the env var *names* are
+        # recorded here, mirroring CONFIG["auth"]["api_url_env"]/"api_key_env" above,
+        # so digtk.lib.auth stays the single module that resolves any of them.
+        "tenant_env": PRESERVICA_TENANT_ENV,
+        "username_env": PRESERVICA_USERNAME_ENV,
+        "password_env": PRESERVICA_PASSWORD_ENV,
+        "base_url_env": PRESERVICA_BASE_URL_ENV,
+        # Non-secret tuning knobs, matching preservica-etl's lib/config.js defaults
+        # (requestTimeoutMs, concurrency, tokenRefreshBufferMs).
+        "request_timeout_s": _env(PRESERVICA_REQUEST_TIMEOUT_S_ENV, 30.0, float),
+        "concurrency": _env(PRESERVICA_CONCURRENCY_ENV, 8, int),
+        "page_size": _env(PRESERVICA_PAGE_SIZE_ENV, 100, int),
+        "token_refresh_buffer_s": _env(PRESERVICA_TOKEN_REFRESH_BUFFER_S_ENV, 60.0, float),
     },
 }
 

@@ -15,14 +15,15 @@ Subcommands mirror the pipeline phases:
   digtk ocr         — OCR via Tesseract or ML fallback
   digtk metadata    — AI and human metadata generation
   digtk ingest      — ingest files into CaskFS
-  digtk collection  — manage CaskFS collections (add/sync)
+  digtk collection  — manage CaskFS collections (add/sync/add-tree)
+  digtk preservica  — pull a collection out of Preservica into bronze (import/tree)
   digtk search      — LlamaIndex RAG indexing and querying
 """
 import sys
 
 import typer
 
-from digtk.commands import ai, auth, collection, config, ocr, metadata, ingest, public_dc, search
+from digtk.commands import ai, auth, collection, config, ocr, metadata, ingest, preservica, public_dc, search
 from digtk.lib.banner import print_banner
 
 app = typer.Typer(
@@ -39,6 +40,7 @@ app.add_typer(ocr.app,        name="ocr")
 app.add_typer(metadata.app,   name="metadata")
 app.add_typer(ingest.app,     name="ingest")
 app.add_typer(collection.app, name="collection")
+app.add_typer(preservica.app, name="preservica")
 app.add_typer(search.app,     name="search")
 
 
