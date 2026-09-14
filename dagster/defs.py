@@ -36,6 +36,8 @@ from lib.jobs import (
     full_pipeline_job,
 )
 from lib.sensors import (
+    preservica_auto_sync_sensor,
+    collection_partition_sync_sensor,
     derivatives_on_ingest,
     ocr_on_derivatives,
     metadata_on_ocr,
@@ -67,6 +69,8 @@ defs = dg.Definitions(
         full_pipeline_job,
     ],
     sensors=[
+        preservica_auto_sync_sensor,
+        collection_partition_sync_sensor,
         derivatives_on_ingest,
         ocr_on_derivatives,
         metadata_on_ocr,

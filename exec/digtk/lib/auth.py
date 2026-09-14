@@ -23,6 +23,17 @@ session id against its session store on every subsequent request (the same way i
 would resolve a browser's session cookie), so the CLI never parses or verifies the
 token itself — it is just a bearer credential scoped to the gateway. CaskFS itself
 never sees it; the gateway injects a verified x-anduin-user header when proxying.
+
+CASK_TRUSTED_USER is a different, tokenless path for callers that run behind the
+same trusted perimeter as CaskFS with no gateway hop in between (e.g. Dagster,
+which shells out to this CLI from within the same worker container/network and
+has no browser available to run the OIDC flow above). Setting it makes digtk send
+the x-anduin-user header itself, directly, the same header the gateway would
+otherwise have injected after resolving a session — so it only makes sense where
+CaskFS is deployed to trust that header on requests arriving over that trusted
+path. It resolves purely from the environment; there's no stored-credentials-file
+equivalent, since it identifies a service account for a headless deployment, not
+something the interactive login flow produces.
 """
 import http.server
 import json
@@ -39,6 +50,7 @@ CREDENTIALS_PATH = Path(CONFIG["auth"]["credentials_path"])
 
 API_URL_ENV = CONFIG["auth"]["api_url_env"]
 API_KEY_ENV = CONFIG["auth"]["api_key_env"]
+TRUSTED_USER_ENV = "CASK_TRUSTED_USER"
 
 GATEWAY_URL = CONFIG["gateway"]["url"]
 LOGIN_TIMEOUT_S = CONFIG["auth"]["login_timeout_s"]
@@ -83,7 +95,9 @@ def clear_stored():
 def resolve():
     """Resolve the active CaskFS connection: env vars override the stored credentials file.
 
-    :returns: Dict with keys 'api_url', 'token', 'user'. Any key may be None if unresolved.
+    :returns: Dict with keys 'api_url', 'token', 'user', 'trusted_user'. Any key may be
+        None if unresolved. 'trusted_user' is env-only (see CASK_TRUSTED_USER in this
+        module's docstring) — it has no stored-credentials-file fallback.
     :rtype: dict
     """
     stored = load_stored()
@@ -91,6 +105,7 @@ def resolve():
         "api_url": os.getenv(API_URL_ENV) or stored.get("api_url"),
         "token": os.getenv(API_KEY_ENV) or stored.get("token"),
         "user": stored.get("user"),
+        "trusted_user": os.getenv(TRUSTED_USER_ENV),
     }
 
 

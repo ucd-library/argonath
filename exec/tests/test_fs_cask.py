@@ -8,8 +8,10 @@ from digtk.lib.fs.cask import CaskBackend, CaskFsError
 BASE_URL = "http://cask.test/api"
 
 
-def backend(handler, token=None):
-    return CaskBackend(BASE_URL, token=token, transport=httpx.MockTransport(handler))
+def backend(handler, token=None, trusted_user=None):
+    return CaskBackend(
+        BASE_URL, token=token, trusted_user=trusted_user, transport=httpx.MockTransport(handler)
+    )
 
 
 def test_read_bytes_sends_auth_header_and_returns_content():
@@ -26,6 +28,48 @@ def test_read_bytes_sends_auth_header_and_returns_content():
     assert seen["method"] == "GET"
     assert seen["url"] == f"{BASE_URL}/fs/bronze/x.txt"
     assert seen["auth"] == "Bearer tok123"
+
+
+def test_read_bytes_sends_trusted_user_header_and_no_auth_header():
+    seen = {}
+
+    def handler(request):
+        seen["auth"] = request.headers.get("authorization")
+        seen["trusted_user"] = request.headers.get("x-anduin-user")
+        return httpx.Response(200, content=b"hello")
+
+    b = backend(handler, trusted_user="dagster-worker")
+    assert b.read_bytes("/bronze/x.txt") == b"hello"
+    assert seen["auth"] is None
+    assert seen["trusted_user"] == "dagster-worker"
+
+
+def test_read_bytes_sends_both_auth_and_trusted_user_headers_when_both_set():
+    seen = {}
+
+    def handler(request):
+        seen["auth"] = request.headers.get("authorization")
+        seen["trusted_user"] = request.headers.get("x-anduin-user")
+        return httpx.Response(200, content=b"hello")
+
+    b = backend(handler, token="tok123", trusted_user="dagster-worker")
+    assert b.read_bytes("/bronze/x.txt") == b"hello"
+    assert seen["auth"] == "Bearer tok123"
+    assert seen["trusted_user"] == "dagster-worker"
+
+
+def test_read_bytes_sends_neither_header_when_neither_configured():
+    seen = {}
+
+    def handler(request):
+        seen["auth"] = request.headers.get("authorization")
+        seen["trusted_user"] = request.headers.get("x-anduin-user")
+        return httpx.Response(200, content=b"hello")
+
+    b = backend(handler)
+    assert b.read_bytes("/bronze/x.txt") == b"hello"
+    assert seen["auth"] is None
+    assert seen["trusted_user"] is None
 
 
 def test_read_bytes_missing_raises_file_not_found():

@@ -44,6 +44,11 @@ def reconcile_collection_items(context: dg.AssetExecutionContext, config: Reconc
         "website": ["digtk", "ingest", "crawl", config.source_uri],
         "db-dump": ["digtk", "ingest", "db-dump", config.source_uri],
         "digital-collection": ["digtk", "ingest", "batch", config.source_uri],
+        # source_uri is the Preservica root structural object ref — see
+        # digtk.models.collection.preservica_import(), which registers the
+        # collection (digtk.models.collection.register_collection()) as part
+        # of every import, labeled or not.
+        "preservica": ["digtk", "preservica", "import", config.source_uri],
     }
     cmd = cmd_map[config.source_type] + ["--collection", config.collection, "--group", config.group]
     result = exec(cmd)

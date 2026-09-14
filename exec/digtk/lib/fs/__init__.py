@@ -35,7 +35,9 @@ def _get_cask_backend():
                 "No CaskFS connection configured. Run `digtk auth login`, "
                 "or set CASK_API_URL (and CASK_API_KEY)."
             )
-        _cask_backend = CaskBackend(creds["api_url"], token=creds.get("token"))
+        _cask_backend = CaskBackend(
+            creds["api_url"], token=creds.get("token"), trusted_user=creds.get("trusted_user")
+        )
     return _cask_backend
 
 

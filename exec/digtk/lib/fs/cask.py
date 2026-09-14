@@ -39,21 +39,32 @@ class CaskBackend:
 
     :param str api_url: CaskFS API base URL (e.g. 'https://caskfs.library.ucdavis.edu/api').
     :param str token: Bearer token for authentication, if any.
+    :param str trusted_user: If set, sent as the X-Anduin-User header on every request —
+        for callers running behind the same trusted perimeter as CaskFS with no auth-gateway
+        hop in between (see CASK_TRUSTED_USER in digtk.lib.auth's module docstring). Sent
+        independently of `token`; either, both, or neither may be set.
     :param httpx.BaseTransport transport: Optional custom transport (used by tests to mock
         the HTTP layer via httpx.MockTransport); defaults to httpx's normal network transport.
     """
 
-    def __init__(self, api_url, token=None, transport=None):
+    def __init__(self, api_url, token=None, trusted_user=None, transport=None):
         self.base_url = api_url.rstrip("/")
         self.token = token
+        self.trusted_user = trusted_user
         self._client = httpx.Client(headers=self._auth_headers(), transport=transport)
 
     def _auth_headers(self):
         """
-        :returns: Authorization header dict, or {} if no token is configured.
+        :returns: Authorization and/or X-Anduin-User header dict, or {} if neither a
+            token nor a trusted_user is configured.
         :rtype: dict
         """
-        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if self.trusted_user:
+            headers["X-Anduin-User"] = jsonlib.dumps({"username": self.trusted_user})
+        return headers
 
     def _raise_for_status(self, response):
         """Translate a non-2xx CaskFS response into the matching Python builtin exception.

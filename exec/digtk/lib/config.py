@@ -155,6 +155,16 @@ CAPTIONS_TIMEOUT_S_ENV = "DIGTK_CAPTIONS_TIMEOUT_S"
 
 GCS_BUCKET_ENV = "DIGTK_GCS_BUCKET"
 
+# argonath's own app-level Postgres schema (collection registry, etc.) — a
+# distinct database/credentials from Dagster's own run/event-log storage (see
+# dagster/lib/utils.py's `conn`, configured via dagster/dagster.yaml's
+# storage.postgres block instead of these settings).
+POSTGRES_HOST_ENV = "DIGTK_POSTGRES_HOST"
+POSTGRES_PORT_ENV = "DIGTK_POSTGRES_PORT"
+POSTGRES_DATABASE_ENV = "DIGTK_POSTGRES_DB"
+POSTGRES_USER_ENV = "DIGTK_POSTGRES_USER"
+POSTGRES_PASSWORD_ENV = "DIGTK_POSTGRES_PASSWORD"
+
 CONFIG_PATH_ENV = "DIGTK_CONFIG_PATH"
 
 
@@ -229,6 +239,11 @@ SETTINGS = [
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_angle_threshold", "env": OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "gcs.bucket", "env": GCS_BUCKET_ENV, "cast": str, "secret": False},
+    {"dotpath": "postgres.host", "env": POSTGRES_HOST_ENV, "cast": str, "secret": False},
+    {"dotpath": "postgres.port", "env": POSTGRES_PORT_ENV, "cast": int, "secret": False},
+    {"dotpath": "postgres.database", "env": POSTGRES_DATABASE_ENV, "cast": str, "secret": False},
+    {"dotpath": "postgres.user", "env": POSTGRES_USER_ENV, "cast": str, "secret": False},
+    {"dotpath": "postgres.password", "env": POSTGRES_PASSWORD_ENV, "cast": str, "secret": True},
     {"dotpath": "preservica.tenant", "env": PRESERVICA_TENANT_ENV, "cast": str, "secret": False},
     {"dotpath": "preservica.username", "env": PRESERVICA_USERNAME_ENV, "cast": str, "secret": False},
     {"dotpath": "preservica.password", "env": PRESERVICA_PASSWORD_ENV, "cast": str, "secret": True},
@@ -494,6 +509,20 @@ CONFIG = {
         # kept separate so a sync never touches production derivative data. See
         # digtk.lib.gcs_sync's module docstring.
         "bucket": _env(GCS_BUCKET_ENV, "dams-client-media-argonath"),
+    },
+    "postgres": {
+        # argonath's own app-level schema (collection registry, etc.) — the shared
+        # Postgres/pgvector instance project-anduin provisions, not Dagster's own
+        # run-storage database (dagster/lib/utils.py connects separately, via
+        # DAGSTER_POSTGRES_* env vars, to that one). 'password' is marked secret in
+        # SETTINGS (hidden-input prompt, never displayed by `digtk config show`) so
+        # its resolved value is deliberately NOT stored here — only its env var
+        # name is, mirroring CONFIG["preservica"] above — see digtk.lib.db.
+        "host": _env(POSTGRES_HOST_ENV, "localhost"),
+        "port": _env(POSTGRES_PORT_ENV, 5432, int),
+        "database": _env(POSTGRES_DATABASE_ENV, "argonath"),
+        "user": _env(POSTGRES_USER_ENV, "argonath"),
+        "password_env": POSTGRES_PASSWORD_ENV,
     },
     "preservica": {
         # Unlike CaskFS's OIDC-issued session token (which has its own browser-login

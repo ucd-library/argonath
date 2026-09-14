@@ -2,18 +2,22 @@
 digtk preservica — pull a collection out of Preservica into bronze.
 
 Subcommands:
-  config — show the current Preservica connection and settings (nothing is set
-           by this command — see its help for how to actually set values)
-  token  — print a live access token (and, given a URL, a ready-to-run curl
-           command) for manually replaying a request outside the client's
-           retry logic
-  list   — browse a Preservica structural object's children (or the collection
-           root), to discover the ref to pass to `import` (calls digtk.lib.preservica
-           directly — no bronze/collection business logic involved)
-  import — walk a Preservica collection into bronze's by-ref/ layout
-           (see digtk.models.collection.preservica_import)
-  tree   — rebuild bronze's tree/ layout from an already-imported by-ref/
-           (see digtk.models.collection.preservica_tree)
+  config  — show the current Preservica connection and settings (nothing is set
+            by this command — see its help for how to actually set values)
+  token   — print a live access token (and, given a URL, a ready-to-run curl
+            command) for manually replaying a request outside the client's
+            retry logic
+  list    — browse a Preservica structural object's children (or the collection
+            root), to discover the ref to pass to `import` (calls digtk.lib.preservica
+            directly — no bronze/collection business logic involved)
+  import  — walk a Preservica collection into bronze's by-ref/ layout, always
+            registering the collection along the way (see
+            digtk.models.collection.preservica_import/register_collection)
+  tree    — rebuild bronze's tree/ layout from an already-imported by-ref/
+            (see digtk.models.collection.preservica_tree)
+  changes — list registered Preservica collections with any change since a
+            given timestamp (see digtk.models.collection.find_changed_preservica_collections)
+            — used by Dagster's preservica_auto_sync_sensor
 """
 from typing import Annotated
 
@@ -184,3 +188,27 @@ def tree(
         utils.error(str(e))
 
     utils.result({"status": "success", "collection": collection, "items": count})
+
+
+@app.command("changes")
+def changes(
+    since: Annotated[str, typer.Option(
+        help="ISO-8601 timestamp/date — only changes at or after this point are reported.",
+    )],
+):
+    """List registered Preservica collections with any change since `since` —
+    the basis for Dagster's preservica_auto_sync_sensor. Also auto-registers a
+    brand-new folder the first time its own 'argonath' identifier is seen."""
+    try:
+        result = collection_model.find_changed_preservica_collections(since)
+    except ValueError as e:
+        utils.error(str(e))
+    except (PreservicaAuthError, PreservicaRequestError) as e:
+        utils.error(str(e))
+
+    for c in result["collections"]:
+        utils.log(f"{c['group']}/{c['name']}  (ref {c['root_ref']})")
+    if not result["collections"]:
+        utils.log(f"(no changes since {since})")
+
+    utils.result({"status": "success", "since": since, "collections": result["collections"]})

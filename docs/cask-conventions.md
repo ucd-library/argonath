@@ -563,6 +563,11 @@ directory:
 Manifests persist beyond Dagster's run retention window and are the durable
 record of what was run, when, and what it produced.
 
+A Preservica-sourced collection's own manifest.json additionally records
+`preservicaRootRef` (see `digtk.models.collection.preservica_import()`) — the
+same ref that keys its row in the Postgres collection registry (a separate,
+Dagster-partition-tracking concern; see `docs/preservica-identifiers.md`).
+
 Some process directories' manifests carry additional top-level keys beyond this
 generic shape — `digtk.lib.utils.write_manifest()`'s `opts['extra']` merges them
 in verbatim, since what "extra" content means is specific to the caller, not

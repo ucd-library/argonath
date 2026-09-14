@@ -77,15 +77,18 @@ class ReconcileCollectionConfig(Config):
 
     :param str group: Group namespace the collection belongs to.
     :param str collection: Collection name.
-    :param str source_type: Ingestion source — "website", "db-dump", or "digital-collection".
-    :param str source_uri: Crawl root URL or DB connection string, depending on source_type.
+    :param str source_type: Ingestion source — "website", "db-dump",
+        "digital-collection", or "preservica".
+    :param str source_uri: Crawl root URL, DB connection string, or (for
+        source_type="preservica") the Preservica root structural object ref,
+        depending on source_type.
     """
     group: str = Field(..., description="Group namespace the collection belongs to.")
     collection: str = Field(..., description="Collection name.")
-    source_type: Literal["website", "db-dump", "digital-collection"] = Field(
+    source_type: Literal["website", "db-dump", "digital-collection", "preservica"] = Field(
         ..., description="Ingestion source type."
     )
-    source_uri: str = Field(..., description="Crawl root URL or DB connection string.")
+    source_uri: str = Field(..., description="Crawl root URL, DB connection string, or Preservica root ref.")
 
 
 class DerivativesConfig(Config):

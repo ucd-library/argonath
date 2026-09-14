@@ -44,8 +44,9 @@ import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 
-from digtk.lib import fs, preservica
+from digtk.lib import db, fs, preservica
 from digtk.lib.config import CONFIG
 
 CURRENT_TIME = "CURRENT_TIME"
@@ -152,7 +153,9 @@ def add(source, root, collection, opts={}):
         subprocess.run — injectable for tests).
     :returns: Completed cask cp invocation.
     :rtype: subprocess.CompletedProcess
-    :raises ValueError: If `root` is invalid or a required opt is missing.
+    :raises ValueError: If `root` is invalid, a required opt is missing, or (bronze
+        only) `collection` collides with a different active registered collection
+        — see register_collection().
     :raises FileNotFoundError: If `source` does not exist.
     :raises subprocess.CalledProcessError: If the cask cp invocation exits non-zero.
     """
@@ -160,6 +163,12 @@ def add(source, root, collection, opts={}):
         raise FileNotFoundError(source)
 
     dest = dest_path(root, collection, opts)
+    if root == "bronze":
+        # Workspace is scratch/staging, not a tracked pipeline collection — only
+        # bronze collections are registered, per the same 'always register on
+        # add/import' rule preservica_import() follows below.
+        register_collection(collection, opts.get("group"), "manual")
+
     argv = _build_argv(source, dest, opts)
     run = opts.get("run", subprocess.run)
     return run(argv, check=True)
@@ -271,6 +280,305 @@ def _resolve_identifier_key(identifiers, ref):
         return {"key": _slugify(local_id["value"]), "identifiers": [local_id["value"]]}
 
     return {"key": ref, "identifiers": values or [ref]}
+
+
+# --- Collection registry (Postgres) -----------------------------------------
+#
+# Tracks which collections argonath knows about (source, name, workflow tags)
+# so Dagster's sensors know what to watch and what to do when a source changes
+# — see docs/preservica-identifiers.md and dagster/lib/sensors.py's
+# collection_partition_sync_sensor / preservica_auto_sync_sensor. Built on
+# digtk.lib.db (generic Postgres helper); tables live in the 'argonath' schema
+# (digtk.lib.db.SCHEMA) — see digtk/sql/collection_registry.sql for the schema
+# itself, and init_pg() below to apply it.
+
+_SCHEMA_SQL_PATH = Path(__file__).parent.parent / "sql" / "collection_registry.sql"
+
+
+def init_pg(opts={}):
+    """Apply collection_registry.sql (schema + tables) to argonath's Postgres
+    database — safe to run repeatedly (every statement is CREATE ... IF NOT
+    EXISTS). See `digtk collection init-pg`.
+
+    :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
+    """
+    db.run_script(_SCHEMA_SQL_PATH.read_text(), opts)
+
+
+def _parse_workflow_tags(value):
+    """Parse a Preservica 'argonath' identifier's value into a normalized tag set.
+
+    Any tag implies 'sync' (e.g. 'ai,public' behaves identically to
+    'sync,ai,public') — a collection only reaches this parser once an
+    'argonath' identifier is already present, so 'sync' is always included.
+
+    :param str value: Raw identifier value, e.g. 'sync', 'ai,public'.
+    :returns: Normalized, sorted tag list, always including 'sync'.
+    :rtype: list[str]
+    """
+    tags = {t.strip() for t in (value or "").split(",") if t.strip()}
+    tags.add("sync")
+    return sorted(tags)
+
+
+def register_collection(name, group, source_type, identifiers=(), opts={}):
+    """Upsert a collection_registry row (+ its collection_identifiers) — argonath's
+    durable record that a collection is tracked, for Dagster's sensors to read
+    (dagster/lib/sensors.py's collection_partition_sync_sensor and
+    preservica_auto_sync_sensor).
+
+    Called unconditionally by both preservica_import() and the CLI's
+    `collection add` path — registration never depends on whether an 'argonath'
+    identifier is present; that identifier only governs auto-sensor discovery of
+    brand-new folders and optional-stage gating (see
+    docs/preservica-identifiers.md), not whether an import/add gets tracked.
+
+    Refuses (raises ValueError) rather than auto-disambiguating when `name`
+    collides with a different, already-registered active collection — the
+    argonath collection name must equal the source folder's own name 1:1,
+    so the fix is renaming the source folder (or choosing a different name for
+    a manual disk collection), never silently picking a new slug here. A
+    same-identity re-registration (the exact same Preservica ref re-imported,
+    or the exact same manual name+group re-added) is treated as a normal
+    update, not a collision.
+
+    :param str name: Collection name — must equal the source folder's own
+        (slugified) name; used for both bronze paths and Dagster's collections
+        partition key.
+    :param str group: Bronze group namespace.
+    :param str source_type: 'manual' (disk) or 'preservica'.
+    :param list[dict] identifiers: [{'type', 'value'}, ...] — every known
+        identifier for this collection (Preservica ref as 'preservica_ref', ARK,
+        LocalID, the raw 'argonath' tag, etc.), stored verbatim in
+        collection_identifiers. Workflow tags are derived from whichever
+        identifier has type == 'argonath'.
+    :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse —
+        see digtk.lib.db).
+    :returns: {'id': int, 'name': str, 'workflow_tags': list[str]}.
+    :rtype: dict
+    :raises ValueError: If `name` collides with a different active registration.
+    """
+    tags = []
+    incoming_ref = None
+    for identifier in identifiers:
+        if identifier.get("type") == "argonath" and identifier.get("value"):
+            tags = _parse_workflow_tags(identifier["value"])
+        if identifier.get("type") == "preservica_ref" and identifier.get("value"):
+            incoming_ref = identifier["value"]
+
+    existing = db.query(
+        "SELECT id, group_name, source_type FROM argonath.collection_registry "
+        "WHERE name = %s AND status = 'active'",
+        (name,), opts,
+    )
+
+    collection_id = None
+    if existing:
+        row = existing[0]
+        same_collection = False
+        if source_type == "preservica" and row["source_type"] == "preservica" and incoming_ref:
+            stored = db.query(
+                "SELECT id_value FROM argonath.collection_identifiers "
+                "WHERE collection_id = %s AND id_type = 'preservica_ref'",
+                (row["id"],), opts,
+            )
+            same_collection = bool(stored) and stored[0]["id_value"] == incoming_ref
+        elif source_type == "manual" and row["source_type"] == "manual" and row["group_name"] == group:
+            same_collection = True
+
+        if not same_collection:
+            raise ValueError(
+                f"Collection name '{name}' is already registered (source_type="
+                f"{row['source_type']!r}, group={row['group_name']!r}) — rename the "
+                "source folder (or choose a different name) rather than reusing an "
+                "active collection's name."
+            )
+        collection_id = row["id"]
+
+    if collection_id is None:
+        inserted = db.execute(
+            "INSERT INTO argonath.collection_registry (name, group_name, source_type, workflow_tags, last_synced_at) "
+            "VALUES (%s, %s, %s, %s, now()) RETURNING id",
+            (name, group, source_type, tags), {**opts, "returning": True},
+        )
+        collection_id = inserted[0]["id"]
+    else:
+        db.execute(
+            "UPDATE argonath.collection_registry SET source_type = %s, workflow_tags = %s, "
+            "last_synced_at = now(), updated_at = now() WHERE id = %s",
+            (source_type, tags, collection_id), opts,
+        )
+
+    db.execute(
+        "DELETE FROM argonath.collection_identifiers WHERE collection_id = %s", (collection_id,), opts,
+    )
+    for identifier in identifiers:
+        if identifier.get("type") and identifier.get("value"):
+            db.execute(
+                "INSERT INTO argonath.collection_identifiers (collection_id, id_type, id_value) "
+                "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                (collection_id, identifier["type"], identifier["value"]), opts,
+            )
+
+    return {"id": collection_id, "name": name, "workflow_tags": tags}
+
+
+def get_registration(id_type, id_value, opts={}):
+    """Look up a registered collection via any tracked identifier.
+
+    Used by preservica_auto_sync_sensor to resolve a changed Preservica entity
+    ref to its owning registered collection.
+
+    :param str id_type: Identifier type, e.g. 'preservica_ref'.
+    :param str id_value: Identifier value to look up.
+    :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
+    :returns: {'id', 'name', 'group_name', 'source_type', 'workflow_tags', 'status'}, or None.
+    :rtype: dict | None
+    """
+    rows = db.query(
+        "SELECT r.id, r.name, r.group_name, r.source_type, r.workflow_tags, r.status "
+        "FROM argonath.collection_registry r "
+        "JOIN argonath.collection_identifiers i ON i.collection_id = r.id "
+        "WHERE i.id_type = %s AND i.id_value = %s AND r.status = 'active'",
+        (id_type, id_value), opts,
+    )
+    return rows[0] if rows else None
+
+
+def list_active_collections(source_type=None, opts={}):
+    """List every active registered collection, optionally filtered by source type.
+
+    Used by both new Dagster sensors — collection_partition_sync_sensor (to
+    ensure every active collection has a Dagster 'collections' partition) and
+    preservica_auto_sync_sensor (to scope which Preservica collections to watch).
+
+    :param str|None source_type: 'manual' or 'preservica', or None for all.
+    :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
+    :returns: [{'id', 'name', 'group_name', 'source_type', 'workflow_tags'}, ...].
+    :rtype: list[dict]
+    """
+    sql = (
+        "SELECT id, name, group_name, source_type, workflow_tags FROM argonath.collection_registry "
+        "WHERE status = 'active'"
+    )
+    params = ()
+    if source_type:
+        sql += " AND source_type = %s"
+        params = (source_type,)
+    return db.query(sql, params, opts)
+
+
+def _parent_ref_of(client, ref, data_type):
+    """Best-effort lookup of an entity's parent structural object ref, via its
+    own EntityResponse.
+
+    NOTE: unlike client.py's other EntityResponse field reads (Title, etc.),
+    this field name has not been confirmed against a live Preservica tenant —
+    verify it before relying on this in production (see
+    find_changed_preservica_collections()'s caller, preservica_auto_sync_sensor).
+
+    :param PreservicaClient client: Client instance.
+    :param str ref: Entity ref.
+    :param str data_type: 'structural-objects' or 'information-objects'.
+    :returns: Parent ref, or None if absent/unresolvable.
+    :rtype: str | None
+    """
+    try:
+        detail = client.get_entity(data_type, ref)
+    except Exception:
+        return None
+    key = "StructuralObject" if data_type == "structural-objects" else "InformationObject"
+    return (detail.get(key) or {}).get("Parent")
+
+
+def _find_owning_collection(client, ref, entity_type):
+    """Walk up an entity's parent chain to find the nearest registered
+    Preservica collection — for a change reported inside a subfolder/item
+    rather than at a collection's own root ref.
+
+    :param PreservicaClient client: Client instance.
+    :param str ref: The changed entity's own ref.
+    :param str entity_type: 'SO' or 'IO' — content objects have no
+        parent-walkable entity API here, so a CO-type change is not resolved
+        this way (its containing IO change is expected to separately appear
+        in the same updated-since response).
+    :returns: {'registration': dict, 'root_ref': str} for the nearest
+        registered ancestor, or None if none is found.
+    :rtype: dict | None
+    """
+    if entity_type not in ("SO", "IO"):
+        return None
+    current_ref = ref
+    current_type = "structural-objects" if entity_type == "SO" else "information-objects"
+    seen = set()
+    while current_ref and current_ref not in seen:
+        seen.add(current_ref)
+        parent_ref = _parent_ref_of(client, current_ref, current_type)
+        if not parent_ref:
+            return None
+        registration = get_registration("preservica_ref", parent_ref)
+        if registration:
+            return {"registration": registration, "root_ref": parent_ref}
+        current_ref, current_type = parent_ref, "structural-objects"
+    return None
+
+
+def find_changed_preservica_collections(since, opts={}):
+    """Find every registered Preservica collection with any change reported by
+    Preservica since `since` — the basis for the auto-sync sensor (see
+    dagster/lib/sensors.py's preservica_auto_sync_sensor).
+
+    Also auto-registers a brand-new folder the first time its own 'argonath'
+    identifier is seen — a folder with no 'argonath' identifier is never
+    auto-registered, so it's simply absent from the result, per the "sensor
+    ignores an unlabeled collection" rule. Once registered (by this or by a
+    manual `digtk preservica import`), a collection is always checked here
+    going forward, regardless of its workflow tags.
+
+    :param str since: ISO-8601 timestamp/date, passed straight to
+        PreservicaClient.get_entities_updated_since().
+    :param dict opts: 'client' (injectable PreservicaClient, defaults to one
+        built from digtk.lib.auth.resolve_preservica()).
+    :returns: {'collections': [{'group', 'name', 'root_ref'}, ...]} — deduped,
+        one entry per affected registered collection.
+    :rtype: dict
+    """
+    client = opts.get("client") or preservica.build_client()
+    changed = client.get_entities_updated_since(since)
+
+    affected = {}
+    for entity in changed:
+        ref, entity_type = entity["ref"], entity["type"]
+
+        registration = get_registration("preservica_ref", ref)
+        root_ref = ref
+
+        if registration is None and entity_type in ("SO", "IO"):
+            found = _find_owning_collection(client, ref, entity_type)
+            if found:
+                registration, root_ref = found["registration"], found["root_ref"]
+
+        if registration is None and entity_type == "SO":
+            identifiers = client.get_identifiers("structural-objects", ref)
+            if any(i.get("type") == "argonath" and i.get("value") for i in identifiers):
+                title = (client.get_entity("structural-objects", ref).get("StructuralObject") or {}).get("Title")
+                name = _slugify(title or ref) or ref
+                registered = register_collection(
+                    name, "preservica", "preservica",
+                    [*identifiers, {"type": "preservica_ref", "value": ref}],
+                )
+                registration = {
+                    "id": registered["id"], "name": registered["name"],
+                    "group_name": "preservica", "source_type": "preservica",
+                }
+                root_ref = ref
+
+        if registration and registration["source_type"] == "preservica":
+            affected[registration["id"]] = {
+                "group": registration["group_name"], "name": registration["name"], "root_ref": root_ref,
+            }
+
+    return {"collections": list(affected.values())}
 
 
 def _unique_tree_slug(title, key, used_slugs):
@@ -611,7 +919,8 @@ def preservica_import(ref, collection=None, group="preservica", opts={}):
         'title'}, ...], 'errors': [...], 'warnings': [...]}.
     :rtype: dict
     :raises ValueError: If Preservica credentials cannot be resolved and no
-        `opts['client']` was given.
+        `opts['client']` was given, or `collection` collides with a different
+        active registered collection — see register_collection().
     """
     client = opts.get("client") or preservica.build_client()
     max_depth = opts.get("max_depth")
@@ -624,6 +933,16 @@ def preservica_import(ref, collection=None, group="preservica", opts={}):
         root_raw = client.get_entity("structural-objects", ref)
         title = (root_raw.get("StructuralObject") or {}).get("Title")
         collection = _slugify(title or ref) or ref
+
+    # Registration happens unconditionally, labeled or not (an unlabeled folder
+    # is still tracked — the 'argonath' identifier, if present among
+    # root_identifiers, only governs the auto-sync sensor's discovery of
+    # brand-new folders and optional-stage gating; see register_collection()).
+    root_identifiers = client.get_identifiers("structural-objects", ref)
+    register_collection(
+        collection, group, "preservica",
+        [*root_identifiers, {"type": "preservica_ref", "value": ref}],
+    )
 
     root = _bronze_latest_root(collection, group, opts)
     on_progress(f"Importing '{collection}' from ref {ref} into {root}")

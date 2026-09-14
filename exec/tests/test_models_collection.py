@@ -8,6 +8,93 @@ from digtk.lib import fs
 from digtk.models import collection
 
 
+class _FakeRegistry:
+    """In-memory stand-in for collection_registry + collection_identifiers,
+    driven by monkeypatching digtk.lib.db.query/execute — see
+    collection.register_collection()/get_registration()/list_active_collections().
+    Pattern-matches on SQL text rather than implementing a real query engine,
+    since collection.py only ever issues a handful of fixed statement shapes."""
+
+    def __init__(self):
+        self.rows = {}
+        self.identifiers = {}
+        self._next_id = 1
+
+    def query(self, sql, params=(), opts={}):
+        if "JOIN argonath.collection_identifiers" in sql:
+            id_type, id_value = params
+            for cid, idents in self.identifiers.items():
+                row = self.rows[cid]
+                if row["status"] != "active":
+                    continue
+                if any(i["id_type"] == id_type and i["id_value"] == id_value for i in idents):
+                    return [{
+                        "id": row["id"], "name": row["name"], "group_name": row["group_name"],
+                        "source_type": row["source_type"], "workflow_tags": row["workflow_tags"],
+                        "status": row["status"],
+                    }]
+            return []
+        if "FROM argonath.collection_identifiers" in sql:
+            collection_id = params[0]
+            return [
+                {"id_value": i["id_value"]} for i in self.identifiers.get(collection_id, [])
+                if i["id_type"] == "preservica_ref"
+            ]
+        if "name = %s" in sql:
+            name = params[0]
+            return [
+                {"id": r["id"], "group_name": r["group_name"], "source_type": r["source_type"]}
+                for r in self.rows.values() if r["name"] == name and r["status"] == "active"
+            ]
+        if "FROM argonath.collection_registry" in sql:
+            rows = [r for r in self.rows.values() if r["status"] == "active"]
+            if params:
+                rows = [r for r in rows if r["source_type"] == params[0]]
+            return [
+                {"id": r["id"], "name": r["name"], "group_name": r["group_name"],
+                 "source_type": r["source_type"], "workflow_tags": r["workflow_tags"]}
+                for r in rows
+            ]
+        raise AssertionError(f"Unexpected query: {sql}")
+
+    def execute(self, sql, params=(), opts={}):
+        if sql.startswith("INSERT INTO argonath.collection_registry"):
+            name, group, source_type, tags = params
+            row_id = self._next_id
+            self._next_id += 1
+            self.rows[row_id] = {
+                "id": row_id, "name": name, "group_name": group,
+                "source_type": source_type, "workflow_tags": tags, "status": "active",
+            }
+            return [{"id": row_id}] if opts.get("returning") else None
+        if sql.startswith("UPDATE argonath.collection_registry"):
+            source_type, tags, collection_id = params
+            self.rows[collection_id]["source_type"] = source_type
+            self.rows[collection_id]["workflow_tags"] = tags
+            return None
+        if sql.startswith("DELETE FROM argonath.collection_identifiers"):
+            self.identifiers[params[0]] = []
+            return None
+        if sql.startswith("INSERT INTO argonath.collection_identifiers"):
+            collection_id, id_type, id_value = params
+            self.identifiers.setdefault(collection_id, []).append(
+                {"id_type": id_type, "id_value": id_value}
+            )
+            return None
+        raise AssertionError(f"Unexpected execute: {sql}")
+
+
+@pytest.fixture(autouse=True)
+def fake_registry(monkeypatch):
+    """Every test in this file gets an isolated in-memory collection registry —
+    add()/preservica_import() call register_collection() unconditionally, so
+    none of these tests may touch a real Postgres connection."""
+    registry = _FakeRegistry()
+    monkeypatch.setattr(collection.db, "query", registry.query)
+    monkeypatch.setattr(collection.db, "execute", registry.execute)
+    return registry
+
+
 def test_resolve_time_passes_through_literal():
     assert collection.resolve_time("2026-W29") == "2026-W29"
 
@@ -148,6 +235,174 @@ def test_add_yes_true_skips_confirmation_prompt(tmp_path):
     assert "-y" in seen["argv"]
 
 
+def test_add_bronze_registers_collection(tmp_path, fake_registry):
+    source = tmp_path / "photos"
+    source.mkdir()
+
+    collection.add(
+        str(source), "bronze", "my-collection",
+        {"group": "digital-collections", "run": lambda argv, check: None},
+    )
+
+    rows = list(fake_registry.rows.values())
+    assert len(rows) == 1
+    assert rows[0]["name"] == "my-collection"
+    assert rows[0]["group_name"] == "digital-collections"
+    assert rows[0]["source_type"] == "manual"
+
+
+def test_add_workspace_does_not_register_collection(tmp_path, fake_registry):
+    source = tmp_path / "photos"
+    source.mkdir()
+
+    collection.add(
+        str(source), "workspace", "my-collection",
+        {"username": "jrmerz", "run": lambda argv, check: None},
+    )
+
+    assert fake_registry.rows == {}
+
+
+def test_add_bronze_raises_on_name_collision_with_different_group(tmp_path, fake_registry):
+    source = tmp_path / "photos"
+    source.mkdir()
+    run = lambda argv, check: None
+
+    collection.add(str(source), "bronze", "my-collection", {"group": "group-a", "run": run})
+    with pytest.raises(ValueError, match="already registered"):
+        collection.add(str(source), "bronze", "my-collection", {"group": "group-b", "run": run})
+
+
+def test_add_bronze_resync_same_name_and_group_does_not_raise(tmp_path, fake_registry):
+    source = tmp_path / "photos"
+    source.mkdir()
+    run = lambda argv, check: None
+
+    collection.add(str(source), "bronze", "my-collection", {"group": "group-a", "run": run})
+    collection.add(str(source), "bronze", "my-collection", {"group": "group-a", "run": run})
+
+    assert len(fake_registry.rows) == 1
+
+
+# --- collection registry (register_collection / get_registration / list_active_collections) --
+
+def test_init_pg_runs_the_schema_sql_file(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(collection.db, "run_script", lambda sql, opts={}: seen.update(sql=sql, opts=opts))
+
+    collection.init_pg()
+
+    assert "CREATE SCHEMA IF NOT EXISTS argonath" in seen["sql"]
+    assert "argonath.collection_registry" in seen["sql"]
+    assert "argonath.collection_identifiers" in seen["sql"]
+
+
+def test_parse_workflow_tags_always_includes_sync():
+    assert collection._parse_workflow_tags("ai,public") == ["ai", "public", "sync"]
+
+
+def test_parse_workflow_tags_dedupes_and_sorts():
+    assert collection._parse_workflow_tags("sync,ai,sync") == ["ai", "sync"]
+
+
+def test_parse_workflow_tags_empty_value_is_just_sync():
+    assert collection._parse_workflow_tags("") == ["sync"]
+
+
+def test_register_collection_inserts_new_row_and_identifiers(fake_registry):
+    result = collection.register_collection(
+        "ucd-photos", "preservica", "preservica",
+        [
+            {"type": "argonath", "value": "ai,public"},
+            {"type": "preservica_ref", "value": "ref-1"},
+            {"type": "ark", "value": "ark:/87287/d7abc"},
+        ],
+    )
+
+    assert result["name"] == "ucd-photos"
+    assert result["workflow_tags"] == ["ai", "public", "sync"]
+
+    row = fake_registry.rows[result["id"]]
+    assert row["group_name"] == "preservica"
+    assert row["source_type"] == "preservica"
+
+    stored = {(i["id_type"], i["id_value"]) for i in fake_registry.identifiers[result["id"]]}
+    assert stored == {
+        ("argonath", "ai,public"), ("preservica_ref", "ref-1"), ("ark", "ark:/87287/d7abc"),
+    }
+
+
+def test_register_collection_no_argonath_identifier_has_no_tags(fake_registry):
+    result = collection.register_collection(
+        "ucd-photos", "preservica", "preservica",
+        [{"type": "preservica_ref", "value": "ref-1"}],
+    )
+    assert result["workflow_tags"] == []
+
+
+def test_register_collection_reimport_same_ref_updates_not_collides(fake_registry):
+    first = collection.register_collection(
+        "ucd-photos", "preservica", "preservica",
+        [{"type": "preservica_ref", "value": "ref-1"}, {"type": "argonath", "value": "sync"}],
+    )
+    second = collection.register_collection(
+        "ucd-photos", "preservica", "preservica",
+        [{"type": "preservica_ref", "value": "ref-1"}, {"type": "argonath", "value": "ai,public"}],
+    )
+
+    assert second["id"] == first["id"]
+    assert len(fake_registry.rows) == 1
+    assert second["workflow_tags"] == ["ai", "public", "sync"]
+
+
+def test_register_collection_different_ref_same_name_raises(fake_registry):
+    collection.register_collection(
+        "ucd-photos", "preservica", "preservica",
+        [{"type": "preservica_ref", "value": "ref-1"}],
+    )
+    with pytest.raises(ValueError, match="already registered"):
+        collection.register_collection(
+            "ucd-photos", "preservica", "preservica",
+            [{"type": "preservica_ref", "value": "ref-2"}],
+        )
+
+
+def test_register_collection_manual_after_preservica_same_name_raises(fake_registry):
+    collection.register_collection(
+        "ucd-photos", "preservica", "preservica",
+        [{"type": "preservica_ref", "value": "ref-1"}],
+    )
+    with pytest.raises(ValueError, match="already registered"):
+        collection.register_collection("ucd-photos", "some-group", "manual")
+
+
+def test_get_registration_finds_by_identifier(fake_registry):
+    registered = collection.register_collection(
+        "ucd-photos", "preservica", "preservica",
+        [{"type": "preservica_ref", "value": "ref-1"}],
+    )
+    found = collection.get_registration("preservica_ref", "ref-1")
+    assert found["id"] == registered["id"]
+    assert found["name"] == "ucd-photos"
+
+
+def test_get_registration_returns_none_when_not_found(fake_registry):
+    assert collection.get_registration("preservica_ref", "no-such-ref") is None
+
+
+def test_list_active_collections_filters_by_source_type(fake_registry):
+    collection.register_collection("preservica-col", "group-a", "preservica", [
+        {"type": "preservica_ref", "value": "ref-1"},
+    ])
+    collection.register_collection("manual-col", "group-b", "manual")
+
+    all_active = collection.list_active_collections()
+    assert {c["name"] for c in all_active} == {"preservica-col", "manual-col"}
+
+    preservica_only = collection.list_active_collections("preservica")
+    assert {c["name"] for c in preservica_only} == {"preservica-col"}
+
+
 # --- helpers: _slugify / _is_ark / _resolve_identifier_key / _unique_tree_slug ---
 
 def test_slugify_lowercases_and_collapses_non_alnum():
@@ -217,6 +472,7 @@ class _FakePreservicaClient:
         self.raise_for = {}         # ref -> Exception, raised from get_entity
         self.get_entity_calls = []  # [(data_type, ref), ...] — for asserting no double-fetch
         self.download_calls = []    # [downloadUrl, ...] — for asserting skip-unchanged behavior
+        self.updated_since_results = []  # [{'ref', 'type'}, ...] returned by get_entities_updated_since
 
     def get_entity(self, data_type, ref, opts={}):
         self.get_entity_calls.append((data_type, ref))
@@ -224,7 +480,13 @@ class _FakePreservicaClient:
             raise self.raise_for[ref]
         entity = self.entities[ref]
         key = "StructuralObject" if entity["type"] == "SO" else "InformationObject"
-        return {key: {"Title": entity["title"]}, "_fragment_refs": entity.get("fragment_refs", [])}
+        detail = {"Title": entity["title"]}
+        if entity.get("parent"):
+            detail["Parent"] = entity["parent"]
+        return {key: detail, "_fragment_refs": entity.get("fragment_refs", [])}
+
+    def get_entities_updated_since(self, since, opts={}):
+        return self.updated_since_results
 
     def list_metadata_fragments(self, entity_detail):
         return entity_detail.get("_fragment_refs", [])
@@ -476,6 +738,142 @@ def test_preservica_import_raises_without_client_or_credentials(tmp_path, monkey
     monkeypatch.setattr(auth, "resolve_preservica", lambda: {})
     with pytest.raises(ValueError, match="Preservica"):
         collection.preservica_import("root-ref", "my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+
+def test_preservica_import_registers_collection_even_when_unlabeled(tmp_path, fake_registry):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.children["root-ref"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    rows = list(fake_registry.rows.values())
+    assert len(rows) == 1
+    assert rows[0]["name"] == "my-collection"
+    assert rows[0]["source_type"] == "preservica"
+    assert rows[0]["workflow_tags"] == []
+
+
+def test_preservica_import_registers_workflow_tags_from_argonath_identifier(tmp_path, fake_registry):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.identifiers["root-ref"] = [{"type": "argonath", "value": "ai,public"}]
+    client.children["root-ref"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    rows = list(fake_registry.rows.values())
+    assert rows[0]["workflow_tags"] == ["ai", "public", "sync"]
+    stored = {(i["id_type"], i["id_value"]) for i in fake_registry.identifiers[rows[0]["id"]]}
+    assert ("preservica_ref", "root-ref") in stored
+    assert ("argonath", "ai,public") in stored
+
+
+def test_preservica_import_raises_when_name_collides_with_a_different_root_ref(tmp_path, fake_registry):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["other-ref"] = {"title": "Root", "type": "SO"}
+    client.children["root-ref"] = []
+    client.children["other-ref"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+    with pytest.raises(ValueError, match="already registered"):
+        collection.preservica_import(
+            "other-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+        )
+
+
+def test_preservica_import_reimport_same_ref_does_not_raise(tmp_path, fake_registry):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.children["root-ref"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert len(fake_registry.rows) == 1
+
+
+# --- find_changed_preservica_collections -------------------------------------
+
+def test_find_changed_finds_registered_collection_by_direct_root_ref_match(fake_registry):
+    collection.register_collection(
+        "ucd-photos", "preservica", "preservica", [{"type": "preservica_ref", "value": "root-ref"}],
+    )
+    client = _FakePreservicaClient()
+    client.updated_since_results = [{"ref": "root-ref", "type": "SO"}]
+
+    result = collection.find_changed_preservica_collections("2026-09-01", {"client": client})
+
+    assert result["collections"] == [{"group": "preservica", "name": "ucd-photos", "root_ref": "root-ref"}]
+
+
+def test_find_changed_walks_up_parent_chain_to_owning_collection(fake_registry):
+    collection.register_collection(
+        "ucd-photos", "preservica", "preservica", [{"type": "preservica_ref", "value": "root-ref"}],
+    )
+    client = _FakePreservicaClient()
+    client.entities["item-ref"] = {"title": "Item", "type": "IO", "parent": "sub-folder-ref"}
+    client.entities["sub-folder-ref"] = {"title": "Sub", "type": "SO", "parent": "root-ref"}
+    client.updated_since_results = [{"ref": "item-ref", "type": "IO"}]
+
+    result = collection.find_changed_preservica_collections("2026-09-01", {"client": client})
+
+    assert result["collections"] == [{"group": "preservica", "name": "ucd-photos", "root_ref": "root-ref"}]
+
+
+def test_find_changed_auto_registers_newly_labeled_folder(fake_registry):
+    client = _FakePreservicaClient()
+    client.entities["new-root-ref"] = {"title": "New Collection", "type": "SO"}
+    client.identifiers["new-root-ref"] = [{"type": "argonath", "value": "ai,public"}]
+    client.updated_since_results = [{"ref": "new-root-ref", "type": "SO"}]
+
+    result = collection.find_changed_preservica_collections("2026-09-01", {"client": client})
+
+    assert result["collections"] == [
+        {"group": "preservica", "name": "new-collection", "root_ref": "new-root-ref"},
+    ]
+    registered = collection.get_registration("preservica_ref", "new-root-ref")
+    assert registered["workflow_tags"] == ["ai", "public", "sync"]
+
+
+def test_find_changed_ignores_unregistered_and_unlabeled_folder(fake_registry):
+    client = _FakePreservicaClient()
+    client.entities["random-ref"] = {"title": "Random", "type": "SO"}
+    client.identifiers["random-ref"] = []
+    client.updated_since_results = [{"ref": "random-ref", "type": "SO"}]
+
+    result = collection.find_changed_preservica_collections("2026-09-01", {"client": client})
+
+    assert result["collections"] == []
+
+
+def test_find_changed_dedupes_multiple_changes_in_same_collection(fake_registry):
+    collection.register_collection(
+        "ucd-photos", "preservica", "preservica", [{"type": "preservica_ref", "value": "root-ref"}],
+    )
+    client = _FakePreservicaClient()
+    client.entities["item-1"] = {"title": "Item 1", "type": "IO", "parent": "root-ref"}
+    client.entities["item-2"] = {"title": "Item 2", "type": "IO", "parent": "root-ref"}
+    client.updated_since_results = [
+        {"ref": "root-ref", "type": "SO"},
+        {"ref": "item-1", "type": "IO"},
+        {"ref": "item-2", "type": "IO"},
+    ]
+
+    result = collection.find_changed_preservica_collections("2026-09-01", {"client": client})
+
+    assert result["collections"] == [{"group": "preservica", "name": "ucd-photos", "root_ref": "root-ref"}]
 
 
 # --- preservica_tree ----------------------------------------------------------
