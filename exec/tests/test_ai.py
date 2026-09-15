@@ -196,6 +196,105 @@ def test_chat_completion_full_response_opt(monkeypatch):
     assert result is response
 
 
+def test_chat_completion_strips_think_blocks(monkeypatch):
+    fake = FakeClient(chat_response=make_chat_response("<think>hmm let me see</think>The answer is 4."))
+    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
+
+    assert ai.chat_completion("2+2?") == "The answer is 4."
+
+
+def test_chat_completion_falls_back_to_reasoning_content(monkeypatch):
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=None, reasoning_content="<think>x</think>reasoned answer",
+    ))])
+    fake = FakeClient(chat_response=response)
+    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
+
+    assert ai.chat_completion("hi") == "reasoned answer"
+
+
+def test_chat_completion_retries_and_eventually_succeeds(monkeypatch):
+    monkeypatch.setattr(ai.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    class FlakyClient:
+        chat = SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: _flaky(calls)))
+
+    def _flaky(calls):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ConnectionError("wedged")
+        return make_chat_response("ok")
+
+    monkeypatch.setattr(ai, "get_client", lambda opts: FlakyClient())
+
+    assert ai.chat_completion("hi") == "ok"
+    assert calls["n"] == 3
+
+
+def test_chat_completion_raises_after_exhausting_retries(monkeypatch):
+    monkeypatch.setattr(ai.time, "sleep", lambda s: None)
+    monkeypatch.setitem(CONFIG["samwise"], "retries", 2)
+
+    class AlwaysFailsClient:
+        chat = SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: (_ for _ in ()).throw(ConnectionError("down"))))
+
+    monkeypatch.setattr(ai, "get_client", lambda opts: AlwaysFailsClient())
+
+    with pytest.raises(RuntimeError, match="failed after 2 tries"):
+        ai.chat_completion("hi")
+
+
+def test_chat_completion_waits_out_maintenance_window(monkeypatch):
+    monkeypatch.setattr(ai, "_wait_out_maintenance", lambda: seen.append("waited"))
+    seen = []
+    fake = FakeClient(chat_response=make_chat_response("ok"))
+    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
+
+    ai.chat_completion("hi")
+
+    assert seen == ["waited"]
+
+
+def test_chat_completion_skips_maintenance_wait_for_full_response(monkeypatch):
+    def fail():
+        raise AssertionError("should not wait for full_response calls")
+    monkeypatch.setattr(ai, "_wait_out_maintenance", fail)
+    fake = FakeClient(chat_response=make_chat_response("ok"))
+    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
+
+    ai.chat_completion("hi", {"full_response": True})
+
+
+# --- _wait_out_maintenance -------------------------------------------------------
+
+
+def test_wait_out_maintenance_noop_when_unconfigured(monkeypatch):
+    monkeypatch.setitem(CONFIG["samwise"], "maint_start", "")
+    monkeypatch.setitem(CONFIG["samwise"], "maint_end", "")
+    monkeypatch.setattr(ai.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("should not sleep")))
+
+    ai._wait_out_maintenance()  # must return immediately, no error
+
+
+def test_wait_out_maintenance_sleeps_then_exits_once_outside_window(monkeypatch):
+    monkeypatch.setitem(CONFIG["samwise"], "maint_start", "23:50")
+    monkeypatch.setitem(CONFIG["samwise"], "maint_end", "01:45")
+
+    # First "now" is inside the overnight window (00:30); second is outside (02:00).
+    times = iter([
+        SimpleNamespace(hour=0, minute=30),
+        SimpleNamespace(hour=2, minute=0),
+    ])
+    monkeypatch.setattr(ai.datetime, "datetime", SimpleNamespace(now=lambda: next(times)))
+    sleeps = []
+    monkeypatch.setattr(ai.time, "sleep", lambda s: sleeps.append(s))
+
+    ai._wait_out_maintenance()
+
+    assert sleeps == [60]
+
+
 # --- embed ----------------------------------------------------------------------
 
 

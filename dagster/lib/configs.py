@@ -102,10 +102,14 @@ class OcrConfig(Config):
     :param str lang: Tesseract language code.
     :param int psm: Page segmentation mode.
     :param int oem: OCR engine mode.
+    :param bool vision: Also run Qwen vision OCR for the transcript text.
+        Not a quality gate (see digtk.models.ocr's module docstring) — set
+        False only for cost control on a large batch.
     """
     lang: str = Field("eng", description="Tesseract language code.")
     psm: int = Field(1,     description="Page segmentation mode.")
     oem: int = Field(3,     description="OCR engine mode.")
+    vision: bool = Field(True, description="Also run Qwen vision OCR for the transcript.")
 
 
 class SearchIndexConfig(Config):

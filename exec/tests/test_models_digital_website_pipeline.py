@@ -53,6 +53,116 @@ def test_filter_binaries_by_format_raises_on_unrecognized_extension():
     with pytest.raises(ValueError, match="unrecognized media extension"):
         pipeline.filter_binaries_by_format(["cask:/bronze/g/c/latest/item/mystery.xyz"], "image")
 
+
+def test_partition_by_format_splits_images_and_pdfs():
+    assert pipeline.partition_by_format(MIXED_FORMAT_PATHS) == (
+        ["cask:/bronze/g/c/latest/item/page-001.tif", "cask:/bronze/g/c/latest/item/page-002.tif"],
+        ["cask:/bronze/g/c/latest/item/document.pdf"],
+    )
+
+
+def test_partition_by_format_ignores_unrecognized_and_other_formats():
+    paths = [
+        "cask:/bronze/g/c/latest/item/photo.tiff",
+        "cask:/bronze/g/c/latest/item/reel.mp4",
+        "cask:/bronze/g/c/latest/item/mystery.xyz",
+    ]
+    assert pipeline.partition_by_format(paths) == (["cask:/bronze/g/c/latest/item/photo.tiff"], [])
+
+
+def test_partition_by_format_empty_when_no_binaries_match():
+    assert pipeline.partition_by_format([]) == ([], [])
+
+
+# --- pdf_ocr_prep_images() -------------------------------------------------------
+
+PDF_ITEM = ItemLocation(
+    ark=ARK, group="g", collection="c", time="latest", item_path="item",
+    bronze_binary_paths=["cask:/bronze/g/c/latest/item/document.pdf"],
+)
+
+
+def test_pdf_ocr_prep_images_builds_paths_per_page(monkeypatch):
+    manifest = json.dumps({"params": {
+        "pages": 2,
+        "orientation": {"1": {"deskew_selected": False}, "2": {"deskew_selected": True}},
+    }}).encode()
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: manifest)
+
+    images, count = pipeline.pdf_ocr_prep_images(
+        PDF_ITEM, "cask:/bronze/g/c/latest/item/document.pdf", namespace_ocr=False,
+    )
+
+    assert count == 2
+    assert images == [
+        "cask:/silver/g/c/latest/item/ocr/page-000/document-page-000-prep.jpg",
+        "cask:/silver/g/c/latest/item/ocr/page-001/document-page-001-prep-deskew.jpg",
+    ]
+
+
+def test_pdf_ocr_prep_images_uses_stem_prefixed_ocr_dir_for_multi_pdf_items(monkeypatch):
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps({
+        "params": {"pages": 1, "orientation": {"1": {"deskew_selected": False}}},
+    }).encode())
+
+    images, count = pipeline.pdf_ocr_prep_images(
+        PDF_ITEM, "cask:/bronze/g/c/latest/item/document.pdf", namespace_ocr=True,
+    )
+
+    assert images == ["cask:/silver/g/c/latest/item/document/ocr/page-000/document-page-000-prep.jpg"]
+
+
+def test_pdf_ocr_prep_images_raises_if_derivatives_not_published(monkeypatch):
+    def fake_read(path):
+        raise FileNotFoundError(path)
+    monkeypatch.setattr(pipeline.fs, "read", fake_read)
+
+    with pytest.raises(FileNotFoundError):
+        pipeline.pdf_ocr_prep_images(PDF_ITEM, "cask:/bronze/g/c/latest/item/document.pdf", namespace_ocr=False)
+
+
+# --- image_ocr_prep_image() -------------------------------------------------------
+
+def test_image_ocr_prep_image_builds_path_from_manifest(monkeypatch):
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps({
+        "params": {"orientation": {"photo": {"deskew_selected": False}}},
+    }).encode())
+
+    path = pipeline.image_ocr_prep_image(ITEM, "cask:/bronze/g/c/latest/item/photo.tiff", multi_image=False)
+
+    assert path == "cask:/silver/g/c/latest/item/ocr/prep.jpg"
+
+
+def test_image_ocr_prep_image_uses_deskewed_filename_when_selected(monkeypatch):
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps({
+        "params": {"orientation": {"photo": {"deskew_selected": True}}},
+    }).encode())
+
+    path = pipeline.image_ocr_prep_image(ITEM, "cask:/bronze/g/c/latest/item/photo.tiff", multi_image=False)
+
+    assert path == "cask:/silver/g/c/latest/item/ocr/prep-deskew.jpg"
+
+
+def test_image_ocr_prep_image_disambiguates_multi_image_items(monkeypatch):
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps({
+        "params": {"orientation": {"photo-a": {"deskew_selected": False}, "photo-b": {"deskew_selected": True}}},
+    }).encode())
+
+    a = pipeline.image_ocr_prep_image(MULTI_ITEM, "cask:/bronze/g/c/latest/box-1/folder-3/photo-a.tiff", multi_image=True)
+    b = pipeline.image_ocr_prep_image(MULTI_ITEM, "cask:/bronze/g/c/latest/box-1/folder-3/photo-b.tiff", multi_image=True)
+
+    assert a == "cask:/silver/g/c/latest/box-1/folder-3/ocr/photo-a-prep.jpg"
+    assert b == "cask:/silver/g/c/latest/box-1/folder-3/ocr/photo-b-prep-deskew.jpg"
+
+
+def test_image_ocr_prep_image_raises_if_derivatives_not_published(monkeypatch):
+    def fake_read(path):
+        raise FileNotFoundError(path)
+    monkeypatch.setattr(pipeline.fs, "read", fake_read)
+
+    with pytest.raises(FileNotFoundError):
+        pipeline.image_ocr_prep_image(ITEM, "cask:/bronze/g/c/latest/item/photo.tiff", multi_image=False)
+
 # generate_thumbnail_set(), select_orientation(), and update_associated_media() are
 # already exercised end-to-end via test_models_digital_website_image.py's dw.generate() tests
 # (same code, invoked through the still-image-specific orchestrator on top) — this file

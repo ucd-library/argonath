@@ -62,30 +62,6 @@ def _silver_rel_path(item, *parts):
     return f"{item.item_path}/{subdir}" if item.item_path else subdir
 
 
-def _partition_by_format(bronze_binary_paths):
-    """Split an item's bronze binaries into image and PDF subsets for alt-text purposes.
-
-    Unlike pipeline.filter_binaries_by_format(), doesn't raise when a format has zero
-    matches (a real item may have only one of the two, or — rarely — both), and
-    doesn't raise on a binary of a format alt-text just doesn't apply to (video/audio,
-    or something unrecognized) — silently skips it rather than enforcing every binary
-    be a recognized format, which isn't this module's concern.
-
-    :param list[str] bronze_binary_paths: CaskFS paths ('cask:/'-prefixed).
-    :returns: (image_paths, pdf_paths), each a subset of bronze_binary_paths, in order.
-    :rtype: tuple[list[str], list[str]]
-    """
-    image_paths, pdf_paths = [], []
-    for path in bronze_binary_paths:
-        ext = os.path.splitext(path)[1].lower()
-        fmt = pipeline.FORMAT_BY_EXTENSION.get(ext)
-        if fmt == "image":
-            image_paths.append(path)
-        elif fmt == "pdf":
-            pdf_paths.append(path)
-    return image_paths, pdf_paths
-
-
 def _generate_and_write(item, display_image, sidecar_path, rel_path, metadata, opts):
     """Generate alt text for one display image and publish it as a silver derivative.
 
@@ -136,7 +112,7 @@ def generate_alt_text(ark, opts={}):
         docstring.
     """
     item = items.resolve(ark)
-    image_paths, pdf_paths = _partition_by_format(item.bronze_binary_paths)
+    image_paths, pdf_paths = pipeline.partition_by_format(item.bronze_binary_paths)
     if not image_paths and not pdf_paths:
         raise ValueError(
             f"no image or PDF binaries found among this item's bronze sources: {item.bronze_binary_paths}"
@@ -189,43 +165,6 @@ def generate_alt_text(ark, opts={}):
     return result
 
 
-def _pdf_ocr_prep_images(item, bronze_path, multi_pdf):
-    """Read pdf.derivatives()'s aggregate OCR manifest for one PDF binary and
-    return each page's already-published OCR-prep image cask path, in page order.
-
-    Mirrors digtk.models.digital_website.pdf.derivatives()'s own ocr_prefix/
-    page_tag/filename construction exactly (ocr_prefix = f"{stem}/" if
-    multi_pdf else "", filename = f"{stem}-{page_tag}-{prep[-deskew]}.jpg"),
-    so this reads back precisely what that command published.
-
-    :param digtk.lib.items.ItemLocation item: Resolved item location.
-    :param str bronze_path: This PDF's bronze binary cask path.
-    :param bool multi_pdf: True if the item has more than one PDF binary
-        (pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")) —
-        matches pdf.derivatives()'s own ocr_prefix convention exactly.
-    :returns: (page image cask paths, in page order; page count)
-    :rtype: tuple[list[str], int]
-    :raises FileNotFoundError: If `digtk public-dc pdf derivatives` hasn't
-        published this PDF's OCR-prep images yet.
-    """
-    filename = bronze_path.rsplit("/", 1)[-1]
-    stem = filename.rsplit(".", 1)[0]
-    ocr_prefix = f"{stem}/" if multi_pdf else ""
-    ocr_base_dir = pipeline.derivative_dir(item, f"{ocr_prefix}ocr")
-    manifest = json.loads(fs.read(f"{ocr_base_dir}/manifest.json"))
-    count = manifest["params"]["pages"]
-    orientation = manifest["params"]["orientation"]
-
-    images = []
-    for page_no in range(1, count + 1):
-        tag = pipeline.page_tag(page_no - 1, count)
-        deskewed = orientation[str(page_no)]["deskew_selected"]
-        base_name = "prep-deskew.jpg" if deskewed else "prep.jpg"
-        page_dir = pipeline.derivative_dir(item, f"{ocr_prefix}ocr/{tag}")
-        images.append(f"{page_dir}/{stem}-{tag}-{base_name}")
-    return images, count
-
-
 def _read_json_derivative(path):
     """Best-effort read of an optional JSON derivative.
 
@@ -259,10 +198,15 @@ def tag_pdf(ark, opts={}):
         run veraPDF on the tagged PDF), 'dpi' (float, default
         CONFIG["image"]["dpi"] — pixel->point scale for the OCR-prep images'
         word geometry, forwarded to both build_searchable_pdf and
-        run_tesseract), plus anything else digtk.lib.ocr_utils.run_tesseract()
-        accepts (psm/oem/timeout) — its own 'lang' (a Tesseract language code
-        like 'eng', a different thing from this opts['lang']) is deliberately
-        never forwarded and always resolves to CONFIG["ocr"]["lang"] instead.
+        run_tesseract), 'min_conf' (float, default
+        CONFIG["accessibility"]["min_word_confidence"] — drop words below
+        this hOCR confidence (0-100) from the searchable-PDF text layer
+        instead of baking in obviously-wrong low-confidence guesses; see
+        pdf_utils.hocr_words()), plus anything else
+        digtk.lib.ocr_utils.run_tesseract() accepts (psm/oem/timeout) — its
+        own 'lang' (a Tesseract language code like 'eng', a different thing
+        from this opts['lang']) is deliberately never forwarded and always
+        resolves to CONFIG["ocr"]["lang"] instead.
     :returns: {"status": "success", "ark": str, "pdfs": {filename: {**tag_scan_pdf
         stats, **validate_ua result (if opts['validate']), "path": "cask:/..."}}}
     :rtype: dict
@@ -273,7 +217,10 @@ def tag_pdf(ark, opts={}):
     """
     item = items.resolve(ark)
     pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
-    multi_pdf = len(pdf_paths) > 1
+    # Matches pdf.derivatives()'s own namespace_ocr condition exactly — see
+    # pipeline.pdf_ocr_prep_images()'s docstring for why "mixed item" (also
+    # has non-PDF binaries) needs this alongside "more than one PDF".
+    namespace_ocr = len(pdf_paths) > 1 or len(pdf_paths) < len(item.bronze_binary_paths)
 
     sidecar_path = item.bronze_binary_paths[0] + ".jsonld.json"
     metadata = items.metadata(ark)
@@ -284,19 +231,22 @@ def tag_pdf(ark, opts={}):
     lookahead = opts.get("lookahead", pdf_tag.DEFAULT_LOOKAHEAD)
     want_tables = bool(opts.get("tables"))
     want_validate = opts.get("validate", True)
+    min_conf = opts.get("min_conf", CONFIG["accessibility"]["min_word_confidence"])
 
     # opts['lang'] above is the *document* language (BCP-47, e.g. "en-US") for
     # pdf_tag.tag_scan_pdf — a different thing from Tesseract's language code
     # (e.g. "eng") that ocr_utils.run_tesseract()'s own opts['lang'] expects.
-    # Excluded here so the two never collide; run_tesseract() falls back to
-    # CONFIG["ocr"]["lang"] on its own. psm/oem/dpi/timeout still pass through
-    # for callers that want to override Tesseract's behavior.
-    tesseract_opts = {k: v for k, v in opts.items() if k != "lang"}
+    # opts['min_conf'] is pdf_utils.hocr_words()'s own filter, not a
+    # run_tesseract() option either. Both excluded here so neither collides;
+    # run_tesseract() falls back to CONFIG["ocr"]["lang"] on its own.
+    # psm/oem/dpi/timeout still pass through for callers that want to
+    # override Tesseract's behavior.
+    tesseract_opts = {k: v for k, v in opts.items() if k not in ("lang", "min_conf")}
 
     pdfs = {}
     for bronze_path in pdf_paths:
         filename = bronze_path.rsplit("/", 1)[-1]
-        page_images, count = _pdf_ocr_prep_images(item, bronze_path, multi_pdf)
+        page_images, count = pipeline.pdf_ocr_prep_images(item, bronze_path, namespace_ocr)
         source_files = [bronze_path, sidecar_path]
 
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -310,7 +260,7 @@ def tag_pdf(ark, opts={}):
 
                 hocr_base = os.path.join(tmp_dir, f"page-{page_no:04d}")
                 tess_result = ocr_utils.run_tesseract(local_path, hocr_base, tesseract_opts)
-                words_per_page.append(pdf_utils.hocr_words(tess_result["hocr_path"]))
+                words_per_page.append(pdf_utils.hocr_words(tess_result["hocr_path"], min_conf=min_conf))
 
             searchable_path = os.path.join(tmp_dir, "searchable.pdf")
             pdf_utils.build_searchable_pdf(local_images, words_per_page, searchable_path, opts={

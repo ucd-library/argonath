@@ -73,6 +73,19 @@ SAMWISE_API_KEY_ENV = "SAMWISE_API_KEY"
 SAMWISE_LLM_MODEL_ENV = "DIGTK_SAMWISE_LLM_MODEL"
 SAMWISE_EMBED_MODEL_ENV = "DIGTK_SAMWISE_EMBED_MODEL"
 
+# Transport hardening, tuned values ported from the standalone digitization
+# toolkit's vllm_client.py — proven against real samwise flakiness (backend
+# wedges where a third of requests hang until the read timeout, while
+# /v1/models still answers) across 6,000+ item batches.
+SAMWISE_CONNECT_TIMEOUT_S_ENV = "DIGTK_SAMWISE_CONNECT_TIMEOUT_S"
+SAMWISE_READ_TIMEOUT_S_ENV = "DIGTK_SAMWISE_READ_TIMEOUT_S"
+SAMWISE_RETRIES_ENV = "DIGTK_SAMWISE_RETRIES"
+# HH:MM, both empty disables the pause. Same window shape as digtk's
+# DIGTK_MAINT_START/END — a long-running batch pauses through a nightly
+# maintenance window instead of burning retries against it.
+SAMWISE_MAINT_START_ENV = "DIGTK_SAMWISE_MAINT_START"
+SAMWISE_MAINT_END_ENV = "DIGTK_SAMWISE_MAINT_END"
+
 # Global defaults for digtk.models.alt_utils's generate_alt() opts — collection-specific
 # tuning (collection_context, name_people, transcribe_text, extra_instructions) stays
 # per-run (CLI flag / Dagster job config) since there's no per-collection settings
@@ -103,6 +116,7 @@ PDF_PDFINFO_BIN_ENV = "DIGTK_PDF_PDFINFO_BIN"
 
 ACCESSIBILITY_VERAPDF_BIN_ENV = "DIGTK_VERAPDF_BIN"
 ACCESSIBILITY_TAG_LOOKAHEAD_ENV = "DIGTK_TAG_LOOKAHEAD"
+ACCESSIBILITY_MIN_WORD_CONFIDENCE_ENV = "DIGTK_MIN_WORD_CONFIDENCE"
 
 IMAGE_THUMBNAIL_WIDTHS_ENV = "DIGTK_IMAGE_THUMBNAIL_WIDTHS"
 IMAGE_CONVERT_FORMAT_ENV = "DIGTK_IMAGE_CONVERT_FORMAT"
@@ -165,6 +179,11 @@ SETTINGS = [
     {"dotpath": "samwise.api_key", "env": SAMWISE_API_KEY_ENV, "cast": str, "secret": True},
     {"dotpath": "samwise.llm_model", "env": SAMWISE_LLM_MODEL_ENV, "cast": str, "secret": False},
     {"dotpath": "samwise.embed_model", "env": SAMWISE_EMBED_MODEL_ENV, "cast": str, "secret": False},
+    {"dotpath": "samwise.connect_timeout_s", "env": SAMWISE_CONNECT_TIMEOUT_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "samwise.read_timeout_s", "env": SAMWISE_READ_TIMEOUT_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "samwise.retries", "env": SAMWISE_RETRIES_ENV, "cast": int, "secret": False},
+    {"dotpath": "samwise.maint_start", "env": SAMWISE_MAINT_START_ENV, "cast": str, "secret": False},
+    {"dotpath": "samwise.maint_end", "env": SAMWISE_MAINT_END_ENV, "cast": str, "secret": False},
     {"dotpath": "alt.max_chars", "env": ALT_MAX_CHARS_ENV, "cast": int, "secret": False},
     {"dotpath": "alt.want_description", "env": ALT_WANT_DESCRIPTION_ENV, "cast": _cast_bool, "secret": False},
     {"dotpath": "ark.naan", "env": ARK_NAAN_ENV, "cast": str, "secret": False},
@@ -182,6 +201,7 @@ SETTINGS = [
     {"dotpath": "pdf.pdfinfo_bin", "env": PDF_PDFINFO_BIN_ENV, "cast": str, "secret": False},
     {"dotpath": "accessibility.verapdf_bin", "env": ACCESSIBILITY_VERAPDF_BIN_ENV, "cast": str, "secret": False},
     {"dotpath": "accessibility.tag_lookahead", "env": ACCESSIBILITY_TAG_LOOKAHEAD_ENV, "cast": int, "secret": False},
+    {"dotpath": "accessibility.min_word_confidence", "env": ACCESSIBILITY_MIN_WORD_CONFIDENCE_ENV, "cast": float, "secret": False},
     {"dotpath": "image.thumbnail_widths", "env": IMAGE_THUMBNAIL_WIDTHS_ENV, "cast": str, "secret": False},
     {"dotpath": "image.convert_format", "env": IMAGE_CONVERT_FORMAT_ENV, "cast": str, "secret": False},
     {"dotpath": "image.dpi", "env": IMAGE_DPI_ENV, "cast": int, "secret": False},
@@ -357,6 +377,12 @@ CONFIG = {
         "api_key_env": SAMWISE_API_KEY_ENV,
         "llm_model": _env(SAMWISE_LLM_MODEL_ENV, "qwen3.6-fast:35b"),
         "embed_model": _env(SAMWISE_EMBED_MODEL_ENV, "qwen3-embed:4b"),
+        # Proven values from the standalone digitization toolkit's vllm_client.py.
+        "connect_timeout_s": _env(SAMWISE_CONNECT_TIMEOUT_S_ENV, 15.0, float),
+        "read_timeout_s": _env(SAMWISE_READ_TIMEOUT_S_ENV, 180.0, float),
+        "retries": _env(SAMWISE_RETRIES_ENV, 6, int),
+        "maint_start": _env(SAMWISE_MAINT_START_ENV, ""),
+        "maint_end": _env(SAMWISE_MAINT_END_ENV, ""),
     },
     "alt": {
         # max_chars matches digtk.models.alt_utils.DEFAULT_MAX_ALT_CHARS.
@@ -405,6 +431,11 @@ CONFIG = {
         "verapdf_bin": _env(ACCESSIBILITY_VERAPDF_BIN_ENV, "verapdf"),
         # Matches digtk.models.pdf_tag.DEFAULT_LOOKAHEAD.
         "tag_lookahead": _env(ACCESSIBILITY_TAG_LOOKAHEAD_ENV, 40, int),
+        # tag_pdf()'s searchable-PDF text layer: drop hOCR words below this
+        # confidence (0-100) instead of baking OCR noise into the invisible
+        # text layer. Default 0.0 (disabled) — opt in per collection/batch,
+        # ported from the reference toolkit's words.py --min-conf.
+        "min_word_confidence": _env(ACCESSIBILITY_MIN_WORD_CONFIDENCE_ENV, 0.0, float),
     },
     "image": {
         "thumbnail_widths": _env(IMAGE_THUMBNAIL_WIDTHS_ENV, "256,512,1024"),

@@ -1,0 +1,67 @@
+import json
+
+from typer.testing import CliRunner
+
+from digtk.main import app
+from digtk.models import ocr as ocr_model
+
+runner = CliRunner()
+
+ARK = "ark:/87287/d7abc1234"
+
+
+def last_json_line(output):
+    return json.loads(output.strip().splitlines()[-1])
+
+
+def test_tesseract_calls_model_with_default_options(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(ocr_model, "run_ocr",
+                         lambda ark, opts={}: seen.update(ark=ark, opts=opts) or {"status": "success"})
+
+    result = runner.invoke(app, ["ocr", "tesseract", ARK])
+
+    assert result.exit_code == 0
+    assert seen["ark"] == ARK
+    assert seen["opts"]["vision"] is True
+    assert last_json_line(result.output) == {"status": "success"}
+
+
+def test_tesseract_no_vision_flag(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(ocr_model, "run_ocr",
+                         lambda ark, opts={}: seen.update(opts=opts) or {"status": "success"})
+
+    result = runner.invoke(app, ["ocr", "tesseract", ARK, "--no-vision"])
+
+    assert result.exit_code == 0
+    assert seen["opts"]["vision"] is False
+
+
+def test_tesseract_forwards_lang_psm_oem(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(ocr_model, "run_ocr",
+                         lambda ark, opts={}: seen.update(opts=opts) or {"status": "success"})
+
+    result = runner.invoke(app, ["ocr", "tesseract", ARK, "--lang", "fra", "--psm", "6", "--oem", "1"])
+
+    assert result.exit_code == 0
+    assert seen["opts"]["lang"] == "fra"
+    assert seen["opts"]["psm"] == 6
+    assert seen["opts"]["oem"] == 1
+
+
+def test_tesseract_routes_exception_through_utils_error(monkeypatch):
+    def raises(ark, opts={}):
+        raise FileNotFoundError("OCR-prep image not found")
+    monkeypatch.setattr(ocr_model, "run_ocr", raises)
+
+    result = runner.invoke(app, ["ocr", "tesseract", ARK])
+
+    assert result.exit_code == 1
+    assert last_json_line(result.output) == {"status": "error", "error": "OCR-prep image not found"}
+
+
+def test_ml_command_no_longer_exists():
+    result = runner.invoke(app, ["ocr", "ml", ARK])
+    assert result.exit_code != 0

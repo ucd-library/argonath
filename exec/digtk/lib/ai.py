@@ -9,12 +9,26 @@ batch, for pgvector indexing).
 Environment variables required:
   SAMWISE_API_KEY  — bearer token for Samwise API access
   SAMWISE_API_URL  — Samwise API base URL (default: see digtk.lib.config CONFIG["samwise"])
+
+Transport hardening (timeouts, retries, maintenance-window pause, <think>-stripping)
+is ported from the standalone digitization toolkit's vllm_client.py — proven against
+real samwise flakiness (a backend can wedge such that ~1/3 of requests hang until the
+read timeout while /v1/models still answers; a short read timeout plus retries
+re-rolls onto a healthy backend) across 6,000+ item batches. Retries are implemented
+here rather than left to the openai SDK's own (narrower, HTTP-error-only) retry
+logic, so `max_retries=0` is passed to the client and this module's own retry loop —
+which catches broadly, matching what real runs needed — is authoritative.
 """
+import datetime
 import os
+import re
+import sys
+import time
 import base64
 import mimetypes
 from dataclasses import dataclass
 
+import httpx
 from openai import OpenAI
 
 from digtk.lib import fs
@@ -23,6 +37,8 @@ from digtk.lib.config import CONFIG
 LLM_MODEL = CONFIG["samwise"]["llm_model"]
 EMBED_MODEL = CONFIG["samwise"]["embed_model"]
 _clients = {}
+
+_THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -78,12 +94,63 @@ def get_client(opts={}):
     if not api_key:
         raise RuntimeError(f"{CONFIG['samwise']['api_key_env']} environment variable is not set and no override provided.")
 
-    _clients[base_url] = OpenAI(api_key=api_key, base_url=base_url)
+    timeout = httpx.Timeout(
+        CONFIG["samwise"]["read_timeout_s"], connect=CONFIG["samwise"]["connect_timeout_s"]
+    )
+    # max_retries=0: this module's own chat_completion() retry loop is authoritative
+    # (see module docstring) — letting the SDK also retry would compound backoffs.
+    _clients[base_url] = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0)
     return _clients[base_url]
+
+
+def _wait_out_maintenance():
+    """Sleep until outside the configured nightly maintenance window, if any.
+
+    :param: None — reads CONFIG["samwise"]["maint_start"]/["maint_end"] (HH:MM,
+        24-hour; either empty disables the pause).
+    """
+    start, end = CONFIG["samwise"]["maint_start"], CONFIG["samwise"]["maint_end"]
+    if not start or not end:
+        return
+    start_min = int(start[:2]) * 60 + int(start[3:5])
+    end_min = int(end[:2]) * 60 + int(end[3:5])
+    while True:
+        now = datetime.datetime.now()
+        cur_min = now.hour * 60 + now.minute
+        in_window = (start_min <= cur_min < end_min) if start_min < end_min else (cur_min >= start_min or cur_min < end_min)
+        if not in_window:
+            return
+        time.sleep(60)
+
+
+def _extract_content(message):
+    """Pull the reply text out of a chat completion message, stripping <think> blocks.
+
+    Some backend models are reasoning models that put text in a
+    'reasoning_content'/'reasoning' field instead of 'content', and/or leak
+    <think>...</think> blocks into whichever field they use — both observed
+    against real samwise backends. Plain getattr (not e.g. model_dump()) so this
+    works against both the real SDK's pydantic message object — whose model
+    allows extra fields, exposed as attributes — and simple test doubles alike.
+
+    :param message: The response's `choices[0].message`.
+    :returns: Cleaned reply text.
+    :rtype: str
+    """
+    text = getattr(message, "content", None) or getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None) or ""
+    return _THINK.sub("", text).strip()
 
 
 def chat_completion(message, opts={}):
     """Generate a chat completion.
+
+    Retries transient failures (connection errors, timeouts, the response shape
+    the backend happens to return that day — anything) with capped exponential
+    backoff, waiting out any configured nightly maintenance window first — see
+    the module docstring. Not applied when opts['full_response'] is set, since a
+    raw response object has no single "did this fail" signal to retry on here;
+    that caller is expected to be doing its own inspection (e.g. `digtk ai chat
+    --output json`).
 
     :param str message: The user's message.
     :param dict opts: Additional options
@@ -91,8 +158,10 @@ def chat_completion(message, opts={}):
             - model: Override the default model
             - image: Optional image to include in the message — a file path (str, local
               or 'cask:/'-prefixed) or an ai.Image(data=bytes, mimetype=str)
-    :returns: The model's response text.
+            - full_response: Return the raw SDK response object, unretried, unstripped.
+    :returns: The model's response text (or the raw response, see full_response above).
     :rtype: str
+    :raises RuntimeError: If every retry attempt fails.
     """
     client = get_client(opts)
     model = opts.get("model") or LLM_MODEL
@@ -111,12 +180,24 @@ def chat_completion(message, opts={}):
         else:
             message = [{"role": "user", "content": message}]
 
-    response = client.chat.completions.create(model=model, messages=message)
+    if opts.get('full_response', False):
+        return client.chat.completions.create(model=model, messages=message)
 
-    if( opts.get('full_response', False) ):
-        return response
-
-    return response.choices[0].message.content
+    _wait_out_maintenance()
+    retries = CONFIG["samwise"]["retries"]
+    last_error = None
+    for attempt in range(retries):
+        try:
+            response = client.chat.completions.create(model=model, messages=message)
+            return _extract_content(response.choices[0].message)
+        except Exception as e:  # noqa: BLE001 — a transient endpoint blip should retry
+            last_error = e
+            print(
+                f"digtk: Samwise attempt {attempt + 1}/{retries} failed "
+                f"({type(e).__name__}: {e}); retrying", file=sys.stderr,
+            )
+            time.sleep(min(60, 2 ** attempt))
+    raise RuntimeError(f"Samwise chat completion failed after {retries} tries: {last_error}")
 
 
 def embed(texts, opts={}):

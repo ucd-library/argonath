@@ -71,6 +71,7 @@ def test_tag_pdf_calls_model_with_default_options(monkeypatch):
     assert seen["ark"] == ARK
     assert seen["opts"] == {
         "lang": "en-US", "strict": False, "lookahead": 40, "tables": False, "validate": True,
+        "min_conf": 0.0,
     }
     assert last_json_line(result.output) == {"status": "success"}
 
@@ -83,11 +84,13 @@ def test_tag_pdf_forwards_flags(monkeypatch):
     result = runner.invoke(app, [
         "accessibility", "tag-pdf", ARK,
         "--lang", "en", "--strict", "--lookahead", "80", "--tables", "--no-validate",
+        "--min-conf", "65",
     ])
 
     assert result.exit_code == 0
     assert seen["opts"] == {
         "lang": "en", "strict": True, "lookahead": 80, "tables": True, "validate": False,
+        "min_conf": 65.0,
     }
 
 

@@ -29,16 +29,20 @@ MIN_HSCALE = 0.2
 MAX_HSCALE = 6.0
 
 _BBOX_RE = re.compile(r"bbox (\d+) (\d+) (\d+) (\d+)")
+# hOCR word spans carry title='bbox ...; x_wconf NN' — same convention
+# digtk.lib.ocr_utils's own regex parsing relies on.
+_WCONF_RE = re.compile(r"x_wconf (\d+)")
 
 
 class _HocrWordParser(HTMLParser):
-    """Collect {'text', 'bbox'} for every ocrx_word span in an hOCR document."""
+    """Collect {'text', 'bbox', 'conf'} for every ocrx_word span in an hOCR document."""
 
     def __init__(self):
         super().__init__()
         self.words = []
         self._depth = 0
         self._bbox = None
+        self._conf = None
         self._text = []
 
     def handle_starttag(self, tag, attrs):
@@ -47,10 +51,13 @@ class _HocrWordParser(HTMLParser):
             return
         attrs = dict(attrs)
         if "ocrx_word" in (attrs.get("class") or ""):
-            m = _BBOX_RE.search(attrs.get("title") or "")
+            title = attrs.get("title") or ""
+            m = _BBOX_RE.search(title)
             if m:
                 self._depth = 1
                 self._bbox = [int(g) for g in m.groups()]
+                wconf_m = _WCONF_RE.search(title)
+                self._conf = float(wconf_m.group(1)) if wconf_m else None
                 self._text = []
 
     def handle_endtag(self, tag):
@@ -59,25 +66,38 @@ class _HocrWordParser(HTMLParser):
             if self._depth == 0:
                 text = html.unescape("".join(self._text)).strip()
                 if text:
-                    self.words.append({"text": text, "bbox": self._bbox})
+                    self.words.append({"text": text, "bbox": self._bbox, "conf": self._conf})
 
     def handle_data(self, data):
         if self._depth:
             self._text.append(data)
 
 
-def hocr_words(hocr_path):
+def hocr_words(hocr_path, min_conf=0.0):
     """Extract word geometry from a Tesseract hOCR file.
 
+    Ported from the reference toolkit's words.py `--min-conf` filter — drops
+    obviously-wrong low-confidence OCR guesses (e.g. over handwriting or
+    marginalia) before they're baked into a searchable PDF's invisible text
+    layer, where they'd otherwise surface as misleading search hits or
+    misaligned highlight boxes.
+
     :param str hocr_path: Path to an hOCR file (ocr_utils.run_tesseract output).
-    :returns: [{'text': str, 'bbox': [x0, y0, x1, y1]}] in image-pixel coords,
-        in document order. Words with empty text are skipped.
+    :param float min_conf: Drop words whose hOCR x_wconf (0-100) is below
+        this (default 0.0 — keep everything). A word with no parseable
+        x_wconf is always kept, since that's a parsing gap, not evidence of
+        low quality.
+    :returns: [{'text': str, 'bbox': [x0, y0, x1, y1], 'conf': float|None}]
+        in image-pixel coords, in document order. Words with empty text are
+        skipped.
     :rtype: list[dict]
     """
     parser = _HocrWordParser()
     with open(hocr_path, encoding="utf-8", errors="replace") as f:
         parser.feed(f.read())
-    return parser.words
+    if min_conf <= 0.0:
+        return parser.words
+    return [w for w in parser.words if w["conf"] is None or w["conf"] >= min_conf]
 
 
 def _insert_words(page, words, page_rect, scale):

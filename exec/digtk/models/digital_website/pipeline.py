@@ -80,6 +80,32 @@ def filter_binaries_by_format(bronze_binary_paths, media_types):
     return matches
 
 
+def partition_by_format(bronze_binary_paths):
+    """Split an item's bronze binaries into image and PDF subsets.
+
+    Unlike filter_binaries_by_format(), doesn't raise when a format has zero
+    matches (a real item may have only one of the two, or — rarely — both), and
+    doesn't raise on a binary of a format the caller just doesn't apply to
+    (video/audio, or something unrecognized) — silently skips it rather than
+    enforcing every binary be a recognized format. Shared by
+    digtk.models.accessibility (alt-text/tagging, image or PDF) and
+    digtk.models.ocr (Tesseract + vision OCR, same either-or shape).
+
+    :param list[str] bronze_binary_paths: CaskFS paths ('cask:/'-prefixed).
+    :returns: (image_paths, pdf_paths), each a subset of bronze_binary_paths, in order.
+    :rtype: tuple[list[str], list[str]]
+    """
+    image_paths, pdf_paths = [], []
+    for path in bronze_binary_paths:
+        ext = os.path.splitext(path)[1].lower()
+        fmt = FORMAT_BY_EXTENSION.get(ext)
+        if fmt == "image":
+            image_paths.append(path)
+        elif fmt == "pdf":
+            pdf_paths.append(path)
+    return image_paths, pdf_paths
+
+
 def parse_widths(widths):
     """Parse a thumbnail-widths spec into a sorted list of ints.
 
@@ -105,6 +131,78 @@ def page_tag(page_index, count):
     """
     pad = max(3, len(str(max(count - 1, 0))))
     return f"page-{page_index:0{pad}d}"
+
+
+def pdf_ocr_prep_images(item, bronze_path, namespace_ocr):
+    """Read pdf.derivatives()'s aggregate OCR manifest for one PDF binary and
+    return each page's already-published OCR-prep image cask path, in page order.
+
+    Mirrors digtk.models.digital_website.pdf.derivatives()'s own ocr_prefix/
+    page_tag/filename construction exactly (ocr_prefix = f"{stem}/" if
+    namespace_ocr else "", filename = f"{stem}-{page_tag}-{prep[-deskew]}.jpg"),
+    so this reads back precisely what that command published. Shared by
+    digtk.models.accessibility.tag_pdf and digtk.models.ocr.run_ocr — both need
+    to locate the same published images, just to feed different tools.
+
+    :param ItemLocation item: Resolved item location.
+    :param str bronze_path: This PDF's bronze binary cask path.
+    :param bool namespace_ocr: True if pdf.derivatives() namespaced this PDF's
+        OCR output by its own filename — when the item has more than one PDF
+        binary, *or* the item also has non-PDF binaries (a bare "ocr/"
+        directory would otherwise collide with e.g. image.py's own
+        ocr/manifest.json for a co-located image binary). Callers compute
+        this the same way pdf.derivatives() does:
+        `len(pdf_paths) > 1 or len(pdf_paths) < len(item.bronze_binary_paths)`.
+    :returns: (page image cask paths, in page order; page count)
+    :rtype: tuple[list[str], int]
+    :raises FileNotFoundError: If `digtk public-dc pdf derivatives` hasn't
+        published this PDF's OCR-prep images yet.
+    """
+    filename = bronze_path.rsplit("/", 1)[-1]
+    stem = filename.rsplit(".", 1)[0]
+    ocr_prefix = f"{stem}/" if namespace_ocr else ""
+    ocr_base_dir = derivative_dir(item, f"{ocr_prefix}ocr")
+    manifest = json.loads(fs.read(f"{ocr_base_dir}/manifest.json"))
+    count = manifest["params"]["pages"]
+    orientation = manifest["params"]["orientation"]
+
+    images = []
+    for page_no in range(1, count + 1):
+        tag = page_tag(page_no - 1, count)
+        deskewed = orientation[str(page_no)]["deskew_selected"]
+        base_name = "prep-deskew.jpg" if deskewed else "prep.jpg"
+        page_dir = derivative_dir(item, f"{ocr_prefix}ocr/{tag}")
+        images.append(f"{page_dir}/{stem}-{tag}-{base_name}")
+    return images, count
+
+
+def image_ocr_prep_image(item, bronze_path, multi_image):
+    """Read digital_website.image.generate()'s ocr/manifest.json for one image
+    binary and return its already-published OCR-prep image cask path.
+
+    Mirrors generate()'s own ocr_outputs filename construction exactly —
+    prep_filename = output_name(stem, "prep[-deskew].jpg", multi) — reading
+    the deskew decision back from the manifest params.orientation dict, keyed
+    by filename stem (not page number — that's the PDF aggregate manifest's
+    convention, see pdf_ocr_prep_images(), which this deliberately parallels
+    for the image case).
+
+    :param ItemLocation item: Resolved item location.
+    :param str bronze_path: This image's bronze binary cask path.
+    :param bool multi_image: True if the item has more than one image binary
+        (pipeline.filter_binaries_by_format(item.bronze_binary_paths, "image")).
+    :returns: The published OCR-prep image's cask path.
+    :rtype: str
+    :raises FileNotFoundError: If `digtk public-dc image derivatives` hasn't
+        published this image's OCR-prep image yet.
+    """
+    filename = bronze_path.rsplit("/", 1)[-1]
+    stem = filename.rsplit(".", 1)[0]
+    ocr_dir = derivative_dir(item, "ocr")
+    manifest = json.loads(fs.read(f"{ocr_dir}/manifest.json"))
+    deskewed = manifest["params"]["orientation"][stem]["deskew_selected"]
+    base_name = "prep-deskew.jpg" if deskewed else "prep.jpg"
+    return f"{ocr_dir}/{output_name(stem, base_name, multi_image)}"
 
 
 def output_name(stem, base_name, multi):

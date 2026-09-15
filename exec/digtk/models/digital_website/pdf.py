@@ -284,6 +284,17 @@ def derivatives(ark, opts={}):
     pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
     start = time.monotonic()
     multi_pdf = len(pdf_paths) > 1
+    # Namespace the OCR output by the PDF's own filename whenever anything else
+    # could also publish to the item's bare "ocr/" directory — not just when
+    # there's more than one PDF. image.py's generate() publishes its own
+    # ocr/manifest.json (keyed by filename stem) to that exact same bare path
+    # for any co-located image binaries; without this, whichever of image/pdf
+    # derivatives ran most recently silently overwrites the other's manifest.
+    # (The "images_base" display-image path below has always been namespaced
+    # by pdf_filename regardless of multi_pdf — this brings ocr/ in line with
+    # that, only for the case that actually needs it, so a pure single-PDF
+    # item's existing ocr/ layout is unaffected.)
+    mixed_item = len(pdf_paths) < len(item.bronze_binary_paths)
 
     pdfs_result = {}
     image_objects = []
@@ -296,7 +307,7 @@ def derivatives(ark, opts={}):
             stem = src["stem"]
             pdf_path = src["local_path"]
             pdf_filename = os.path.basename(src["bronze_path"])
-            ocr_prefix = f"{stem}/" if multi_pdf else ""
+            ocr_prefix = f"{stem}/" if (multi_pdf or mixed_item) else ""
             images_base = f"{pipeline.PUBLIC_FRONTEND_DIR}/{pdf_filename}/images"
             count = pdf_render.page_count(pdf_path, opts)
             utils.log(f"[{pdf_i}/{total_pdfs}] {stem}: {count} page(s)")

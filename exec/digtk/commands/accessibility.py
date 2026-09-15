@@ -77,15 +77,22 @@ def tag_pdf(
     validate: Annotated[bool, typer.Option(
         help="Run veraPDF on the tagged PDF and include the compliance result.",
     )] = True,
+    min_conf: Annotated[float, typer.Option(
+        "--min-conf",
+        help="Drop hOCR words below this Tesseract confidence (0-100) from "
+             "the searchable-PDF text layer, instead of baking OCR noise "
+             "(e.g. over handwriting/marginalia) into it. Default: no filtering.",
+    )] = CONFIG["accessibility"]["min_word_confidence"],
 ):
     """Assemble a searchable, PDF/UA-1-tagged PDF for every PDF binary in an item.
 
     Requires `digtk public-dc pdf derivatives` to have already run for this
     item — reads back its published per-page OCR-prep images rather than
     rasterizing anything itself, then re-runs Tesseract against them for word
-    geometry. Alt text (from `digtk accessibility alt-text`) and, with
-    --tables, a vision-generated layout are read back and used if present,
-    but neither is required. Writes
+    geometry (--min-conf drops words below that confidence from the
+    resulting searchable text layer). Alt text (from `digtk accessibility
+    alt-text`) and, with --tables, a vision-generated layout are read back
+    and used if present, but neither is required. Writes
     silver/.../accessibility/<pdf-filename>/tagged.pdf, with CaskFS lineage
     to the bronze PDF, the OCR-prep images used, and any alt-text/layout
     derivatives read.
@@ -98,6 +105,7 @@ def tag_pdf(
             "lookahead": lookahead,
             "tables": tables,
             "validate": validate,
+            "min_conf": min_conf,
         }))
     except _ERRORS as e:
         utils.error(str(e))

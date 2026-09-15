@@ -124,16 +124,21 @@ def generate_derivatives(context: dg.AssetExecutionContext, config: DerivativesC
 def run_ocr(context: dg.AssetExecutionContext, config: OcrConfig):
     """Run OCR on the prepared derivative image for an item.
 
-    Tesseract runs first; low-confidence output triggers ML fallback.
+    Both engines run unconditionally: Tesseract for word geometry, Qwen
+    vision for the authoritative transcript — not a confidence-gated
+    fallback, see digtk.models.ocr's module docstring.
 
     :param context: Dagster asset execution context.
-    :param config: OcrConfig with lang, psm, oem.
+    :param config: OcrConfig with lang, psm, oem, vision.
     """
     ark = context.partition_key.keys_by_dimension["item"]
-    result = exec(["digtk", "ocr", "tesseract", ark,
-                   "--lang", config.lang,
-                   "--psm",  str(config.psm),
-                   "--oem",  str(config.oem)])
+    cmd = ["digtk", "ocr", "tesseract", ark,
+           "--lang", config.lang,
+           "--psm",  str(config.psm),
+           "--oem",  str(config.oem)]
+    if not config.vision:
+        cmd.append("--no-vision")
+    result = exec(cmd)
     context.log.info(f"OCR result: {result}")
     return dg.Output(result)
 

@@ -22,14 +22,32 @@ def _make_page_image(path, width=800, height=600):
 
 # --- hocr_words ---------------------------------------------------------------
 
-def test_hocr_words_extracts_text_and_bbox(tmp_path):
+def test_hocr_words_extracts_text_bbox_and_confidence(tmp_path):
     hocr = tmp_path / "page.hocr"
     hocr.write_text(HOCR_SAMPLE)
     words = pdf_utils.hocr_words(str(hocr))
     assert words == [
-        {"text": "HELLO", "bbox": [100, 200, 300, 240]},
-        {"text": "W&B", "bbox": [320, 200, 500, 240]},
+        {"text": "HELLO", "bbox": [100, 200, 300, 240], "conf": 96.0},
+        {"text": "W&B", "bbox": [320, 200, 500, 240], "conf": 91.0},
     ]
+
+
+def test_hocr_words_min_conf_drops_low_confidence_words(tmp_path):
+    hocr = tmp_path / "page.hocr"
+    hocr.write_text(HOCR_SAMPLE)
+    words = pdf_utils.hocr_words(str(hocr), min_conf=95.0)
+    assert words == [{"text": "HELLO", "bbox": [100, 200, 300, 240], "conf": 96.0}]
+
+
+def test_hocr_words_min_conf_keeps_words_with_no_parseable_confidence(tmp_path):
+    hocr = tmp_path / "page.hocr"
+    hocr.write_text("""
+    <div class='ocr_page' title='bbox 0 0 800 600'>
+     <span class='ocrx_word' title='bbox 100 200 300 240'>NOCONF</span>
+    </div>
+    """)
+    words = pdf_utils.hocr_words(str(hocr), min_conf=95.0)
+    assert words == [{"text": "NOCONF", "bbox": [100, 200, 300, 240], "conf": None}]
 
 
 def test_hocr_words_empty_document(tmp_path):

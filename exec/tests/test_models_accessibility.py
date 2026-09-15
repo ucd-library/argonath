@@ -262,7 +262,10 @@ def fake_pdf_pipeline(monkeypatch):
     monkeypatch.setattr(ocr_utils, "run_tesseract", lambda image_path, output_base, opts={}: (
         calls["run_tesseract"].append(image_path) or {"hocr_path": output_base + ".hocr", "txt_path": output_base + ".txt", "confidence": 90.0}
     ))
-    monkeypatch.setattr(pdf_utils, "hocr_words", lambda hocr_path: [{"text": "hi", "bbox": [0, 0, 10, 10]}])
+    monkeypatch.setattr(
+        pdf_utils, "hocr_words",
+        lambda hocr_path, min_conf=0.0: [{"text": "hi", "bbox": [0, 0, 10, 10], "conf": 90.0}],
+    )
 
     def fake_build_searchable_pdf(image_paths, words_per_page, dest_path, opts={}):
         calls["build_searchable_pdf"] = {"image_paths": image_paths, "words_per_page": words_per_page, "opts": opts}
@@ -330,6 +333,26 @@ def test_tag_pdf_does_not_forward_document_lang_to_tesseract(monkeypatch, fake_d
     for opts in seen_tesseract_opts:
         assert "lang" not in opts
     assert fake_pdf_pipeline["tag_scan_pdf"]["opts"]["lang"] == "en-US"
+
+
+def test_tag_pdf_forwards_min_conf_to_hocr_words_not_tesseract(monkeypatch, fake_derivative, fake_pdf_pipeline):
+    _stub_lookups(monkeypatch, PDF_ITEM)
+    monkeypatch.setattr(fs, "read", _make_fs_read())
+    seen_tesseract_opts = []
+    monkeypatch.setattr(ocr_utils, "run_tesseract", lambda image_path, output_base, opts={}: (
+        seen_tesseract_opts.append(opts) or {"hocr_path": output_base + ".hocr", "txt_path": output_base + ".txt", "confidence": 90.0}
+    ))
+    seen_min_conf = []
+    monkeypatch.setattr(pdf_utils, "hocr_words", lambda hocr_path, min_conf=0.0: (
+        seen_min_conf.append(min_conf) or [{"text": "hi", "bbox": [0, 0, 10, 10], "conf": 90.0}]
+    ))
+
+    accessibility.tag_pdf(ARK, opts={"min_conf": 70.0})
+
+    assert seen_tesseract_opts
+    for opts in seen_tesseract_opts:
+        assert "min_conf" not in opts
+    assert seen_min_conf == [70.0, 70.0]
 
 
 def test_tag_pdf_uses_alt_text_when_present(monkeypatch, fake_derivative, fake_pdf_pipeline):
