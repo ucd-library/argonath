@@ -10,6 +10,7 @@ from lib.configs import (
     items_partitions,
     IngestItemConfig,
     ReconcileCollectionConfig,
+    SplitSpreadsConfig,
     DerivativesConfig,
     OcrConfig,
     SearchIndexConfig,
@@ -90,20 +91,66 @@ def ingest_item(context: dg.AssetExecutionContext, config: IngestItemConfig):
 @dg.asset(
     partitions_def=items_partitions,
     deps=[ingest_item],
+    group_name="ingest",
+)
+def detect_spreads(context: dg.AssetExecutionContext, config: SplitSpreadsConfig):
+    """Detect the binding gutter in every not-yet-detected image binary of an item.
+
+    Reads the item's bronze image binaries directly — depends on ingest_item
+    (bronze existing), not generate_derivatives, since it doesn't need any
+    display/OCR-prep derivative to already exist. Publishes review strips +
+    a contact sheet as silver derivatives of this item for a human to check
+    before apply_spreads runs.
+
+    :param context: Dagster asset execution context.
+    :param config: SplitSpreadsConfig with max_px.
+    """
+    ark = context.partition_key.keys_by_dimension["item"]
+    cmd = ["digtk", "split-spreads", "detect", ark, "--max-px", str(config.max_px)]
+    result = exec(cmd)
+    context.log.info(f"Detected spreads for {ark}: {result}")
+    return dg.Output(result)
+
+
+@dg.asset(
+    partitions_def=items_partitions,
+    deps=[detect_spreads],
+    group_name="ingest",
+)
+def apply_spreads(context: dg.AssetExecutionContext):
+    """Cut every confirmed spread per this item's (human-reviewed) gutters.json.
+
+    The deps=[detect_spreads] declaration is for asset-graph accuracy only
+    (apply reads what detect produces) — nothing here auto-chains the two;
+    an operator triggers apply_spreads_job manually after confirming a human
+    has reviewed/corrected gutters.json.
+
+    :param context: Dagster asset execution context.
+    """
+    ark = context.partition_key.keys_by_dimension["item"]
+    cmd = ["digtk", "split-spreads", "apply", ark]
+    result = exec(cmd)
+    context.log.info(f"Applied spread splits for {ark}: {result}")
+    return dg.Output(result)
+
+
+@dg.asset(
+    partitions_def=items_partitions,
+    deps=[ingest_item],
     group_name="derivatives",
 )
 def generate_derivatives(context: dg.AssetExecutionContext, config: DerivativesConfig):
     """Generate the full image-derivative set for an ingested item: thumbnails,
     a web JPEG, and an OCR-prep image, sharing one scan-orientation decision.
 
-    `digtk public-dc image derivatives` auto-detects orientation via a real Tesseract
+    `digtk showcase image derivatives` auto-detects orientation via a real Tesseract
     comparison (deskewed vs. non-deskewed) rather than a fixed rule, and
     applies that single decision consistently across every output — see
     docs/cask-conventions.md's "Scan Orientation" section.
 
     Assumes this partition's item is an image item — there's no Dagster-level
     routing by media type yet. PDF/video/audio items are processed by invoking
-    `digtk public-dc pdf/video/audio derivatives` directly (see docs/cask-conventions.md's
+    `digtk showcase pdf/video/audio derivatives` directly (see docs/cask-conventions.md's
     "Multi-Format Items" section); wiring that into Dagster is a deliberately
     separate, not-yet-scoped piece of work.
 
@@ -111,7 +158,7 @@ def generate_derivatives(context: dg.AssetExecutionContext, config: DerivativesC
     :param config: DerivativesConfig with thumbnail widths.
     """
     ark = context.partition_key.keys_by_dimension["item"]
-    result = exec(["digtk", "public-dc", "image", "derivatives", ark, "--widths", config.widths])
+    result = exec(["digtk", "showcase", "image", "derivatives", ark, "--widths", config.widths])
     context.log.info(f"Derivatives result: {result}")
     return dg.Output(result)
 
@@ -153,7 +200,7 @@ def generate_alt_text(context: dg.AssetExecutionContext, config: AltTextConfig):
 
     Depends on generate_derivatives, not run_ocr/generate_metadata: it only
     needs the "large" display JPEG(s) generate_derivatives (image items) or
-    `digtk public-dc pdf derivatives` (PDF items, run separately — see
+    `digtk showcase pdf derivatives` (PDF items, run separately — see
     generate_derivatives' own docstring on multi-format items) already
     publish, not OCR text or the (still-unimplemented, phase 0.6) AI metadata
     draft — see digtk.models.accessibility's module docstring.
@@ -183,7 +230,7 @@ def tag_accessible_pdf(context: dg.AssetExecutionContext, config: TagPdfConfig):
     Depends on generate_derivatives the same way generate_alt_text does — a
     soft/approximate signal, not a real one: there is no Dagster asset for
     PDF derivative generation yet (see generate_derivatives' own docstring on
-    multi-format items), so `digtk public-dc pdf derivatives` must have been
+    multi-format items), so `digtk showcase pdf derivatives` must have been
     run out of band before this asset can succeed. It fails with a clear
     FileNotFoundError (missing OCR manifest) otherwise. Optionally reads back
     generate_alt_text's output for richer /Figure tagging, but doesn't
@@ -262,6 +309,6 @@ def index_for_dams_search(context: dg.AssetExecutionContext):
     :param context: Dagster asset execution context.
     """
     ark = context.partition_key.keys_by_dimension["item"]
-    result = exec(["digtk", "public-dc", "es", "upsert", ark])
+    result = exec(["digtk", "showcase", "es", "upsert", ark])
     context.log.info(f"DAMS search index result: {result}")
     return dg.Output(result)

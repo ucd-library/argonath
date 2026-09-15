@@ -9,7 +9,7 @@ bronze item location, reads the item's existing bronze descriptive metadata
 (title/description/date/creator) for prompt context, and generates alt text
 for each of the item's image binaries and each page of each PDF binary,
 against the "large" display JPEG generate_derivatives (image items) or
-`digtk public-dc pdf derivatives` (PDF items) already publishes — not the raw
+`digtk showcase pdf derivatives` (PDF items) already publishes — not the raw
 bronze binary (could be a huge TIFF) or the OCR-prep image (contrast-tuned
 for Tesseract, not human/vision-model viewing). Each result is written as
 its own silver derivative, with CaskFS lineage back to both the display
@@ -25,7 +25,7 @@ cached as its own derivative), tags it PDF/UA-1, validates it with veraPDF,
 and publishes the tagged PDF with lineage back to the bronze PDF, the
 OCR-prep images used, and any alt-text/layout derivatives read.
 
-Both entry points deliberately depend on `digtk public-dc image|pdf
+Both entry points deliberately depend on `digtk showcase image|pdf
 derivatives` having already run — they read back published derivatives
 rather than regenerating/rasterizing anything themselves, so neither needs
 the still-unimplemented `digtk ocr tesseract` (phase 0.5) or AI metadata
@@ -106,9 +106,9 @@ def generate_alt_text(ark, opts={}):
     :rtype: dict
     :raises LookupError: If the ARK doesn't resolve to a bronze item (see items.resolve()).
     :raises ValueError: If the item has no image or PDF binaries.
-    :raises FileNotFoundError: If a display image (from `digtk public-dc image
+    :raises FileNotFoundError: If a display image (from `digtk showcase image
         derivatives`) or a PDF's aggregate images/ manifest.json (from `digtk
-        public-dc pdf derivatives`) hasn't been published yet — see this module's
+        showcase pdf derivatives`) hasn't been published yet — see this module's
         docstring.
     """
     item = items.resolve(ark)
@@ -181,7 +181,7 @@ def _read_json_derivative(path):
 def tag_pdf(ark, opts={}):
     """Assemble a searchable, PDF/UA-1-tagged PDF for every PDF binary in an item.
 
-    Requires `digtk public-dc pdf derivatives` to have already run (reads back
+    Requires `digtk showcase pdf derivatives` to have already run (reads back
     its published per-page OCR-prep images). Re-runs Tesseract against those
     images for hOCR word geometry (pdf.derivatives() computes this internally
     too but only persists a converted djvu text layer). Alt text
@@ -212,7 +212,7 @@ def tag_pdf(ark, opts={}):
     :rtype: dict
     :raises LookupError: If the ARK doesn't resolve to a bronze item.
     :raises ValueError: If the item has no PDF binaries.
-    :raises FileNotFoundError: If `digtk public-dc pdf derivatives` hasn't
+    :raises FileNotFoundError: If `digtk showcase pdf derivatives` hasn't
         published this item's OCR-prep images yet.
     """
     item = items.resolve(ark)

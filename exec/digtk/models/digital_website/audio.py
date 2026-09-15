@@ -136,7 +136,7 @@ def waveform(ark, opts={}):
 
 def derivatives(ark, opts={}):
     """Generate the full derivative set for every source audio file in the item —
-    the umbrella `digtk public-dc audio derivatives` calls: transcode + waveform together into
+    the umbrella `digtk showcase audio derivatives` calls: transcode + waveform together into
     one directory per source, then transcribes every source to a WebVTT caption via
     captions.transcribe_sources() (local Whisper ASR — machine-generated and
     unreviewed, see docs/cask-conventions.md's Captions/Transcripts section) using the

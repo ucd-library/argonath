@@ -1,5 +1,5 @@
 """
-digtk public-dc pdf — PDF derivative commands.
+digtk showcase pdf — PDF derivative commands.
 
 Subcommands:
   page-count   — report each source PDF's page count (no derivatives generated)

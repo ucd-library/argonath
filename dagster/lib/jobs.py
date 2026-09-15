@@ -7,6 +7,8 @@ import dagster as dg
 
 from lib.assets import (
     reconcile_collection_items,
+    detect_spreads,
+    apply_spreads,
     ingest_item,
     generate_derivatives,
     run_ocr,
@@ -21,6 +23,20 @@ reconcile_collection_job = dg.define_asset_job(
     name="reconcile_collection_job",
     selection=[reconcile_collection_items],
     description="Reconcile a collection's bronze item list against its source and register/prune partitions.",
+)
+
+detect_spreads_job = dg.define_asset_job(
+    name="detect_spreads_job",
+    selection=[detect_spreads],
+    description="Detect the binding gutter in an item's image binaries for all partitioned items — "
+                "only meaningful for items with scanned two-page spreads, so not part of full_pipeline_job.",
+)
+
+apply_spreads_job = dg.define_asset_job(
+    name="apply_spreads_job",
+    selection=[apply_spreads],
+    description="Cut an item's confirmed spreads per its (human-reviewed) gutters.json for all "
+                "partitioned items — not auto-chained from detect_spreads_job; run after review.",
 )
 
 ingest_collection_job = dg.define_asset_job(

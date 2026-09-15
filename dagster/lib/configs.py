@@ -88,6 +88,15 @@ class ReconcileCollectionConfig(Config):
     source_uri: str = Field(..., description="Crawl root URL or DB connection string.")
 
 
+class SplitSpreadsConfig(Config):
+    """Config for the detect_spreads asset (apply_spreads takes no config —
+    it only reads back gutters.json, nothing left to configure).
+
+    :param int max_px: Detection render width, in pixels.
+    """
+    max_px: int = Field(1400, description="Detection render width, in pixels.")
+
+
 class DerivativesConfig(Config):
     """Config for the generate_derivatives asset.
 

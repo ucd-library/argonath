@@ -1,5 +1,5 @@
 """
-digtk public-dc video — video derivative commands.
+digtk showcase video — video derivative commands.
 
 Subcommands:
   probe        — report ffprobe metadata (duration, codecs, dimensions)
@@ -8,7 +8,7 @@ Subcommands:
                  local Whisper ASR); `hls` above is a deterministic single-recipe
                  command for ad-hoc/manual use. A video item's thumbnail, if any,
                  comes from a companion image bronze binary processed independently
-                 by `digtk public-dc image derivatives` — not generated here.
+                 by `digtk showcase image derivatives` — not generated here.
 """
 from typing import Annotated
 

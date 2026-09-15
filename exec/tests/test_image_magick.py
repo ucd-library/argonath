@@ -165,6 +165,36 @@ def test_thumbnail_honors_custom_quality(fake_run):
     assert argv[argv.index("-quality") + 1] == "75"
 
 
+def test_crop_includes_geometry_and_compression_flags(fake_run):
+    calls = fake_run()
+    result = image_magick.crop("/tmp/src.png", "/tmp/left.png", (0, 0, 300, 600))
+    argv = calls[0]["argv"]
+    assert argv == [
+        "convert", "/tmp/src.png", "-crop", "300x600+0+0", "+repage", "-compress", "lzw",
+        "/tmp/left.png",
+    ]
+    assert result == {"argv": argv, "dest_path": "/tmp/left.png"}
+
+
+def test_crop_supports_nonzero_offset(fake_run):
+    calls = fake_run()
+    image_magick.crop("/tmp/src.tif", "/tmp/right.tif", (300, 0, 500, 600))
+    argv = calls[0]["argv"]
+    assert argv[argv.index("-crop") + 1] == "500x600+300+0"
+
+
+def test_crop_frame_indexes_tiff_sources(fake_run):
+    calls = fake_run()
+    image_magick.crop("/tmp/src.tif", "/tmp/dest.tif", (0, 0, 10, 10))
+    assert calls[0]["argv"][1] == "/tmp/src.tif[0]"
+
+
+def test_crop_uses_magick_when_opted_in(fake_run):
+    calls = fake_run()
+    image_magick.crop("/tmp/src.tif", "/tmp/dest.tif", (0, 0, 10, 10), opts={"magick": True})
+    assert calls[0]["argv"][0] == "magick"
+
+
 def test_convert_format_skips_resize_flag(fake_run):
     calls = fake_run()
     result = image_magick.convert_format("/tmp/src.tif", "/tmp/dest.jpg")

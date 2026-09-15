@@ -1,5 +1,5 @@
 """
-digtk public-dc image — image derivative commands.
+digtk showcase image — image derivative commands.
 
 Subcommands:
   thumbnail    — generate thumbnail JPEGs at specified widths

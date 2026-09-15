@@ -39,7 +39,7 @@ def tesseract(
     """Run Tesseract (word geometry) and Qwen vision OCR (transcript) for
     every image binary, and every page of every PDF binary, in an item.
 
-    Requires `digtk public-dc image derivatives`/`digtk public-dc pdf
+    Requires `digtk showcase image derivatives`/`digtk showcase pdf
     derivatives` to have already run — reads back their published OCR-prep
     and display images rather than rasterizing anything itself. Writes
     silver/.../ocr/ocr.hocr + transcript.txt (+ ocr-result.json with

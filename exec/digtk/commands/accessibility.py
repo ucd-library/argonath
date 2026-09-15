@@ -36,8 +36,8 @@ def alt_text(
     """Generate ADA/WCAG alt text for every image binary, and every page of
     every PDF binary, in an item.
 
-    Requires `digtk public-dc image derivatives` (image binaries) and/or
-    `digtk public-dc pdf derivatives` (PDF binaries) to have already run for
+    Requires `digtk showcase image derivatives` (image binaries) and/or
+    `digtk showcase pdf derivatives` (PDF binaries) to have already run for
     this item — reads back their published "large" display JPEGs rather than
     regenerating/rasterizing anything itself. Writes
     silver/.../accessibility/*-alt-text.json per image, or
@@ -86,7 +86,7 @@ def tag_pdf(
 ):
     """Assemble a searchable, PDF/UA-1-tagged PDF for every PDF binary in an item.
 
-    Requires `digtk public-dc pdf derivatives` to have already run for this
+    Requires `digtk showcase pdf derivatives` to have already run for this
     item — reads back its published per-page OCR-prep images rather than
     rasterizing anything itself, then re-runs Tesseract against them for word
     geometry (--min-conf drops words below that confidence from the

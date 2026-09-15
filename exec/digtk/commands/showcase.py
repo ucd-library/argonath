@@ -1,5 +1,5 @@
 """
-digtk public-dc — commands specific to the public Digital Collections website
+digtk showcase — commands specific to the public Digital Collections website
 (as opposed to preservation-only processing).
 
 Subcommands:

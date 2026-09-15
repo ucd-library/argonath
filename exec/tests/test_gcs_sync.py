@@ -610,7 +610,7 @@ def test_sync_image_item_omits_media_segment_for_single_binary_item(fake_fs, fak
 
 
 def test_sync_item_skips_media_type_with_no_derivatives_yet(fake_mixed_item, monkeypatch, fake_upload):
-    # Mixed image+PDF item where only `digtk public-dc image derivatives` has been run --
+    # Mixed image+PDF item where only `digtk showcase image derivatives` has been run --
     # the PDF's silver process directory doesn't exist yet, so fs.ls() 404s
     # (matches CaskBackend's documented 404 -> FileNotFoundError mapping).
     def fake_read(path):
@@ -630,7 +630,7 @@ def test_sync_item_skips_media_type_with_no_derivatives_yet(fake_mixed_item, mon
     assert "images" in result
     assert "pdfs" not in result
     assert "pdf" in result["skipped"]
-    assert "digtk public-dc pdf derivatives" in result["skipped"]["pdf"]
+    assert "digtk showcase pdf derivatives" in result["skipped"]["pdf"]
 
 
 def test_sync_item_raises_on_unrecognized_extension(fake_fs, monkeypatch, fake_upload):

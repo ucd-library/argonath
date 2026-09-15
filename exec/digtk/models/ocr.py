@@ -11,7 +11,7 @@ say" answer regardless of Tesseract's confidence, which is recorded purely
 as a diagnostic value, not a gate.
 
 Reads back the already-published OCR-prep image (Tesseract input) and
-display image (vision input) that `digtk public-dc image|pdf derivatives`
+display image (vision input) that `digtk showcase image|pdf derivatives`
 publish — doesn't rasterize or stage anything from bronze itself, so it
 needs those commands to have already run.
 """
@@ -142,8 +142,8 @@ def run_ocr(ark, opts={}):
     :rtype: dict
     :raises LookupError: If the ARK doesn't resolve to a bronze item.
     :raises ValueError: If the item has no image or PDF binaries.
-    :raises FileNotFoundError: If `digtk public-dc image derivatives` or
-        `digtk public-dc pdf derivatives` hasn't published this item's
+    :raises FileNotFoundError: If `digtk showcase image derivatives` or
+        `digtk showcase pdf derivatives` hasn't published this item's
         OCR-prep images yet.
     """
     item = items.resolve(ark)

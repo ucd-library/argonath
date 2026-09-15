@@ -830,8 +830,8 @@ def sync_item(ark, opts={}):
     A multi-format item (see docs/cask-conventions.md's "Multi-Format Items"
     -- e.g. TIFF page masters alongside a compiled PDF, sharing one ark) may
     have bronze binaries of a format whose derivatives simply haven't been
-    generated yet (`digtk public-dc image derivatives` run, but not `digtk
-    public-dc pdf derivatives`, or vice versa) -- that format's silver process directory
+    generated yet (`digtk showcase image derivatives` run, but not `digtk
+    showcase pdf derivatives`, or vice versa) -- that format's silver process directory
     won't exist in CaskFS yet. That's reported back in 'skipped', not raised,
     since it's an ordinary "not generated yet" state, not a real failure --
     the caller decides whether to run the missing derivatives step and
@@ -862,7 +862,7 @@ def sync_item(ark, opts={}):
         try:
             result[key] = sync_fn(ark, opts)[key]
         except FileNotFoundError:
-            skipped[fmt] = f"no {fmt} derivatives published yet for this item (run `digtk public-dc {fmt} derivatives {ark}` first)"
+            skipped[fmt] = f"no {fmt} derivatives published yet for this item (run `digtk showcase {fmt} derivatives {ark}` first)"
 
     if skipped:
         result["skipped"] = skipped

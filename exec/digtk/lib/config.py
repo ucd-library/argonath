@@ -118,6 +118,8 @@ ACCESSIBILITY_VERAPDF_BIN_ENV = "DIGTK_VERAPDF_BIN"
 ACCESSIBILITY_TAG_LOOKAHEAD_ENV = "DIGTK_TAG_LOOKAHEAD"
 ACCESSIBILITY_MIN_WORD_CONFIDENCE_ENV = "DIGTK_MIN_WORD_CONFIDENCE"
 
+SPLIT_MAX_PX_ENV = "DIGTK_SPLIT_MAX_PX"
+
 IMAGE_THUMBNAIL_WIDTHS_ENV = "DIGTK_IMAGE_THUMBNAIL_WIDTHS"
 IMAGE_CONVERT_FORMAT_ENV = "DIGTK_IMAGE_CONVERT_FORMAT"
 IMAGE_DPI_ENV = "DIGTK_IMAGE_DPI"
@@ -202,6 +204,7 @@ SETTINGS = [
     {"dotpath": "accessibility.verapdf_bin", "env": ACCESSIBILITY_VERAPDF_BIN_ENV, "cast": str, "secret": False},
     {"dotpath": "accessibility.tag_lookahead", "env": ACCESSIBILITY_TAG_LOOKAHEAD_ENV, "cast": int, "secret": False},
     {"dotpath": "accessibility.min_word_confidence", "env": ACCESSIBILITY_MIN_WORD_CONFIDENCE_ENV, "cast": float, "secret": False},
+    {"dotpath": "split.max_px", "env": SPLIT_MAX_PX_ENV, "cast": int, "secret": False},
     {"dotpath": "image.thumbnail_widths", "env": IMAGE_THUMBNAIL_WIDTHS_ENV, "cast": str, "secret": False},
     {"dotpath": "image.convert_format", "env": IMAGE_CONVERT_FORMAT_ENV, "cast": str, "secret": False},
     {"dotpath": "image.dpi", "env": IMAGE_DPI_ENV, "cast": int, "secret": False},
@@ -437,6 +440,11 @@ CONFIG = {
         # ported from the reference toolkit's words.py --min-conf.
         "min_word_confidence": _env(ACCESSIBILITY_MIN_WORD_CONFIDENCE_ENV, 0.0, float),
     },
+    "split": {
+        # Detection render width for the vision gutter call — matches the
+        # reference toolkit's split.py default.
+        "max_px": _env(SPLIT_MAX_PX_ENV, 1400, int),
+    },
     "image": {
         "thumbnail_widths": _env(IMAGE_THUMBNAIL_WIDTHS_ENV, "256,512,1024"),
         "convert_format": _env(IMAGE_CONVERT_FORMAT_ENV, "jpeg"),
@@ -561,6 +569,11 @@ ImageFuzzThresholdOption = Annotated[int, typer.Option(
 ImageThumbnailQualityOption = Annotated[int, typer.Option(
     "--quality", envvar=IMAGE_THUMBNAIL_QUALITY_ENV,
     help=f"JPEG quality (1-100). Env: {IMAGE_THUMBNAIL_QUALITY_ENV}.",
+)]
+
+SplitMaxPxOption = Annotated[int, typer.Option(
+    "--max-px", envvar=SPLIT_MAX_PX_ENV,
+    help=f"Detection render width, in pixels. Env: {SPLIT_MAX_PX_ENV}.",
 )]
 
 AltMaxCharsOption = Annotated[int, typer.Option(

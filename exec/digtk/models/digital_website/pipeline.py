@@ -155,7 +155,7 @@ def pdf_ocr_prep_images(item, bronze_path, namespace_ocr):
         `len(pdf_paths) > 1 or len(pdf_paths) < len(item.bronze_binary_paths)`.
     :returns: (page image cask paths, in page order; page count)
     :rtype: tuple[list[str], int]
-    :raises FileNotFoundError: If `digtk public-dc pdf derivatives` hasn't
+    :raises FileNotFoundError: If `digtk showcase pdf derivatives` hasn't
         published this PDF's OCR-prep images yet.
     """
     filename = bronze_path.rsplit("/", 1)[-1]
@@ -193,7 +193,7 @@ def image_ocr_prep_image(item, bronze_path, multi_image):
         (pipeline.filter_binaries_by_format(item.bronze_binary_paths, "image")).
     :returns: The published OCR-prep image's cask path.
     :rtype: str
-    :raises FileNotFoundError: If `digtk public-dc image derivatives` hasn't
+    :raises FileNotFoundError: If `digtk showcase image derivatives` hasn't
         published this image's OCR-prep image yet.
     """
     filename = bronze_path.rsplit("/", 1)[-1]
@@ -373,7 +373,7 @@ def update_associated_media(item, media_objects, source_files, source_group):
     derivatives() umbrella runs independently, as its own CLI invocation. Only the
     entries this call's own `source_group` previously wrote are replaced; entries
     from a different group's earlier run are left untouched, so e.g. running `digtk
-    public-dc pdf derivatives` after `digtk public-dc image derivatives` against the
+    showcase pdf derivatives` after `digtk showcase image derivatives` against the
     same item doesn't wipe out the image run's associatedMedia entries.
 
     Uses a plain dict read/merge/write rather than digtk.lib.schema.ItemMetadata

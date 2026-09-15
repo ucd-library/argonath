@@ -238,7 +238,7 @@ def prep_ocr(ark, opts={}):
 
 def derivatives(ark, opts={}):
     """Generate the full derivative set for every page of every source PDF in the
-    item — the umbrella `digtk public-dc pdf derivatives` calls.
+    item — the umbrella `digtk showcase pdf derivatives` calls.
 
     For each source PDF: rasterizes every page, decides scan orientation independently
     per page via a real OCR comparison (same digtk.models.digital_website.pipeline primitive

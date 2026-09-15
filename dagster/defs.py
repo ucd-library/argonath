@@ -18,6 +18,8 @@ import dagster as dg
 
 from lib.assets import (
     reconcile_collection_items,
+    detect_spreads,
+    apply_spreads,
     ingest_item,
     generate_derivatives,
     run_ocr,
@@ -29,6 +31,8 @@ from lib.assets import (
 )
 from lib.jobs import (
     reconcile_collection_job,
+    detect_spreads_job,
+    apply_spreads_job,
     ingest_collection_job,
     derivatives_job,
     ocr_job,
@@ -53,6 +57,8 @@ from lib.schedules import (
 defs = dg.Definitions(
     assets=[
         reconcile_collection_items,
+        detect_spreads,
+        apply_spreads,
         ingest_item,
         generate_derivatives,
         run_ocr,
@@ -64,6 +70,8 @@ defs = dg.Definitions(
     ],
     jobs=[
         reconcile_collection_job,
+        detect_spreads_job,
+        apply_spreads_job,
         ingest_collection_job,
         derivatives_job,
         ocr_job,
