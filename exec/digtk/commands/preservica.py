@@ -232,6 +232,12 @@ def tree(
     group: Annotated[str, typer.Option(
         help="Bronze group namespace. Defaults to 'preservica', same as `import`.",
     )] = "preservica",
+    changed: Annotated[list[str], typer.Option(
+        "--changed", help="One changed entity, as 'TYPE:REF' (same shape as `sync`'s "
+        "--changed). When given, only these entities' tree/ entries are patched in "
+        "place (preservica_tree_partial()) instead of doing a full rebuild — repeat "
+        "for multiple entities. Omit entirely for a full rebuild.",
+    )] = [],
     dest_root: Annotated[str | None, typer.Option(
         "--dest-root", help="Override the bronze root — must match whatever --dest-root "
         "(or its cask:/ default) the matching `import` run used.",
@@ -240,6 +246,28 @@ def tree(
     """Rebuild bronze's tree/ layout from an already-imported by-ref/. Makes no
     network calls to Preservica — reads only what's already in bronze."""
     opts = {"dest_root": dest_root}
+
+    if changed:
+        entities = []
+        for raw in changed:
+            entity_type, _, ref = raw.partition(":")
+            if entity_type not in ("SO", "IO") or not ref:
+                utils.error(f"--changed value must be 'SO:<ref>' or 'IO:<ref>', got {raw!r}")
+            entities.append({"ref": ref, "type": entity_type})
+
+        try:
+            result = collection_model.preservica_tree_partial(collection, group, entities, opts)
+        except FileNotFoundError as e:
+            utils.error(str(e))
+
+        utils.log(
+            f"Patched tree for {group}/{collection}: +{len(result['added'])} added, "
+            f"-{len(result['removed'])} removed, ~{len(result['moved'])} moved"
+            + (f", {len(result['unresolved'])} unresolved" if result["unresolved"] else "")
+        )
+        utils.result({"status": "success", "collection": collection, **result})
+        return
+
     try:
         count = collection_model.preservica_tree(collection, group, opts)
     except FileNotFoundError as e:

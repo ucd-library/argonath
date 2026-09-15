@@ -210,15 +210,17 @@ def _bronze_latest_root(collection, group, opts={}):
     return f"{_bronze_collection_root(collection, group, opts)}/latest"
 
 
-def _write_bronze_json(root, rel_path, data):
+def _write_bronze_json(root, rel_path, data, opts={}):
     """Write a JSON-serializable value into bronze via fs.write() — one-to-one,
     no schema.org or other reinterpretation happens to `data` here.
 
     :param str root: fs-compatible bronze root (collection or collection/latest).
     :param str rel_path: Path relative to `root`.
     :param data: JSON-serializable value.
+    :param dict opts: Extra fs.write() opts (e.g. 'partition_keys') merged in
+        on top of the default {'replace': True}.
     """
-    fs.write(f"{root}/{rel_path}", data=json.dumps(data, indent=2).encode(), opts={"replace": True})
+    fs.write(f"{root}/{rel_path}", data=json.dumps(data, indent=2).encode(), opts={"replace": True, **opts})
 
 
 def _read_bronze_json(root, rel_path, default=None):
@@ -1198,7 +1200,22 @@ def preservica_sync_entities(collection, group, entities, opts={}):
 
 # --- Bronze tree layout (phase 2: Preservica by-ref -> tree; phase 3: local disk -> tree) --
 
-def _copy_metadata_to_tree(root, entity_dir, dest_rel):
+def _tree_partition_keys(ref, collection):
+    """
+    :param str ref: Preservica entity ref a tree/ entry represents.
+    :param str collection: Collection name.
+    :returns: Partition keys tagging that entry's tree/ metadata.json — a
+        rename-immune 'medallion-bronze' tag, a 'collection-<name>' tag (query
+        scoping only — a collection rename would leave this stale, which is
+        fine since it's not the identity key), and a 'ref-<ref>' tag (the
+        actual identity key preservica_tree_partial() looks entries up by,
+        see _find_tree_path_for_ref()).
+    :rtype: list[str]
+    """
+    return ["medallion-bronze", f"collection-{collection}", f"ref-{ref}"]
+
+
+def _copy_metadata_to_tree(root, entity_dir, dest_rel, ref, collection):
     """Build one entity's tree/ metadata.json: its own Preservica entity
     properties (ref/title/description/type — everything in by-ref/'s
     entity.json except the internal metadataFragmentRefs list) under a
@@ -1213,11 +1230,19 @@ def _copy_metadata_to_tree(root, entity_dir, dest_rel):
     metadata fragment per entity — more than one is surfaced loudly as a
     ValueError rather than silently guessing a merge shape for tree/. The
     written metadata.json gets a CaskFS lineage link back to each by-ref/
-    source it was derived from (see _link_tree_source()).
+    source it was derived from (see _link_tree_source()), and is tagged with
+    partition keys (see _tree_partition_keys()) encoding `ref` — this is what
+    lets preservica_tree_partial() find this entry's current tree/ location
+    later via fs.find_by_partition_keys(), without a separate hand-maintained
+    ref -> path index; CaskFS's own partition-key filter *is* the index, and
+    (unlike a JSON-LD/RDF sidecar) needs no special content-type handling —
+    it's plain metadata on a plain JSON file.
 
     :param str root: fs-compatible bronze 'latest' root.
     :param str entity_dir: 'by-ref/<ref>', relative to `root`.
     :param str dest_rel: Destination tree/ directory, relative to `root`.
+    :param str ref: Preservica entity ref this tree/ entry represents.
+    :param str collection: Collection name (see _tree_partition_keys()).
     :raises ValueError: If the entity has more than one metadata fragment.
     """
     content = {}
@@ -1245,24 +1270,94 @@ def _copy_metadata_to_tree(root, entity_dir, dest_rel):
 
     if not content:
         return
-    _write_bronze_json(root, f"{dest_rel}/metadata.json", content)
+    write_opts = {"partition_keys": _tree_partition_keys(ref, collection)} if root.startswith("cask:") else {}
+    _write_bronze_json(root, f"{dest_rel}/metadata.json", content, write_opts)
     for source_rel in sources:
         _link_tree_source(root, f"{dest_rel}/metadata.json", source_rel)
 
 
-def _build_tree_from_by_ref(so_ref, root, dest_rel):
-    """Recursively rebuild one folder's worth of tree/ entries from by-ref/'s
-    already-current children.json — always a full rebuild (see
-    preservica_tree()), never an incremental patch, so a renamed or removed item
-    never leaves a stale directory behind. Each item/sub-folder's own
-    identifiers.json is copied in verbatim (Preservica's raw identifier list,
-    unchanged) as the only identity-carrying file — the exact same bytes by-ref/
-    already has, so it dedups for free in CaskFS. It also gets a CaskFS lineage
-    link back to that by-ref/ source (see _link_tree_source()).
+def _find_tree_path_for_ref(ref, collection, root):
+    """Look up a Preservica ref's current tree/ directory via the partition
+    key tagged on its metadata.json (see _tree_partition_keys()) — used by
+    preservica_tree_partial() to find an entry to move or delete without
+    walking all of tree/.
+
+    :param str ref: Preservica entity ref to look up.
+    :param str collection: Collection name (see _tree_partition_keys()).
+    :param str root: fs-compatible bronze 'latest' root.
+    :returns: The entry's current tree/ directory, relative to `root`, or
+        None if no tree/ entry for this ref exists yet under this root.
+    :rtype: str|None
+    """
+    matches = fs.find_by_partition_keys([f"ref-{ref}", f"collection-{collection}"])
+    tree_prefix = f"{root}/tree/"
+    for match in matches:
+        full = f"cask:{match}" if root.startswith("cask:") and not match.startswith("cask:") else match
+        if full.startswith(tree_prefix) and full.endswith("/metadata.json"):
+            entry_dir = full[: -len("/metadata.json")]
+            return entry_dir[len(root) + 1:]
+    return None
+
+
+def _write_tree_child(child, child_identifiers, root, dest_rel, collection):
+    """Materialize one by-ref/ entity (folder or item) as a tree/ entry at
+    `dest_rel` — identifiers.json, metadata.json (tagged with a ref-identity
+    partition key, see _tree_partition_keys()), and media (IO only). Shared
+    by the full rebuild (_build_tree_from_by_ref()) and
+    preservica_tree_partial(), so an entry is materialized identically
+    regardless of which path created it. For a folder (SO), also recurses
+    into its own children.
+
+    :param dict child: {'ref', 'type'} — the entity to materialize.
+    :param list child_identifiers: Entity's raw identifiers (from by-ref/<ref>/identifiers.json).
+    :param str root: fs-compatible bronze 'latest' root.
+    :param str dest_rel: Destination tree/ directory, relative to `root`.
+    :param str collection: Collection name (see _tree_partition_keys()).
+    :returns: Number of tree entries written at and under `dest_rel`.
+    :rtype: int
+    """
+    ref = child["ref"]
+    entity_dir = f"by-ref/{ref}"
+    identifiers_rel = f"{entity_dir}/identifiers.json"
+    count = 0
+
+    if child["type"] == "SO":
+        if child_identifiers:
+            _write_bronze_json(root, f"{dest_rel}/identifiers.json", child_identifiers)
+            _link_tree_source(root, f"{dest_rel}/identifiers.json", identifiers_rel)
+        _copy_metadata_to_tree(root, entity_dir, dest_rel, ref, collection)
+        count += 1
+        count += _build_tree_from_by_ref(ref, root, dest_rel, collection)
+    elif child["type"] == "IO":
+        _copy_bronze_dir(root, f"{entity_dir}/media", dest_rel)
+        _write_bronze_json(root, f"{dest_rel}/identifiers.json", child_identifiers)
+        if child_identifiers:
+            _link_tree_source(root, f"{dest_rel}/identifiers.json", identifiers_rel)
+        _copy_metadata_to_tree(root, entity_dir, dest_rel, ref, collection)
+        count += 1
+
+    return count
+
+
+def _build_tree_from_by_ref(so_ref, root, dest_rel, collection):
+    """Recursively rebuild one folder's worth of tree/ entries from by-ref/ —
+    always a full rebuild (see preservica_tree()), never an incremental patch,
+    so a renamed or removed item never leaves a stale directory behind. Each
+    child's title is read live from its own by-ref/<ref>/entity.json rather
+    than trusted from the parent's cached children.json entry — children.json
+    is only refreshed when the parent SO itself is synced, so a targeted
+    rename-only sync (which only touches the renamed ref's own entity.json)
+    would otherwise leave the tree/ slug stale even across a full rebuild.
+    Each item/sub-folder's own identifiers.json is copied in verbatim
+    (Preservica's raw identifier list, unchanged) as the only identity-carrying
+    file — the exact same bytes by-ref/ already has, so it dedups for free in
+    CaskFS. It also gets a CaskFS lineage link back to that by-ref/ source
+    (see _link_tree_source()).
 
     :param str so_ref: Structural object ref to recurse from.
     :param str root: fs-compatible bronze 'latest' root.
     :param str dest_rel: Path (relative to `root`) to build this folder's children into.
+    :param str collection: Collection name (see _tree_partition_keys()).
     :returns: Number of tree entries written under `dest_rel` (recursively).
     :rtype: int
     """
@@ -1271,26 +1366,14 @@ def _build_tree_from_by_ref(so_ref, root, dest_rel):
     count = 0
 
     for child in children:
+        entity = _read_bronze_json(root, f"by-ref/{child['ref']}/entity.json", {})
+        title = entity.get("title") or child["title"]
         identifiers_rel = f"by-ref/{child['ref']}/identifiers.json"
         child_identifiers = _read_bronze_json(root, identifiers_rel, [])
         key = _resolve_identifier_key(child_identifiers, child["ref"])["key"]
-        slug = _unique_tree_slug(child["title"], key, used_slugs)
+        slug = _unique_tree_slug(title, key, used_slugs)
         child_dest_rel = f"{dest_rel}/{slug}"
-
-        if child["type"] == "SO":
-            if child_identifiers:
-                _write_bronze_json(root, f"{child_dest_rel}/identifiers.json", child_identifiers)
-                _link_tree_source(root, f"{child_dest_rel}/identifiers.json", identifiers_rel)
-            _copy_metadata_to_tree(root, f"by-ref/{child['ref']}", child_dest_rel)
-            count += 1
-            count += _build_tree_from_by_ref(child["ref"], root, child_dest_rel)
-        elif child["type"] == "IO":
-            _copy_bronze_dir(root, f"by-ref/{child['ref']}/media", child_dest_rel)
-            _write_bronze_json(root, f"{child_dest_rel}/identifiers.json", child_identifiers)
-            if child_identifiers:
-                _link_tree_source(root, f"{child_dest_rel}/identifiers.json", identifiers_rel)
-            _copy_metadata_to_tree(root, f"by-ref/{child['ref']}", child_dest_rel)
-            count += 1
+        count += _write_tree_child(child, child_identifiers, root, child_dest_rel, collection)
 
     return count
 
@@ -1335,8 +1418,178 @@ def preservica_tree(collection, group, opts={}):
     except FileNotFoundError:
         pass
 
-    _copy_metadata_to_tree(root, f"by-ref/{root_so_ref}", "tree")
-    return _build_tree_from_by_ref(root_so_ref, root, "tree")
+    _copy_metadata_to_tree(root, f"by-ref/{root_so_ref}", "tree", root_so_ref, collection)
+    return _build_tree_from_by_ref(root_so_ref, root, "tree", collection)
+
+
+def _find_parent_so_ref(root, ref, changed_entities):
+    """Find the by-ref/ SO that lists `ref` as an immediate child — used by
+    preservica_tree_partial() to place a newly-added entity, since entity.json
+    doesn't itself record a parent ref.
+
+    Checks the other SO entries already in this sync batch first (no extra
+    reads beyond what's already in bronze for them), then falls back to
+    scanning every folder under by-ref/ — bounded by the collection's folder
+    count, not its item count, so still far cheaper than a full tree rebuild
+    for an items-heavy collection, but not free; this fallback only runs for
+    a newly-added entity whose parent didn't happen to be in the same batch.
+
+    :param str root: fs-compatible bronze 'latest' root.
+    :param str ref: Preservica entity ref to find the parent of.
+    :param list[dict] changed_entities: The same [{'ref', 'type'}, ...] batch
+        passed to preservica_tree_partial().
+    :returns: The parent SO's ref, or None if not found.
+    :rtype: str|None
+    """
+    for entity in changed_entities:
+        if entity["type"] != "SO":
+            continue
+        children = _read_bronze_json(root, f"by-ref/{entity['ref']}/children.json", [])
+        if any(c["ref"] == ref for c in children):
+            return entity["ref"]
+
+    try:
+        entries = fs.ls(f"{root}/by-ref")
+    except FileNotFoundError:
+        return None
+    for entry in entries:
+        if entry.kind != "directory":
+            continue
+        children = _read_bronze_json(root, f"by-ref/{entry.name}/children.json", [])
+        if any(c["ref"] == ref for c in children):
+            return entry.name
+    return None
+
+
+def _tree_siblings(root, tree_dir_rel, exclude_slug=None):
+    """
+    :param str root: fs-compatible bronze 'latest' root.
+    :param str tree_dir_rel: A tree/ directory, relative to `root`, to list
+        immediate child entries of.
+    :param str exclude_slug: A slug to leave out of the result (an entry
+        being renamed shouldn't collide with its own prior slug).
+    :returns: Slugs already in use directly under `tree_dir_rel`.
+    :rtype: set[str]
+    """
+    try:
+        entries = fs.ls(f"{root}/{tree_dir_rel}")
+    except FileNotFoundError:
+        return set()
+    used = {e.name for e in entries if e.kind == "directory"}
+    used.discard(exclude_slug)
+    return used
+
+
+def preservica_tree_partial(collection, group, changed_entities, opts={}):
+    """Incrementally patch bronze's tree/ layout for just the given changed
+    Preservica entities, instead of preservica_tree()'s full delete-and-rebuild
+    — the steady-state path for ongoing syncs (see dagster/lib/assets.py's
+    rebuild_collection_tree, wired to fire this whenever
+    preservica_auto_sync_sensor's per-collection 'changed' list is non-empty).
+
+    Each entity's current tree/ location, if it has one, is found via the
+    ref-identity partition key tagged on its metadata.json (see
+    _tree_partition_keys()/_find_tree_path_for_ref()) — no separate
+    ref -> path index is maintained; CaskFS's own partition-key filter *is*
+    the index. For each `{ref, type}`:
+
+    - **Removed** (no by-ref/<ref>/entity.json, but a tree/ entry is found):
+      the tree/ entry is deleted.
+    - **Changed** (both by-ref/ and a tree/ entry exist): the correct slug is
+      recomputed from the live title (see _build_tree_from_by_ref()) against
+      the entry's current siblings; if the slug is unchanged this is a no-op,
+      otherwise the entry (and, for a folder, everything under it) is moved
+      via fs.move() in one call — cheap regardless of subtree size, and
+      preserves lineage/partition keys so every descendant's own tag-based
+      lookup stays valid afterward.
+    - **Added** (by-ref/ exists, no tree/ entry yet): the entity's parent SO
+      is found via _find_parent_so_ref(), the entry is placed under that
+      parent's current tree/ location (or directly under 'tree' if the
+      parent is the collection root), and materialized via
+      _write_tree_child() — for a folder, this also recurses into its own
+      already-known children.
+
+    An added entity whose parent can't be resolved (not in this batch, and
+    not found anywhere under by-ref/ — shouldn't normally happen, since a
+    child only exists in by-ref/ because some folder's children.json listed
+    it) is reported in 'unresolved' rather than guessed at; call
+    preservica_tree() to fully rebuild in that case.
+
+    :param str collection: Collection name.
+    :param str group: Bronze group namespace.
+    :param list[dict] changed_entities: [{'ref', 'type'}, ...] — same shape
+        as preservica_sync_entities()'s `entities` param. Duplicate (ref,
+        type) pairs are processed only once.
+    :param dict opts: 'dest_root' (str, optional — see _bronze_collection_root()).
+    :returns: {'moved': [...], 'added': [...], 'removed': [...],
+        'unresolved': [...]} — each a list of Preservica refs.
+    :rtype: dict
+    :raises FileNotFoundError: If preservica_import() has not been run yet for
+        this collection.
+    """
+    collection_root = _bronze_collection_root(collection, group, opts)
+    collection_manifest = _read_bronze_json(collection_root, "manifest.json")
+    root_so_ref = (collection_manifest or {}).get("preservicaRootRef")
+    if not root_so_ref:
+        raise FileNotFoundError(
+            f"No preservicaRootRef at {collection_root}/manifest.json — run preservica_import() first"
+        )
+
+    root = _bronze_latest_root(collection, group, opts)
+    result = {"moved": [], "added": [], "removed": [], "unresolved": []}
+
+    seen = set()
+    for entity in changed_entities:
+        pair = (entity["ref"], entity["type"])
+        if pair in seen or entity["type"] not in ("SO", "IO"):
+            continue
+        seen.add(pair)
+        ref, entity_type = pair
+
+        by_ref_exists = fs.exists(f"{root}/by-ref/{ref}/entity.json")
+        old_tree_rel = _find_tree_path_for_ref(ref, collection, root)
+
+        if not by_ref_exists:
+            if old_tree_rel:
+                fs.delete(f"{root}/{old_tree_rel}", opts={"directory": True})
+                result["removed"].append(ref)
+            continue
+
+        identifiers = _read_bronze_json(root, f"by-ref/{ref}/identifiers.json", [])
+        key = _resolve_identifier_key(identifiers, ref)["key"]
+
+        if old_tree_rel:
+            parent_tree_rel = old_tree_rel.rsplit("/", 1)[0]
+            own_slug = old_tree_rel.rsplit("/", 1)[-1]
+            entity_data = _read_bronze_json(root, f"by-ref/{ref}/entity.json", {})
+            used_slugs = _tree_siblings(root, parent_tree_rel, exclude_slug=own_slug)
+            new_slug = _unique_tree_slug(entity_data.get("title"), key, used_slugs)
+            new_tree_rel = f"{parent_tree_rel}/{new_slug}"
+            if new_tree_rel != old_tree_rel:
+                fs.move(f"{root}/{old_tree_rel}", f"{root}/{new_tree_rel}")
+                result["moved"].append(ref)
+            continue
+
+        parent_ref = _find_parent_so_ref(root, ref, changed_entities)
+        if not parent_ref:
+            result["unresolved"].append(ref)
+            continue
+        parent_tree_rel = "tree" if parent_ref == root_so_ref else _find_tree_path_for_ref(
+            parent_ref, collection, root,
+        )
+        if not parent_tree_rel:
+            result["unresolved"].append(ref)
+            continue
+
+        entity_data = _read_bronze_json(root, f"by-ref/{ref}/entity.json", {})
+        used_slugs = _tree_siblings(root, parent_tree_rel)
+        slug = _unique_tree_slug(entity_data.get("title"), key, used_slugs)
+        _write_tree_child(
+            {"ref": ref, "type": entity_type}, identifiers, root, f"{parent_tree_rel}/{slug}", collection,
+        )
+        result["added"].append(ref)
+
+    return result
 
 
 def local_to_bronze_tree(source_dir, collection, group, opts={}):

@@ -351,6 +351,58 @@ def test_find_by_subject_stops_on_empty_page():
     assert b.find_by_subject("ark:/87287/d7abc1234") == []
 
 
+def test_find_by_partition_keys_sends_no_subject_or_predicate():
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json={
+            "totalCount": 1,
+            "results": [{"filepath": "/bronze/g/c/latest/tree/item-one/metadata.json"}],
+            "offset": 0,
+            "limit": 100,
+        })
+
+    b = backend(handler)
+    result = b.find_by_partition_keys(["ref-io-1", "collection-haeger"])
+    assert seen["url"].startswith(f"{BASE_URL}/find")
+    assert seen["params"]["partitionKeys"] == "ref-io-1,collection-haeger"
+    assert "subject" not in seen["params"]
+    assert "predicate" not in seen["params"]
+    assert result == ["/bronze/g/c/latest/tree/item-one/metadata.json"]
+
+
+def test_find_by_partition_keys_walks_every_page(monkeypatch):
+    seen_offsets = []
+    all_paths = [f"/bronze/g/c/latest/tree/item-{i:03d}/metadata.json" for i in range(102)]
+
+    def handler(request):
+        offset = int(dict(request.url.params)["offset"])
+        limit = int(dict(request.url.params)["limit"])
+        seen_offsets.append(offset)
+        page = all_paths[offset:offset + limit]
+        return httpx.Response(200, json={
+            "totalCount": len(all_paths),
+            "results": [{"filepath": p} for p in page],
+            "offset": offset,
+            "limit": limit,
+        })
+
+    b = backend(handler)
+    result = b.find_by_partition_keys(["collection-haeger"], opts={"page_size": 20})
+    assert result == all_paths
+    assert seen_offsets == [0, 20, 40, 60, 80, 100]
+
+
+def test_find_by_partition_keys_stops_on_empty_page():
+    def handler(request):
+        return httpx.Response(200, json={"totalCount": 5, "results": [], "offset": 0, "limit": 100})
+
+    b = backend(handler)
+    assert b.find_by_partition_keys(["ref-nope"]) == []
+
+
 def test_find_by_subject_honors_custom_predicate_and_partition_keys():
     seen = {}
 
@@ -384,6 +436,55 @@ def test_unexpected_server_error_raises_caskfs_error():
     with pytest.raises(CaskFsError) as exc_info:
         b.read_bytes("/x")
     assert exc_info.value.status == 500
+
+
+def test_move_posts_src_and_dest_path():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.read())
+        return httpx.Response(200, json={"filepath": "/tree/new-name"})
+
+    b = backend(handler)
+    result = b.move("/tree/old-name", "/tree/new-name")
+    assert seen["method"] == "POST"
+    assert seen["url"] == f"{BASE_URL}/fs/mv"
+    assert seen["body"] == {"srcPath": "/tree/old-name", "destPath": "/tree/new-name"}
+    assert result == {"filepath": "/tree/new-name"}
+
+
+def test_move_sends_recheck_mime_type():
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.read())
+        return httpx.Response(200, json={})
+
+    b = backend(handler)
+    b.move("/tree/old.jpg", "/tree/new.png", opts={"recheck_mime_type": True})
+    assert seen["body"] == {
+        "srcPath": "/tree/old.jpg", "destPath": "/tree/new.png", "recheckMimeType": True,
+    }
+
+
+def test_move_missing_source_raises_file_not_found():
+    def handler(request):
+        return httpx.Response(404, json={"error": "not found"})
+
+    b = backend(handler)
+    with pytest.raises(FileNotFoundError):
+        b.move("/tree/nope", "/tree/new-name")
+
+
+def test_move_existing_destination_raises_file_exists():
+    def handler(request):
+        return httpx.Response(409, json={"error": "conflict"})
+
+    b = backend(handler)
+    with pytest.raises(FileExistsError):
+        b.move("/tree/old-name", "/tree/already-there")
 
 
 def test_add_derivative_link_posts_from_and_source_path():

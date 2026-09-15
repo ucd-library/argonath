@@ -287,6 +287,34 @@ class CaskBackend:
         self._raise_for_status(res)
         return self._parse_json_response(res, "delete")
 
+    def move(self, src_path, dest_path, opts={}):
+        """Rename or move a file or directory within CaskFS (cask: -> cask: only).
+
+        Wraps CaskFS's move endpoint (POST /fs/mv). Preserves file_id/directory_id
+        and everything keyed by them (partition keys, lineage links) — only the
+        path is rewritten. Destination parent directories are created
+        automatically. After the move commits, CaskFS automatically reharvests
+        the moved file (or, for a directory, every RDF file in the subtree), so
+        JSON-LD sidecar lookups (see find_by_subject()) stay valid post-move.
+
+        :param str src_path: CaskFS-absolute path of the file or directory to move.
+        :param str dest_path: CaskFS-absolute destination path.
+        :param dict opts: 'recheck_mime_type' (bool) — force a MIME-type/resourceType
+            recheck against the new extension for a single-file move (normally
+            skipped, since a rename doesn't change file bytes).
+        :returns: Server response body describing the move.
+        :rtype: dict
+        :raises FileNotFoundError: If `src_path` does not exist.
+        :raises FileExistsError: If `dest_path` already exists — there is no
+            unix-`mv`-style nesting into an existing directory.
+        """
+        body = {"srcPath": src_path, "destPath": dest_path}
+        if opts.get("recheck_mime_type"):
+            body["recheckMimeType"] = True
+        res = self._client.post(f"{self.base_url}/fs/mv", json=body)
+        self._raise_for_status(res)
+        return self._parse_json_response(res, "move")
+
     def add_derivative_link(self, path, source_path, opts={}):
         """Record CaskFS derivative-link lineage: `path` was derived from `source_path`.
 
@@ -349,8 +377,42 @@ class CaskBackend:
             params["graph"] = opts["graph"]
         if opts.get("partition_keys"):
             params["partitionKeys"] = ",".join(opts["partition_keys"])
+        return self._find_paginated(params, opts.get("page_size", 100))
 
-        page_size = opts.get("page_size", 100)
+    def find_by_partition_keys(self, partition_keys, opts={}):
+        """Find files tagged with all of the given partition keys — no RDF/
+        JSON-LD content required, unlike find_by_subject(). Wraps the same
+        CaskFS Layer-3 search (GET /cask/find): with no subject/predicate/
+        object given, CaskFS's file filter query resolves to a plain
+        partition-key search over every file in the system, so this is a
+        much simpler way to make a plain (non-JSON-LD) file findable later —
+        just tag it with a partition key at write time (see fs.write()'s
+        'partition_keys' opt).
+
+        :param list[str] partition_keys: Partition keys a file must carry (all of them).
+        :param dict opts: 'page_size' (int, default 100 — see find_by_subject()'s).
+        :returns: Every matching file's CaskFS-absolute path.
+        :rtype: list[str]
+        """
+        params = {"partitionKeys": ",".join(partition_keys)}
+        return self._find_paginated(params, opts.get("page_size", 100))
+
+    def _find_paginated(self, params, page_size):
+        """Shared GET /cask/find pagination walk for find_by_subject()/find_by_partition_keys().
+
+        The response is paginated (confirmed against a real CaskFS instance:
+        {"totalCount": int, "results": [{"filepath": str, ...}], "offset": int,
+        "limit": int} — same shape as /cask/dir's, server defaults limit to 20).
+        This transparently walks every page and returns the flat list of
+        matching filepaths — callers resolving "every part of this item" need
+        the complete set regardless of how many pages that takes.
+
+        :param dict params: Base query params (subject/predicate/... or partitionKeys).
+        :param int page_size: Pagination page size for the underlying requests —
+            not a cap on the total results returned.
+        :returns: Every matching file's CaskFS-absolute path.
+        :rtype: list[str]
+        """
         offset = 0
         filepaths = []
         while True:

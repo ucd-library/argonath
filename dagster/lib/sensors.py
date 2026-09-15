@@ -68,6 +68,7 @@ def preservica_auto_sync_sensor(context: dg.SensorEvaluationContext):
                     "group": c["group"],
                     "collection": c["name"],
                     "source_type": "preservica",
+                    "preservica_changed": [{"ref": e["ref"], "type": e["type"]} for e in c["changed"]],
                 }},
             }},
         )

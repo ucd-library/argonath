@@ -86,9 +86,9 @@ def reconcile_collection_items(context: dg.AssetExecutionContext, config: Reconc
     group_name="ingest",
 )
 def rebuild_collection_tree(context: dg.AssetExecutionContext, config: RebuildTreeConfig):
-    """Rebuild bronze's tree/ (human-readable, title-keyed) layout for a
+    """Update bronze's tree/ (human-readable, title-keyed) layout for a
     Preservica collection from its just-synced by-ref/ state — no network
-    calls (see digtk.models.collection.preservica_tree()).
+    calls (see digtk.models.collection.preservica_tree()/preservica_tree_partial()).
 
     Runs immediately after reconcile_collection_items in the same job, so
     tree/ stays current after every incremental Preservica sync (see
@@ -96,8 +96,20 @@ def rebuild_collection_tree(context: dg.AssetExecutionContext, config: RebuildTr
     preservica tree` run. A no-op for the other three source types — tree/
     is derived purely from by-ref/, and only Preservica writes by-ref/.
 
+    When config.preservica_changed is non-empty (the sensor always populates
+    it with the same changed entities passed to reconcile_collection_items),
+    only those entities' tree/ entries are patched in place
+    (preservica_tree_partial()) — this both fixes the rename case (a targeted
+    sync never refreshes a parent's cached children.json, so a full rebuild
+    alone can't be trusted to pick up a new title/slug for an unrelated
+    ref — see preservica_tree_partial()'s docstring) and avoids a full
+    delete-and-rebuild of tree/ on every sync for large collections.
+    preservica_changed is left empty for a full preservica_tree() rebuild —
+    e.g. a manually-triggered run, or right after `preservica import`.
+
     :param context: Dagster asset execution context.
-    :param config: RebuildTreeConfig with group, collection, source_type.
+    :param config: RebuildTreeConfig with group, collection, source_type,
+        preservica_changed.
     """
     if config.source_type != "preservica":
         context.log.info(
@@ -105,6 +117,18 @@ def rebuild_collection_tree(context: dg.AssetExecutionContext, config: RebuildTr
             f"source_type={config.source_type!r} has no by-ref/ to rebuild from."
         )
         return dg.Output({"skipped": True})
+
+    if config.preservica_changed:
+        cmd = ["digtk", "preservica", "tree", "--collection", config.collection, "--group", config.group]
+        for entity in config.preservica_changed:
+            cmd += ["--changed", f"{entity.type}:{entity.ref}"]
+        result = exec(cmd)
+        context.log.info(
+            f"Patched tree for {config.group}/{config.collection}: "
+            f"+{len(result.get('added', []))} added, -{len(result.get('removed', []))} removed, "
+            f"~{len(result.get('moved', []))} moved"
+        )
+        return dg.Output(result)
 
     result = exec(["digtk", "preservica", "tree", "--collection", config.collection, "--group", config.group])
     context.log.info(f"Rebuilt tree for {config.group}/{config.collection}: {result.get('items')} item(s)")

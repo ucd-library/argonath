@@ -123,6 +123,24 @@ def ls(path, opts={}):
     return entries
 
 
+def move(path, dest_path, opts={}):
+    """Move or rename a local file or directory.
+
+    :param str path: Absolute local source path.
+    :param str dest_path: Absolute local destination path.
+    :param dict opts: Unused for the local backend (CaskFS-only options).
+    :raises FileNotFoundError: If `path` does not exist.
+    :raises FileExistsError: If `dest_path` already exists — matches CaskFS's
+        `mv`, which also refuses to nest into an existing destination.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    if os.path.exists(dest_path):
+        raise FileExistsError(dest_path)
+    _ensure_parent(dest_path)
+    shutil.move(path, dest_path)
+
+
 def delete(path, opts={}):
     """Delete a local file or directory.
 

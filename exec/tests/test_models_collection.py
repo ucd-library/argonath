@@ -1230,6 +1230,55 @@ def test_preservica_tree_is_idempotent_and_rebuilds_from_scratch(tmp_path):
     assert (root / "tree" / "old-vines-new-lands" / "Preservation" / "page1.tif").exists()
 
 
+def test_preservica_tree_rebuild_uses_live_title_after_targeted_rename(tmp_path, fake_registry):
+    # A targeted sync of just the renamed IO (mirroring Preservica's real
+    # "updated since" feed, which reports the IO's own ref, not its parent
+    # folder's) never touches root-ref's cached children.json — so the tree
+    # rebuild must read the new title from io-1's own entity.json, not from
+    # that stale cache, to pick the correct new slug.
+    client = _seed_folder_with_one_child(tmp_path)
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    assert (root / "tree" / "item-one").exists()
+
+    client.entities["io-1"]["title"] = "Item One Renamed"
+    collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "io-1", "type": "IO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    assert not (root / "tree" / "item-one").exists()
+    assert (root / "tree" / "item-one-renamed").exists()
+
+
+def test_copy_metadata_to_tree_tags_cask_writes_with_ref_partition_key(monkeypatch):
+    # Regression test for a real bug: CaskFS only treats a write as JSON-LD
+    # given an explicit 'application/ld+json' Content-Type (or 'jsonld=true'),
+    # and otherwise routes a guessed-from-extension 'application/json' body
+    # straight into its Turtle/N-Triples parser, which fails outright on a
+    # JSON body. Tagging metadata.json (a plain file CaskFS already writes)
+    # with a partition key sidesteps that entirely — no RDF/JSON-LD content
+    # negotiation involved at all — so this checks the write opts directly.
+    reads = {"by-ref/io-1/entity.json": {"ref": "io-1", "title": "Item One", "type": "IO"}}
+    writes = []
+
+    monkeypatch.setattr(collection, "_read_bronze_json", lambda root, rel_path, default=None: reads.get(rel_path, default))
+    monkeypatch.setattr(fs, "exists", lambda path: False)
+    monkeypatch.setattr(fs, "write", lambda path, data=None, src=None, opts={}: writes.append((path, opts)))
+    monkeypatch.setattr(fs, "add_derivative_link", lambda path, source_path, opts={}: None)
+
+    collection._copy_metadata_to_tree(
+        "cask:/bronze/preservica/my-collection/latest", "by-ref/io-1", "tree/item-one", "io-1", "my-collection",
+    )
+
+    assert len(writes) == 1
+    path, opts = writes[0]
+    assert path == "cask:/bronze/preservica/my-collection/latest/tree/item-one/metadata.json"
+    assert opts["partition_keys"] == ["medallion-bronze", "collection-my-collection", "ref-io-1"]
+
+
 def test_preservica_tree_raises_without_prior_import(tmp_path):
     with pytest.raises(FileNotFoundError):
         collection.preservica_tree("no-such-collection", "preservica", {"dest_root": str(tmp_path)})
@@ -1402,3 +1451,186 @@ def test_local_to_bronze_tree_ignores_files_directly_in_source_dir(tmp_path):
 def test_local_to_bronze_tree_raises_for_missing_source(tmp_path):
     with pytest.raises(FileNotFoundError):
         collection.local_to_bronze_tree(str(tmp_path / "nope"), "my-collection", "group", {})
+
+
+# --- preservica_tree_partial ---------------------------------------------
+
+@pytest.fixture
+def local_find_by_partition_keys(monkeypatch, tmp_path):
+    """Fake fs.find_by_partition_keys() that scans the local dest_root for
+    metadata.json files whose embedded 'preservica.ref' matches the
+    'ref-<ref>' partition key — lets preservica_tree_partial() (which depends
+    on this CaskFS-only lookup) be tested against a local dest_root instead
+    of a real CaskFS connection. Partition keys themselves aren't persisted
+    for a local dest_root (see _copy_metadata_to_tree()'s cask:-only guard),
+    so this reads the ref back out of the file's own JSON content instead —
+    the same ref value that would have been tagged as the partition key."""
+    def _find(partition_keys, opts={}):
+        ref = next(k[len("ref-"):] for k in partition_keys if k.startswith("ref-"))
+        matches = []
+        for path in tmp_path.rglob("metadata.json"):
+            try:
+                content = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            if content.get("preservica", {}).get("ref") == ref:
+                matches.append(str(path))
+        return matches
+
+    monkeypatch.setattr(fs, "find_by_partition_keys", _find)
+    return _find
+
+
+def test_tree_partial_renames_io_moves_directory_without_recopying(tmp_path, fake_registry, local_find_by_partition_keys):
+    client = _seed_folder_with_one_child(tmp_path)
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    old_dir = root / "tree" / "item-one"
+    assert old_dir.exists()
+    media_inode_before = os.stat(old_dir / "identifiers.json").st_ino
+
+    client.entities["io-1"]["title"] = "Item One Renamed"
+    collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "io-1", "type": "IO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    result = collection.preservica_tree_partial(
+        "my-collection", "preservica", [{"ref": "io-1", "type": "IO"}], {"dest_root": str(tmp_path)},
+    )
+
+    new_dir = root / "tree" / "item-one-renamed"
+    assert result == {"moved": ["io-1"], "added": [], "removed": [], "unresolved": []}
+    assert not old_dir.exists()
+    assert new_dir.exists()
+    # A real move, not a delete+rewrite — same inode survives the rename.
+    assert os.stat(new_dir / "identifiers.json").st_ino == media_inode_before
+
+
+def test_tree_partial_rename_is_noop_when_slug_unchanged(tmp_path, fake_registry, local_find_by_partition_keys):
+    client = _seed_folder_with_one_child(tmp_path)
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    client.entities["io-1"]["description"] = "just a description edit, same title"
+    collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "io-1", "type": "IO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    result = collection.preservica_tree_partial(
+        "my-collection", "preservica", [{"ref": "io-1", "type": "IO"}], {"dest_root": str(tmp_path)},
+    )
+    assert result == {"moved": [], "added": [], "removed": [], "unresolved": []}
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    assert (root / "tree" / "item-one").exists()
+
+
+def test_tree_partial_renames_folder_moves_whole_subtree(tmp_path, fake_registry, local_find_by_partition_keys):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["sub-folder"] = {"title": "Sub Folder", "type": "SO"}
+    client.entities["io-1"] = {"title": "Item One", "type": "IO"}
+    client.children["root-ref"] = [{"ref": "sub-folder", "title": "Sub Folder", "type": "SO"}]
+    client.children["sub-folder"] = [{"ref": "io-1", "title": "Item One", "type": "IO"}]
+    client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc123"}]
+    client.representations["io-1"] = [{
+        "representationType": "Preservation", "contentObjectRef": "co-1", "mimeGroup": "image",
+        "filename": "page1.tif", "downloadUrl": "http://x/f1", "fileSize": 9, "fixity": None,
+    }]
+    client.files["http://x/f1"] = b"tiffbytes"
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    assert (root / "tree" / "sub-folder" / "item-one" / "Preservation" / "page1.tif").exists()
+
+    client.entities["sub-folder"]["title"] = "Sub Folder Renamed"
+    collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "sub-folder", "type": "SO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    result = collection.preservica_tree_partial(
+        "my-collection", "preservica", [{"ref": "sub-folder", "type": "SO"}], {"dest_root": str(tmp_path)},
+    )
+
+    assert result == {"moved": ["sub-folder"], "added": [], "removed": [], "unresolved": []}
+    assert not (root / "tree" / "sub-folder").exists()
+    assert (
+        root / "tree" / "sub-folder-renamed" / "item-one" / "Preservation" / "page1.tif"
+    ).read_bytes() == b"tiffbytes"
+
+
+def test_tree_partial_adds_new_item_via_parent_fallback_scan(tmp_path, fake_registry, local_find_by_partition_keys):
+    client = _seed_folder_with_one_child(tmp_path)
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    client.entities["io-2"] = {"title": "Item Two", "type": "IO"}
+    client.identifiers["io-2"] = [{"type": None, "value": "ark:/87287/d7xyz999"}]
+    client.representations["io-2"] = []
+    client.children["root-ref"] = [
+        {"ref": "io-1", "title": "Item One", "type": "IO"},
+        {"ref": "io-2", "title": "Item Two", "type": "IO"},
+    ]
+    collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "root-ref", "type": "SO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    # root-ref (io-2's parent) is deliberately NOT in this batch, forcing
+    # _find_parent_so_ref()'s by-ref/ fallback scan rather than the cheap
+    # in-batch check.
+    result = collection.preservica_tree_partial(
+        "my-collection", "preservica", [{"ref": "io-2", "type": "IO"}], {"dest_root": str(tmp_path)},
+    )
+
+    assert result == {"moved": [], "added": ["io-2"], "removed": [], "unresolved": []}
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    assert (root / "tree" / "item-two" / "identifiers.json").exists()
+    assert (root / "tree" / "item-one").exists()
+
+
+def test_tree_partial_removed_entity_deletes_tree_entry(tmp_path, fake_registry, local_find_by_partition_keys):
+    _seed_folder_with_one_child(tmp_path)
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    assert (root / "tree" / "item-one").exists()
+
+    # Simulate the ref no longer existing in by-ref/ (preservica_sync_entities
+    # itself never deletes bronze — this exercises the safety-net path).
+    fs.delete(str(root / "by-ref" / "io-1" / "entity.json"))
+
+    result = collection.preservica_tree_partial(
+        "my-collection", "preservica", [{"ref": "io-1", "type": "IO"}], {"dest_root": str(tmp_path)},
+    )
+
+    assert result == {"moved": [], "added": [], "removed": ["io-1"], "unresolved": []}
+    assert not (root / "tree" / "item-one").exists()
+
+
+def test_tree_partial_unresolved_when_parent_cannot_be_found(tmp_path, fake_registry, local_find_by_partition_keys):
+    _seed_folder_with_one_child(tmp_path)
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+
+    # A by-ref/ entry with no parent referencing it anywhere — shouldn't
+    # normally happen, but must be reported rather than guessed at.
+    collection._write_bronze_json(str(root), "by-ref/orphan-1/entity.json", {"ref": "orphan-1", "title": "Orphan", "type": "IO"})
+    collection._write_bronze_json(str(root), "by-ref/orphan-1/identifiers.json", [])
+
+    result = collection.preservica_tree_partial(
+        "my-collection", "preservica", [{"ref": "orphan-1", "type": "IO"}], {"dest_root": str(tmp_path)},
+    )
+
+    assert result == {"moved": [], "added": [], "removed": [], "unresolved": ["orphan-1"]}
+    assert not (root / "tree" / "orphan").exists()
+    assert not any((root / "tree").glob("orphan*"))
+
+
+def test_tree_partial_raises_without_prior_import(tmp_path, fake_registry):
+    with pytest.raises(FileNotFoundError):
+        collection.preservica_tree_partial(
+            "no-such-collection", "preservica", [{"ref": "io-1", "type": "IO"}], {"dest_root": str(tmp_path)},
+        )

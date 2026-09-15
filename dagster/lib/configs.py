@@ -125,11 +125,22 @@ class RebuildTreeConfig(Config):
         just before this one — tree/ is only rebuilt for "preservica" sources
         (see digtk.models.collection.preservica_tree()); any other source_type
         is a no-op.
+    :param list[PreservicaChangedEntity] preservica_changed: Same changed
+        Preservica entities passed to the matching reconcile_collection_items
+        run (see ReconcileCollectionConfig.preservica_changed). When non-empty,
+        only these entities' tree/ entries are patched in place
+        (digtk.models.collection.preservica_tree_partial()) instead of a full
+        rebuild. Left empty for a full preservica_tree() rebuild — e.g. a
+        manually-triggered run, or the initial rebuild after `preservica import`.
     """
     group: str = Field(..., description="Group namespace the collection belongs to.")
     collection: str = Field(..., description="Collection name.")
     source_type: Literal["website", "db-dump", "digital-collection", "preservica"] = Field(
         ..., description="Ingestion source type."
+    )
+    preservica_changed: list[PreservicaChangedEntity] = Field(
+        default_factory=list,
+        description="Changed Preservica entities to patch tree/ for (source_type='preservica' only).",
     )
 
 

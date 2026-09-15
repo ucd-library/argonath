@@ -16,6 +16,7 @@ from digtk.lib.fs.cask import CaskBackend
 
 _CASK_WRITE_OPTS = {"partition_keys", "metadata", "bucket"}
 _CASK_LS_OPTS = {"limit", "offset", "query"}
+_CASK_MOVE_OPTS = {"recheck_mime_type"}
 
 _cask_backend = None
 
@@ -158,6 +159,27 @@ def delete(path, opts={}):
     return _backend_for(ref).delete(ref.path, opts)
 
 
+def move(path, dest_path, opts={}):
+    """Move or rename a file or directory, on either the local filesystem or CaskFS.
+
+    :param str path: Source path. A 'cask:/' prefix routes to CaskFS.
+    :param str dest_path: Destination path — must resolve to the same backend as `path`.
+    :param dict opts: CaskFS-only: 'recheck_mime_type' (bool).
+    :returns: The CaskFS move response if the destination is CaskFS, else None.
+    :rtype: dict|None
+    :raises ValueError: If `path` and `dest_path` resolve to different backends,
+        or a CaskFS-only opt is passed for a local move.
+    :raises FileNotFoundError: If `path` does not exist.
+    :raises FileExistsError: If `dest_path` already exists.
+    """
+    ref = _paths.parse(path)
+    dest_ref = _paths.parse(dest_path)
+    if ref.is_cask != dest_ref.is_cask:
+        raise ValueError(f"move() requires both paths on the same backend: {path!r} -> {dest_path!r}")
+    _check_cask_only_opts(ref, opts, _CASK_MOVE_OPTS)
+    return _backend_for(ref).move(ref.path, dest_ref.path, opts)
+
+
 def add_derivative_link(path, source_path, opts={}):
     """Record CaskFS derivative-link lineage: `path` was derived from `source_path`.
 
@@ -191,3 +213,16 @@ def find_by_subject(subject, opts={}):
     :rtype: list[dict]
     """
     return _get_cask_backend().find_by_subject(subject, opts)
+
+
+def find_by_partition_keys(partition_keys, opts={}):
+    """Find files tagged with all of the given partition keys — no RDF/
+    JSON-LD content required, unlike find_by_subject(). CaskFS-only, same as
+    find_by_subject().
+
+    :param list[str] partition_keys: Partition keys a file must carry (all of them).
+    :param dict opts: See digtk.lib.fs.cask.CaskBackend.find_by_partition_keys.
+    :returns: Every matching file's CaskFS-absolute path.
+    :rtype: list[str]
+    """
+    return _get_cask_backend().find_by_partition_keys(partition_keys, opts)
