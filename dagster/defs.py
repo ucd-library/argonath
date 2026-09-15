@@ -18,6 +18,7 @@ import dagster as dg
 
 from lib.assets import (
     reconcile_collection_items,
+    rebuild_collection_tree,
     ingest_item,
     generate_derivatives,
     run_ocr,
@@ -51,6 +52,7 @@ from lib.schedules import (
 defs = dg.Definitions(
     assets=[
         reconcile_collection_items,
+        rebuild_collection_tree,
         ingest_item,
         generate_derivatives,
         run_ocr,

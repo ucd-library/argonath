@@ -10,6 +10,7 @@ from lib.configs import (
     items_partitions,
     IngestItemConfig,
     ReconcileCollectionConfig,
+    RebuildTreeConfig,
     DerivativesConfig,
     OcrConfig,
     SearchIndexConfig,
@@ -31,24 +32,33 @@ def reconcile_collection_items(context: dg.AssetExecutionContext, config: Reconc
     deleted). Digital-collection sources are additive-only — nothing is ever
     auto-deleted for them.
 
+    Preservica sources are targeted, not a full re-ingest: `config.preservica_changed`
+    (populated by preservica_auto_sync_sensor from
+    digtk.models.collection.find_changed_preservica_collections()) names the
+    specific folder(s)/item(s) that actually changed, and only those are
+    synced — see digtk.models.collection.preservica_sync_entities(). A brand
+    new collection's initial full import is out of scope here; that's still
+    a manual `digtk preservica import` (see that command's own docs).
+
     Not partitioned itself: this asset expands into partitions, it doesn't run
     within one. Upstream of ingest_item and friends, which then run per (collection, item).
 
     :param context: Dagster asset execution context.
-    :param config: ReconcileCollectionConfig with group, collection, source_type, source_uri.
+    :param config: ReconcileCollectionConfig with group, collection, source_type,
+        source_uri (non-preservica sources) / preservica_changed (preservica).
     :returns: Dict with the collection key and added/removed/changed ARK lists.
     """
     collection_key = f"{config.group}/{config.collection}"
+
+    preservica_cmd = ["digtk", "preservica", "sync"]
+    for entity in config.preservica_changed:
+        preservica_cmd += ["--changed", f"{entity.type}:{entity.ref}"]
 
     cmd_map = {
         "website": ["digtk", "ingest", "crawl", config.source_uri],
         "db-dump": ["digtk", "ingest", "db-dump", config.source_uri],
         "digital-collection": ["digtk", "ingest", "batch", config.source_uri],
-        # source_uri is the Preservica root structural object ref — see
-        # digtk.models.collection.preservica_import(), which registers the
-        # collection (digtk.models.collection.register_collection()) as part
-        # of every import, labeled or not.
-        "preservica": ["digtk", "preservica", "import", config.source_uri],
+        "preservica": preservica_cmd,
     }
     cmd = cmd_map[config.source_type] + ["--collection", config.collection, "--group", config.group]
     result = exec(cmd)
@@ -69,6 +79,36 @@ def reconcile_collection_items(context: dg.AssetExecutionContext, config: Reconc
         f"Reconciled {collection_key}: +{len(added)} added, -{len(removed)} removed, ~{len(changed)} changed"
     )
     return dg.Output({"collection": collection_key, "added": added, "removed": removed, "changed": changed})
+
+
+@dg.asset(
+    deps=[reconcile_collection_items],
+    group_name="ingest",
+)
+def rebuild_collection_tree(context: dg.AssetExecutionContext, config: RebuildTreeConfig):
+    """Rebuild bronze's tree/ (human-readable, title-keyed) layout for a
+    Preservica collection from its just-synced by-ref/ state — no network
+    calls (see digtk.models.collection.preservica_tree()).
+
+    Runs immediately after reconcile_collection_items in the same job, so
+    tree/ stays current after every incremental Preservica sync (see
+    preservica_auto_sync_sensor) instead of only after a manual `digtk
+    preservica tree` run. A no-op for the other three source types — tree/
+    is derived purely from by-ref/, and only Preservica writes by-ref/.
+
+    :param context: Dagster asset execution context.
+    :param config: RebuildTreeConfig with group, collection, source_type.
+    """
+    if config.source_type != "preservica":
+        context.log.info(
+            f"Skipping tree rebuild for {config.group}/{config.collection}: "
+            f"source_type={config.source_type!r} has no by-ref/ to rebuild from."
+        )
+        return dg.Output({"skipped": True})
+
+    result = exec(["digtk", "preservica", "tree", "--collection", config.collection, "--group", config.group])
+    context.log.info(f"Rebuilt tree for {config.group}/{config.collection}: {result.get('items')} item(s)")
+    return dg.Output(result)
 
 
 @dg.asset(

@@ -27,11 +27,15 @@ _INITIAL_LOOKBACK = datetime.timedelta(days=1)
 
 @dg.sensor(job_name="reconcile_collection_job", minimum_interval_seconds=300)
 def preservica_auto_sync_sensor(context: dg.SensorEvaluationContext):
-    """Poll Preservica for changes since the last tick and reconcile only the
-    registered collections actually affected — untouched collections are
-    skipped entirely rather than re-walked (see
+    """Poll Preservica for changes since the last tick and sync only the
+    specific entities that changed, for only the registered collections
+    actually affected — untouched collections are skipped entirely, and an
+    affected collection gets a targeted sync of just its changed folder(s)/
+    item(s), never a full re-walk (see
     digtk.models.collection.find_changed_preservica_collections(), which also
-    auto-registers a brand-new labeled folder the first time it's seen).
+    auto-registers a brand-new labeled folder the first time it's seen, and
+    preservica_sync_entities(), which reconcile_collection_items calls with
+    each RunRequest's preservica_changed list).
 
     A registered Preservica collection is always checked here regardless of
     its workflow tags or whether it was first registered manually (`digtk
@@ -53,12 +57,19 @@ def preservica_auto_sync_sensor(context: dg.SensorEvaluationContext):
     return [
         dg.RunRequest(
             run_key=f"preservica-sync-{c['group']}-{c['name']}-{now.isoformat()}",
-            run_config={"ops": {"reconcile_collection_items": {"config": {
-                "group": c["group"],
-                "collection": c["name"],
-                "source_type": "preservica",
-                "source_uri": c["root_ref"],
-            }}}},
+            run_config={"ops": {
+                "reconcile_collection_items": {"config": {
+                    "group": c["group"],
+                    "collection": c["name"],
+                    "source_type": "preservica",
+                    "preservica_changed": [{"ref": e["ref"], "type": e["type"]} for e in c["changed"]],
+                }},
+                "rebuild_collection_tree": {"config": {
+                    "group": c["group"],
+                    "collection": c["name"],
+                    "source_type": "preservica",
+                }},
+            }},
         )
         for c in changed
     ]

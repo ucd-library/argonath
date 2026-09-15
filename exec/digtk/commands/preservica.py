@@ -13,6 +13,10 @@ Subcommands:
   import  — walk a Preservica collection into bronze's by-ref/ layout, always
             registering the collection along the way (see
             digtk.models.collection.preservica_import/register_collection)
+  sync    — sync only specific changed entities (folders/items) for an
+            already-registered collection, never a full re-walk (see
+            digtk.models.collection.preservica_sync_entities) — used by
+            Dagster's reconcile_collection_items
   tree    — rebuild bronze's tree/ layout from an already-imported by-ref/
             (see digtk.models.collection.preservica_tree)
   changes — list registered Preservica collections with any change since a
@@ -165,6 +169,60 @@ def import_(
         "items": len(manifest["items"]),
         "errors": len(manifest["errors"]),
         "warnings": len(manifest["warnings"]),
+    })
+
+
+@app.command("sync")
+def sync(
+    collection: Annotated[str, typer.Option(help="Collection name — must already be registered (see `import`).")],
+    group: Annotated[str, typer.Option(
+        help="Bronze group namespace. Defaults to 'preservica', same as `import`.",
+    )] = "preservica",
+    changed: Annotated[list[str], typer.Option(
+        "--changed", help="One changed entity, as 'TYPE:REF' (TYPE is 'SO' for a folder "
+        "or 'IO' for an item), e.g. '--changed IO:1a2b3c...' or '--changed SO:9f8e7d...'. "
+        "Repeat for multiple entities.",
+    )] = [],
+    dest_root: Annotated[str | None, typer.Option(
+        "--dest-root", help="Override the bronze root — see `import`'s.",
+    )] = None,
+    skip_unchanged: Annotated[bool, typer.Option(
+        "--skip-unchanged", help="Opt-in fixity skip for unchanged files — see `import`'s.",
+    )] = False,
+):
+    """Sync only the specific Preservica entities that changed — never a full
+    recursive re-walk (see `import` for that). Each --changed folder (SO) is
+    refreshed and its immediate children diffed; each --changed item (IO) is
+    fully re-fetched."""
+    entities = []
+    for raw in changed:
+        entity_type, _, ref = raw.partition(":")
+        if entity_type not in ("SO", "IO") or not ref:
+            utils.error(f"--changed value must be 'SO:<ref>' or 'IO:<ref>', got {raw!r}")
+        entities.append({"ref": ref, "type": entity_type})
+    if not entities:
+        utils.error("--changed must be given at least once.")
+
+    opts = {"dest_root": dest_root, "on_progress": utils.log, "skip_unchanged": skip_unchanged}
+    try:
+        result = collection_model.preservica_sync_entities(collection, group, entities, opts)
+    except ValueError as e:
+        utils.error(str(e))
+    except (PreservicaAuthError, PreservicaRequestError) as e:
+        utils.error(str(e))
+
+    utils.log(
+        f"Synced {group}/{collection}: +{len(result['added'])} added, "
+        f"-{len(result['removed'])} removed, ~{len(result['changed'])} changed "
+        f"({len(result['errors'])} error(s), {len(result['warnings'])} warning(s))"
+    )
+    utils.result({
+        "status": "success",
+        "collection": collection,
+        "group": group,
+        "added": result["added"],
+        "removed": result["removed"],
+        "changed": result["changed"],
     })
 
 

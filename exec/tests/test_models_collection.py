@@ -40,6 +40,14 @@ class _FakeRegistry:
                 {"id_value": i["id_value"]} for i in self.identifiers.get(collection_id, [])
                 if i["id_type"] == "preservica_ref"
             ]
+        if "WHERE name = %s AND group_name = %s" in sql:
+            name, group = params
+            return [
+                {"id": r["id"], "name": r["name"], "group_name": r["group_name"],
+                 "source_type": r["source_type"], "workflow_tags": r["workflow_tags"]}
+                for r in self.rows.values()
+                if r["name"] == name and r["group_name"] == group and r["status"] == "active"
+            ]
         if "name = %s" in sql:
             name = params[0]
             return [
@@ -67,6 +75,10 @@ class _FakeRegistry:
                 "source_type": source_type, "workflow_tags": tags, "status": "active",
             }
             return [{"id": row_id}] if opts.get("returning") else None
+        if sql.startswith("UPDATE argonath.collection_registry SET last_synced_at = now() WHERE id"):
+            (collection_id,) = params
+            self.rows[collection_id]["last_synced_at_touched"] = True
+            return None
         if sql.startswith("UPDATE argonath.collection_registry"):
             source_type, tags, collection_id = params
             self.rows[collection_id]["source_type"] = source_type
@@ -473,6 +485,7 @@ class _FakePreservicaClient:
         self.get_entity_calls = []  # [(data_type, ref), ...] — for asserting no double-fetch
         self.download_calls = []    # [downloadUrl, ...] — for asserting skip-unchanged behavior
         self.updated_since_results = []  # [{'ref', 'type'}, ...] returned by get_entities_updated_since
+        self.get_children_calls = []  # [ref, ...] — for asserting no cascade into new subfolders
 
     def get_entity(self, data_type, ref, opts={}):
         self.get_entity_calls.append((data_type, ref))
@@ -481,6 +494,8 @@ class _FakePreservicaClient:
         entity = self.entities[ref]
         key = "StructuralObject" if entity["type"] == "SO" else "InformationObject"
         detail = {"Title": entity["title"]}
+        if entity.get("description") is not None:
+            detail["Description"] = entity["description"]
         if entity.get("parent"):
             detail["Parent"] = entity["parent"]
         return {key: detail, "_fragment_refs": entity.get("fragment_refs", [])}
@@ -498,6 +513,7 @@ class _FakePreservicaClient:
         return self.metadata_fragments[url]
 
     def get_children(self, ref, opts={}):
+        self.get_children_calls.append(ref)
         return self.children.get(ref, [])
 
     def resolve_all_content(self, io_ref, entity_detail=None):
@@ -547,7 +563,7 @@ def test_preservica_import_writes_by_ref_layout(tmp_path):
     }
 
     assert _read_json(str(root / "by-ref" / "root-ref" / "entity.json")) == {
-        "ref": "root-ref", "title": "My Collection", "type": "SO", "metadataFragmentRefs": [],
+        "ref": "root-ref", "title": "My Collection", "description": None, "type": "SO", "metadataFragmentRefs": [],
     }
     assert _read_json(str(root / "by-ref" / "root-ref" / "children.json")) == [
         {"ref": "io-1", "title": "Item One", "type": "IO"},
@@ -815,7 +831,10 @@ def test_find_changed_finds_registered_collection_by_direct_root_ref_match(fake_
 
     result = collection.find_changed_preservica_collections("2026-09-01", {"client": client})
 
-    assert result["collections"] == [{"group": "preservica", "name": "ucd-photos", "root_ref": "root-ref"}]
+    assert result["collections"] == [{
+        "group": "preservica", "name": "ucd-photos", "root_ref": "root-ref",
+        "changed": [{"ref": "root-ref", "type": "SO"}],
+    }]
 
 
 def test_find_changed_walks_up_parent_chain_to_owning_collection(fake_registry):
@@ -829,7 +848,10 @@ def test_find_changed_walks_up_parent_chain_to_owning_collection(fake_registry):
 
     result = collection.find_changed_preservica_collections("2026-09-01", {"client": client})
 
-    assert result["collections"] == [{"group": "preservica", "name": "ucd-photos", "root_ref": "root-ref"}]
+    assert result["collections"] == [{
+        "group": "preservica", "name": "ucd-photos", "root_ref": "root-ref",
+        "changed": [{"ref": "item-ref", "type": "IO"}],
+    }]
 
 
 def test_find_changed_auto_registers_newly_labeled_folder(fake_registry):
@@ -840,9 +862,10 @@ def test_find_changed_auto_registers_newly_labeled_folder(fake_registry):
 
     result = collection.find_changed_preservica_collections("2026-09-01", {"client": client})
 
-    assert result["collections"] == [
-        {"group": "preservica", "name": "new-collection", "root_ref": "new-root-ref"},
-    ]
+    assert result["collections"] == [{
+        "group": "preservica", "name": "new-collection", "root_ref": "new-root-ref",
+        "changed": [{"ref": "new-root-ref", "type": "SO"}],
+    }]
     registered = collection.get_registration("preservica_ref", "new-root-ref")
     assert registered["workflow_tags"] == ["ai", "public", "sync"]
 
@@ -873,7 +896,291 @@ def test_find_changed_dedupes_multiple_changes_in_same_collection(fake_registry)
 
     result = collection.find_changed_preservica_collections("2026-09-01", {"client": client})
 
-    assert result["collections"] == [{"group": "preservica", "name": "ucd-photos", "root_ref": "root-ref"}]
+    assert len(result["collections"]) == 1
+    assert result["collections"][0]["changed"] == [
+        {"ref": "root-ref", "type": "SO"},
+        {"ref": "item-1", "type": "IO"},
+        {"ref": "item-2", "type": "IO"},
+    ]
+
+
+def test_find_changed_dedupes_repeated_entity_in_same_batch(fake_registry):
+    collection.register_collection(
+        "ucd-photos", "preservica", "preservica", [{"type": "preservica_ref", "value": "root-ref"}],
+    )
+    client = _FakePreservicaClient()
+    client.updated_since_results = [
+        {"ref": "root-ref", "type": "SO"},
+        {"ref": "root-ref", "type": "SO"},
+    ]
+
+    result = collection.find_changed_preservica_collections("2026-09-01", {"client": client})
+
+    assert result["collections"][0]["changed"] == [{"ref": "root-ref", "type": "SO"}]
+
+
+# --- preservica_sync_entities -------------------------------------------------
+
+def test_sync_entities_new_item_is_added(tmp_path, fake_registry):
+    collection.register_collection("my-collection", "preservica", "preservica")
+    client = _FakePreservicaClient()
+    client.entities["io-1"] = {"title": "Item One", "type": "IO"}
+    client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc123"}]
+    client.representations["io-1"] = []
+
+    result = collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "io-1", "type": "IO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert result["added"] == ["d7abc123"]
+    assert result["changed"] == []
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    assert (root / "by-ref" / "io-1" / "entity.json").exists()
+
+
+def test_sync_entities_existing_item_is_changed(tmp_path, fake_registry):
+    collection.register_collection("my-collection", "preservica", "preservica")
+    client = _FakePreservicaClient()
+    client.entities["io-1"] = {"title": "Item One", "type": "IO"}
+    client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc123"}]
+    client.representations["io-1"] = []
+    opts = {"client": client, "dest_root": str(tmp_path)}
+
+    collection.preservica_sync_entities("my-collection", "preservica", [{"ref": "io-1", "type": "IO"}], opts)
+    result = collection.preservica_sync_entities("my-collection", "preservica", [{"ref": "io-1", "type": "IO"}], opts)
+
+    assert result["added"] == []
+    assert result["changed"] == ["d7abc123"]
+
+
+def test_sync_entities_picks_up_description_edit(tmp_path, fake_registry):
+    collection.register_collection("my-collection", "preservica", "preservica")
+    client = _FakePreservicaClient()
+    client.entities["io-1"] = {"title": "Item One", "type": "IO", "description": "Old description"}
+    client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc123"}]
+    client.representations["io-1"] = []
+    opts = {"client": client, "dest_root": str(tmp_path)}
+
+    collection.preservica_sync_entities("my-collection", "preservica", [{"ref": "io-1", "type": "IO"}], opts)
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    assert _read_json(str(root / "by-ref" / "io-1" / "entity.json"))["description"] == "Old description"
+
+    client.entities["io-1"]["description"] = "testing! 2"
+    collection.preservica_sync_entities("my-collection", "preservica", [{"ref": "io-1", "type": "IO"}], opts)
+
+    assert _read_json(str(root / "by-ref" / "io-1" / "entity.json"))["description"] == "testing! 2"
+
+
+def _seed_folder_with_one_child(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["io-1"] = {"title": "Item One", "type": "IO"}
+    client.children["root-ref"] = [{"ref": "io-1", "title": "Item One", "type": "IO"}]
+    client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc123"}]
+    client.representations["io-1"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+    client.get_entity_calls = []
+    client.get_children_calls = []
+    return client
+
+
+def test_sync_entities_folder_refresh_does_not_touch_unrelated_children(tmp_path, fake_registry):
+    client = _seed_folder_with_one_child(tmp_path)
+
+    result = collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "root-ref", "type": "SO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert ("information-objects", "io-1") not in client.get_entity_calls
+    assert ("structural-objects", "root-ref") in client.get_entity_calls
+    assert result["added"] == []
+    assert result["changed"] == []
+
+
+def test_sync_entities_new_child_io_discovered_via_children_diff(tmp_path, fake_registry):
+    client = _seed_folder_with_one_child(tmp_path)
+    client.entities["io-2"] = {"title": "Item Two", "type": "IO"}
+    client.identifiers["io-2"] = [{"type": None, "value": "ark:/87287/d7xyz999"}]
+    client.representations["io-2"] = []
+    client.children["root-ref"] = [
+        {"ref": "io-1", "title": "Item One", "type": "IO"},
+        {"ref": "io-2", "title": "Item Two", "type": "IO"},
+    ]
+
+    result = collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "root-ref", "type": "SO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert result["added"] == ["d7xyz999"]
+    assert ("information-objects", "io-1") not in client.get_entity_calls
+
+
+def test_sync_entities_new_child_folder_is_shallow_no_cascade(tmp_path, fake_registry):
+    client = _seed_folder_with_one_child(tmp_path)
+    client.entities["sub-new"] = {"title": "New Sub", "type": "SO"}
+    client.children["root-ref"] = [
+        {"ref": "io-1", "title": "Item One", "type": "IO"},
+        {"ref": "sub-new", "title": "New Sub", "type": "SO"},
+    ]
+
+    result = collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "root-ref", "type": "SO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert result["added"] == []
+    assert result["changed"] == []
+    assert "sub-new" not in client.get_children_calls
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    assert (root / "by-ref" / "sub-new" / "entity.json").exists()
+
+
+def test_sync_entities_removed_child_item_is_pruned_but_bronze_kept(tmp_path, fake_registry):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["io-1"] = {"title": "Item One", "type": "IO"}
+    client.entities["io-2"] = {"title": "Item Two", "type": "IO"}
+    client.children["root-ref"] = [
+        {"ref": "io-1", "title": "Item One", "type": "IO"},
+        {"ref": "io-2", "title": "Item Two", "type": "IO"},
+    ]
+    client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc123"}]
+    client.identifiers["io-2"] = [{"type": None, "value": "ark:/87287/d7xyz999"}]
+    client.representations["io-1"] = []
+    client.representations["io-2"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+    client.children["root-ref"] = [{"ref": "io-1", "title": "Item One", "type": "IO"}]
+
+    result = collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "root-ref", "type": "SO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert result["removed"] == ["d7xyz999"]
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    assert (root / "by-ref" / "io-2" / "entity.json").exists()
+
+
+def test_sync_entities_removed_child_folder_is_not_reported(tmp_path, fake_registry):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["sub-1"] = {"title": "Sub One", "type": "SO"}
+    client.children["root-ref"] = [{"ref": "sub-1", "title": "Sub One", "type": "SO"}]
+    client.children["sub-1"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+    client.children["root-ref"] = []
+
+    result = collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "root-ref", "type": "SO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert result["removed"] == []
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    assert (root / "by-ref" / "sub-1" / "entity.json").exists()
+
+
+def test_sync_entities_warns_when_no_ark(tmp_path, fake_registry):
+    collection.register_collection("my-collection", "preservica", "preservica")
+    client = _FakePreservicaClient()
+    client.entities["io-1"] = {"title": "Item One", "type": "IO"}
+    client.identifiers["io-1"] = [{"type": "LocalID", "value": "loc-1"}]
+    client.representations["io-1"] = []
+
+    result = collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "io-1", "type": "IO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert result["added"] == ["loc-1"]
+    assert result["warnings"] == [
+        {"ref": "io-1", "stage": "identifiers", "message": "no ARK-shaped identifier found"},
+    ]
+
+
+def test_sync_entities_records_error_without_aborting(tmp_path, fake_registry):
+    collection.register_collection("my-collection", "preservica", "preservica")
+    client = _FakePreservicaClient()
+    client.entities["io-2"] = {"title": "Item Two", "type": "IO"}
+    client.raise_for["io-1"] = RuntimeError("boom")
+    client.identifiers["io-2"] = [{"type": None, "value": "ark:/87287/d7xyz"}]
+    client.representations["io-2"] = []
+
+    result = collection.preservica_sync_entities(
+        "my-collection", "preservica",
+        [{"ref": "io-1", "type": "IO"}, {"ref": "io-2", "type": "IO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert result["errors"] == [{"ref": "io-1", "stage": "entity", "message": "boom"}]
+    assert result["added"] == ["d7xyz"]
+
+
+def test_sync_entities_warns_on_unsupported_entity_type(tmp_path, fake_registry):
+    collection.register_collection("my-collection", "preservica", "preservica")
+    client = _FakePreservicaClient()
+
+    result = collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "co-1", "type": "CO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert result["added"] == result["removed"] == result["changed"] == []
+    assert result["warnings"] == [
+        {"ref": "co-1", "stage": "sync", "message": "unsupported entity type 'CO' — skipped"},
+    ]
+
+
+def test_sync_entities_raises_for_unregistered_collection(tmp_path, fake_registry):
+    client = _FakePreservicaClient()
+    with pytest.raises(ValueError, match="No active registered collection"):
+        collection.preservica_sync_entities(
+            "nope", "preservica", [{"ref": "io-1", "type": "IO"}],
+            {"client": client, "dest_root": str(tmp_path)},
+        )
+
+
+def test_sync_entities_dedupes_repeated_input_entities(tmp_path, fake_registry):
+    collection.register_collection("my-collection", "preservica", "preservica")
+    client = _FakePreservicaClient()
+    client.entities["io-1"] = {"title": "Item One", "type": "IO"}
+    client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc"}]
+    client.representations["io-1"] = []
+
+    collection.preservica_sync_entities(
+        "my-collection", "preservica",
+        [{"ref": "io-1", "type": "IO"}, {"ref": "io-1", "type": "IO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert client.get_entity_calls.count(("information-objects", "io-1")) == 1
+
+
+def test_sync_entities_touches_last_synced(tmp_path, fake_registry):
+    registered = collection.register_collection("my-collection", "preservica", "preservica")
+    client = _FakePreservicaClient()
+    client.entities["io-1"] = {"title": "Item One", "type": "IO"}
+    client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc"}]
+    client.representations["io-1"] = []
+
+    collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "io-1", "type": "IO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert fake_registry.rows[registered["id"]].get("last_synced_at_touched") is True
 
 
 # --- preservica_tree ----------------------------------------------------------
@@ -958,7 +1265,10 @@ def test_preservica_tree_converts_metadata_and_skips_fixity_files(tmp_path):
     )
     assert (item_dir / "Preservation" / "page1.tif").read_bytes() == b"tiffbytes"
     assert not (item_dir / "Preservation" / "page1.tif.fixity.json").exists()
-    assert _read_json(str(item_dir / "metadata.json")) == {"dc": {"title": "Old Vines"}}
+    assert _read_json(str(item_dir / "metadata.json")) == {
+        "dc": {"title": "Old Vines"},
+        "preservica": {"ref": "io-1", "title": "Old Vines_New Lands", "description": None, "type": "IO"},
+    }
 
 
 def test_preservica_tree_converts_metadata_for_folders_too(tmp_path):
@@ -981,7 +1291,55 @@ def test_preservica_tree_converts_metadata_for_folders_too(tmp_path):
     collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
 
     folder_dir = tmp_path / "bronze" / "preservica" / "my-collection" / "latest" / "tree" / "sub-folder"
-    assert _read_json(str(folder_dir / "metadata.json")) == {"dc": {"title": "Sub Folder"}}
+    assert _read_json(str(folder_dir / "metadata.json")) == {
+        "dc": {"title": "Sub Folder"},
+        "preservica": {"ref": "sub-folder", "title": "Sub Folder", "description": None, "type": "SO"},
+    }
+
+
+def test_preservica_tree_writes_preservica_metadata_without_dc_fragment(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["io-1"] = {"title": "Item One", "type": "IO", "description": "An item"}
+    client.children["root-ref"] = [{"ref": "io-1", "title": "Item One", "type": "IO"}]
+    client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc123"}]
+    client.representations["io-1"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica",
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    item_dir = tmp_path / "bronze" / "preservica" / "my-collection" / "latest" / "tree" / "item-one"
+    assert _read_json(str(item_dir / "metadata.json")) == {
+        "preservica": {"ref": "io-1", "title": "Item One", "description": "An item", "type": "IO"},
+    }
+
+
+def test_preservica_tree_writes_root_metadata_json(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "My Collection", "type": "SO", "fragment_refs": [
+        {"schemaUri": "http://oai_dc", "url": "http://x/frag-root"},
+    ]}
+    client.metadata_fragments["http://x/frag-root"] = (
+        '<MetadataResponse><MetadataContainer schemaUri="http://oai_dc">'
+        "<Content><dc><title>My Collection</title></dc></Content></MetadataContainer></MetadataResponse>"
+    )
+    client.children["root-ref"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica",
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+    count = collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    assert count == 0
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    assert _read_json(str(root / "tree" / "metadata.json")) == {
+        "dc": {"title": "My Collection"},
+        "preservica": {"ref": "root-ref", "title": "My Collection", "description": None, "type": "SO"},
+    }
 
 
 def test_preservica_tree_raises_on_multiple_metadata_fragments(tmp_path):

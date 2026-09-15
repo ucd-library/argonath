@@ -65,6 +65,17 @@ class IngestCollectionConfig(Config):
     directory: str = Field(..., description="Source directory for batch ingest.")
 
 
+class PreservicaChangedEntity(Config):
+    """One changed Preservica entity to sync — see
+    digtk.models.collection.preservica_sync_entities().
+
+    :param str ref: Preservica entity ref.
+    :param str type: 'SO' (structural object/folder) or 'IO' (information object/item).
+    """
+    ref: str = Field(..., description="Preservica entity ref.")
+    type: Literal["SO", "IO"] = Field(..., description="Entity type.")
+
+
 class ReconcileCollectionConfig(Config):
     """Config for the reconcile_collection_items asset.
 
@@ -75,20 +86,51 @@ class ReconcileCollectionConfig(Config):
     items missing from a re-run are never auto-deleted; website and db-dump
     sources are fully reconciled, so missing items are pruned.
 
+    Preservica sources are handled differently from the other three: rather
+    than a full re-ingest, only the specific entities in `preservica_changed`
+    are synced (see digtk.models.collection.preservica_sync_entities()) —
+    never a full recursive re-walk of the collection.
+
     :param str group: Group namespace the collection belongs to.
     :param str collection: Collection name.
     :param str source_type: Ingestion source — "website", "db-dump",
         "digital-collection", or "preservica".
-    :param str source_uri: Crawl root URL, DB connection string, or (for
-        source_type="preservica") the Preservica root structural object ref,
-        depending on source_type.
+    :param str|None source_uri: Crawl root URL or DB connection string — used
+        by the website/db-dump/digital-collection sources. Not used for
+        source_type="preservica" (see preservica_changed).
+    :param list[PreservicaChangedEntity] preservica_changed: Changed
+        Preservica entities to sync — only used when source_type="preservica".
+        Populated by preservica_auto_sync_sensor from
+        digtk.models.collection.find_changed_preservica_collections()'s
+        per-collection 'changed' list.
     """
     group: str = Field(..., description="Group namespace the collection belongs to.")
     collection: str = Field(..., description="Collection name.")
     source_type: Literal["website", "db-dump", "digital-collection", "preservica"] = Field(
         ..., description="Ingestion source type."
     )
-    source_uri: str = Field(..., description="Crawl root URL, DB connection string, or Preservica root ref.")
+    source_uri: str | None = Field(None, description="Crawl root URL or DB connection string.")
+    preservica_changed: list[PreservicaChangedEntity] = Field(
+        default_factory=list,
+        description="Changed Preservica entities to sync (source_type='preservica' only).",
+    )
+
+
+class RebuildTreeConfig(Config):
+    """Config for the rebuild_collection_tree asset.
+
+    :param str group: Group namespace the collection belongs to.
+    :param str collection: Collection name.
+    :param str source_type: Same source type as the reconcile step that ran
+        just before this one — tree/ is only rebuilt for "preservica" sources
+        (see digtk.models.collection.preservica_tree()); any other source_type
+        is a no-op.
+    """
+    group: str = Field(..., description="Group namespace the collection belongs to.")
+    collection: str = Field(..., description="Collection name.")
+    source_type: Literal["website", "db-dump", "digital-collection", "preservica"] = Field(
+        ..., description="Ingestion source type."
+    )
 
 
 class DerivativesConfig(Config):
