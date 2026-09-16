@@ -109,62 +109,62 @@ def test_probe_reports_per_source(fake_fs, fake_ffmpeg):
 
 
 def test_transcode_writes_converted_output(fake_fs, fake_derivative, fake_ffmpeg):
-    result = aw.transcode(ARK, opts={"format": "mp3"})
+    result = aw.transcode(ARK, opts={"format": "mp3", "app": "digital-dev"})
     audio_result = result["audios"]["interview.wav"]
     assert audio_result["outputs"] == ["converted.mp3"]
-    assert audio_result["dir"] == "cask:/silver/g/c/latest/item/public-frontend-derivatives/interview.wav"
+    assert audio_result["dir"] == "cask:/gold/digital-dev/c/item/public-frontend-derivatives/interview.wav"
     write_call = fake_derivative[0]
     assert write_call["opts"]["link_relation"] == "https://lib.ucdavis.edu/argonath/ns#derivativeOf"
 
 
 def test_transcode_defaults_to_configured_format(fake_fs, fake_derivative, fake_ffmpeg):
-    result = aw.transcode(ARK)
+    result = aw.transcode(ARK, opts={"app": "digital-dev"})
     assert result["audios"]["interview.wav"]["outputs"] == ["converted.mp3"]  # default transcode_format is "mp3"
 
 
 def test_waveform_writes_output_named_by_dimensions(fake_fs, fake_derivative, fake_ffmpeg):
-    result = aw.waveform(ARK, opts={"width": 200, "height": 80})
+    result = aw.waveform(ARK, opts={"width": 200, "height": 80, "app": "digital-dev"})
     assert result["audios"]["interview.wav"]["outputs"] == ["waveform-200x80.png"]
 
 
 def test_derivatives_writes_transcode_and_waveform_together(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
-    result = aw.derivatives(ARK)
+    result = aw.derivatives(ARK, opts={"app": "digital-dev"})
     audio_result = result["derivatives"]["interview.wav"]
     assert sorted(audio_result["outputs"]) == sorted(["converted.mp3", "waveform-1024x256.png"])
-    assert audio_result["dir"] == "cask:/silver/g/c/latest/item/public-frontend-derivatives/interview.wav"
+    assert audio_result["dir"] == "cask:/gold/digital-dev/c/item/public-frontend-derivatives/interview.wav"
 
 
 def test_derivatives_writes_audio_object_with_identifier(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
-    aw.derivatives(ARK)
+    aw.derivatives(ARK, opts={"app": "digital-dev"})
     sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
     doc = json.loads(sidecar_write["data"])
     assert len(doc["associatedMedia"]) == 1
     media = doc["associatedMedia"][0]
     assert media["@type"] == "AudioObject"
     assert media["identifier"] == "interview"
-    assert media["contentUrl"] == "cask://silver/g/c/latest/item/public-frontend-derivatives/interview.wav/converted.mp3"
+    assert media["contentUrl"] == "cask://gold/digital-dev/c/item/public-frontend-derivatives/interview.wav/converted.mp3"
     assert media["encodingFormat"] == "audio/mp3"
 
 
 def test_derivatives_multi_audio_item_nests_by_source_filename(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper, monkeypatch):
     use_multi_item(monkeypatch)
-    result = aw.derivatives(ARK)
+    result = aw.derivatives(ARK, opts={"app": "digital-dev"})
     assert set(result["derivatives"].keys()) == {"side-a.wav", "side-b.wav"}
     for filename in ("side-a.wav", "side-b.wav"):
         assert sorted(result["derivatives"][filename]["outputs"]) == sorted(["converted.mp3", "waveform-1024x256.png"])
         assert result["derivatives"][filename]["dir"] == (
-            f"cask:/silver/g/c/latest/box-1/folder-3/public-frontend-derivatives/{filename}"
+            f"cask:/gold/digital-dev/c/box-1/folder-3/public-frontend-derivatives/{filename}"
         )
 
 
 def test_derivatives_transcribes_captions_for_every_source(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
-    result = aw.derivatives(ARK)
-    assert result["captions"]["dir"] == "cask:/silver/g/c/latest/item/captions"
+    result = aw.derivatives(ARK, opts={"app": "digital-dev"})
+    assert result["captions"]["dir"] == "cask:/gold/digital-dev/c/item/captions"
     assert result["captions"]["outputs"] == ["output-en.vtt"]
     assert fake_whisper[0]["src_path"].endswith("interview.wav")
 
 
 def test_derivatives_transcribes_every_source_for_multi_audio_item(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper, monkeypatch):
     use_multi_item(monkeypatch)
-    result = aw.derivatives(ARK)
+    result = aw.derivatives(ARK, opts={"app": "digital-dev"})
     assert sorted(result["captions"]["outputs"]) == ["side-a-output-en.vtt", "side-b-output-en.vtt"]

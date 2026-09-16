@@ -1207,9 +1207,10 @@ def _import_simple_collection(tmp_path):
 def test_preservica_tree_builds_from_by_ref(tmp_path):
     root = _import_simple_collection(tmp_path)
 
-    count = collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+    count, item_metadata = collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
 
     assert count == 1
+    assert item_metadata == []
     item_dir = root / "tree" / "old-vines-new-lands"
     assert (item_dir / "Preservation" / "page1.tif").read_bytes() == b"tiffbytes"
     assert _read_json(str(item_dir / "identifiers.json")) == [{"type": None, "value": "ark:/87287/d7abc123"}]
@@ -1318,6 +1319,106 @@ def test_preservica_tree_converts_metadata_and_skips_fixity_files(tmp_path):
         "dc": {"title": "Old Vines"},
         "preservica": {"ref": "io-1", "title": "Old Vines_New Lands", "description": None, "type": "IO"},
     }
+    # An IO with both an ARK identifier and a descriptive metadata fragment
+    # also gets a DC-mapped schema.org sidecar, alongside metadata.json.
+    doc = _read_json(str(item_dir / "item.jsonld.json"))
+    assert doc["@id"] == "ark:/87287/d7abc123"
+    assert doc["ark"] == "ark:/87287/d7abc123"
+    assert doc["name"] == "Old Vines"
+    assert doc["argonath:fieldSources"] == {"name": "human"}
+
+
+def test_preservica_tree_returns_item_metadata_for_dc_mapped_items(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["io-1"] = {"title": "Old Vines_New Lands", "type": "IO", "fragment_refs": [
+        {"schemaUri": "http://oai_dc", "url": "http://x/frag1"},
+    ]}
+    client.metadata_fragments["http://x/frag1"] = (
+        '<MetadataResponse><MetadataContainer schemaUri="http://oai_dc">'
+        "<Content><dc><title>Old Vines</title></dc></Content></MetadataContainer></MetadataResponse>"
+    )
+    client.children["root-ref"] = [{"ref": "io-1", "title": "Old Vines_New Lands", "type": "IO"}]
+    client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc123"}]
+    client.representations["io-1"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+    count, item_metadata = collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    assert count == 1
+    assert len(item_metadata) == 1
+    assert item_metadata[0].ark == "ark:/87287/d7abc123"
+    assert item_metadata[0].name == "Old Vines"
+
+
+def test_preservica_tree_skips_item_jsonld_when_no_ark(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["io-1"] = {"title": "Item One", "type": "IO", "fragment_refs": [
+        {"schemaUri": "http://oai_dc", "url": "http://x/frag1"},
+    ]}
+    client.metadata_fragments["http://x/frag1"] = (
+        '<MetadataResponse><MetadataContainer schemaUri="http://oai_dc">'
+        "<Content><dc><title>Item One</title></dc></Content></MetadataContainer></MetadataResponse>"
+    )
+    client.children["root-ref"] = [{"ref": "io-1", "title": "Item One", "type": "IO"}]
+    client.identifiers["io-1"] = []  # no ARK minted yet
+    client.representations["io-1"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+    count, item_metadata = collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    assert count == 1
+    assert item_metadata == []
+    item_dir = tmp_path / "bronze" / "preservica" / "my-collection" / "latest" / "tree" / "item-one"
+    assert not (item_dir / "item.jsonld.json").exists()
+
+
+def test_preservica_tree_skips_item_jsonld_when_no_metadata_fragment(tmp_path):
+    # Reuses the no-fragment-at-all shape already covered by
+    # test_preservica_tree_writes_preservica_metadata_without_dc_fragment.
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["io-1"] = {"title": "Item One", "type": "IO", "description": "An item"}
+    client.children["root-ref"] = [{"ref": "io-1", "title": "Item One", "type": "IO"}]
+    client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc123"}]
+    client.representations["io-1"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+    count, item_metadata = collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    assert item_metadata == []
+    item_dir = tmp_path / "bronze" / "preservica" / "my-collection" / "latest" / "tree" / "item-one"
+    assert not (item_dir / "item.jsonld.json").exists()
+
+
+def test_preservica_tree_never_writes_item_jsonld_for_a_folder(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["sub-folder"] = {"title": "Sub Folder", "type": "SO", "fragment_refs": [
+        {"schemaUri": "http://oai_dc", "url": "http://x/frag1"},
+    ]}
+    client.metadata_fragments["http://x/frag1"] = (
+        '<MetadataResponse><MetadataContainer schemaUri="http://oai_dc">'
+        "<Content><dc><title>Sub Folder</title></dc></Content></MetadataContainer></MetadataResponse>"
+    )
+    client.children["root-ref"] = [{"ref": "sub-folder", "title": "Sub Folder", "type": "SO"}]
+    client.children["sub-folder"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+    count, item_metadata = collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    assert item_metadata == []
+    folder_dir = tmp_path / "bronze" / "preservica" / "my-collection" / "latest" / "tree" / "sub-folder"
+    assert not (folder_dir / "item.jsonld.json").exists()
 
 
 def test_preservica_tree_converts_metadata_for_folders_too(tmp_path):
@@ -1381,9 +1482,10 @@ def test_preservica_tree_writes_root_metadata_json(tmp_path):
         "root-ref", "my-collection", "preservica",
         {"client": client, "dest_root": str(tmp_path)},
     )
-    count = collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+    count, item_metadata = collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
 
     assert count == 0
+    assert item_metadata == []
     root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
     assert _read_json(str(root / "tree" / "metadata.json")) == {
         "dc": {"title": "My Collection"},
@@ -1500,7 +1602,7 @@ def test_tree_partial_renames_io_moves_directory_without_recopying(tmp_path, fak
     )
 
     new_dir = root / "tree" / "item-one-renamed"
-    assert result == {"moved": ["io-1"], "added": [], "removed": [], "unresolved": []}
+    assert result == {"moved": ["io-1"], "added": [], "removed": [], "unresolved": [], "item_metadata": []}
     assert not old_dir.exists()
     assert new_dir.exists()
     # A real move, not a delete+rewrite — same inode survives the rename.
@@ -1520,7 +1622,7 @@ def test_tree_partial_rename_is_noop_when_slug_unchanged(tmp_path, fake_registry
     result = collection.preservica_tree_partial(
         "my-collection", "preservica", [{"ref": "io-1", "type": "IO"}], {"dest_root": str(tmp_path)},
     )
-    assert result == {"moved": [], "added": [], "removed": [], "unresolved": []}
+    assert result == {"moved": [], "added": [], "removed": [], "unresolved": [], "item_metadata": []}
     root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
     assert (root / "tree" / "item-one").exists()
 
@@ -1556,7 +1658,7 @@ def test_tree_partial_renames_folder_moves_whole_subtree(tmp_path, fake_registry
         "my-collection", "preservica", [{"ref": "sub-folder", "type": "SO"}], {"dest_root": str(tmp_path)},
     )
 
-    assert result == {"moved": ["sub-folder"], "added": [], "removed": [], "unresolved": []}
+    assert result == {"moved": ["sub-folder"], "added": [], "removed": [], "unresolved": [], "item_metadata": []}
     assert not (root / "tree" / "sub-folder").exists()
     assert (
         root / "tree" / "sub-folder-renamed" / "item-one" / "Preservation" / "page1.tif"
@@ -1586,7 +1688,7 @@ def test_tree_partial_adds_new_item_via_parent_fallback_scan(tmp_path, fake_regi
         "my-collection", "preservica", [{"ref": "io-2", "type": "IO"}], {"dest_root": str(tmp_path)},
     )
 
-    assert result == {"moved": [], "added": ["io-2"], "removed": [], "unresolved": []}
+    assert result == {"moved": [], "added": ["io-2"], "removed": [], "unresolved": [], "item_metadata": []}
     root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
     assert (root / "tree" / "item-two" / "identifiers.json").exists()
     assert (root / "tree" / "item-one").exists()
@@ -1606,7 +1708,7 @@ def test_tree_partial_removed_entity_deletes_tree_entry(tmp_path, fake_registry,
         "my-collection", "preservica", [{"ref": "io-1", "type": "IO"}], {"dest_root": str(tmp_path)},
     )
 
-    assert result == {"moved": [], "added": [], "removed": ["io-1"], "unresolved": []}
+    assert result == {"moved": [], "added": [], "removed": ["io-1"], "unresolved": [], "item_metadata": []}
     assert not (root / "tree" / "item-one").exists()
 
 
@@ -1624,7 +1726,7 @@ def test_tree_partial_unresolved_when_parent_cannot_be_found(tmp_path, fake_regi
         "my-collection", "preservica", [{"ref": "orphan-1", "type": "IO"}], {"dest_root": str(tmp_path)},
     )
 
-    assert result == {"moved": [], "added": [], "removed": [], "unresolved": ["orphan-1"]}
+    assert result == {"moved": [], "added": [], "removed": [], "unresolved": ["orphan-1"], "item_metadata": []}
     assert not (root / "tree" / "orphan").exists()
     assert not any((root / "tree").glob("orphan*"))
 

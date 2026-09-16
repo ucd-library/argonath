@@ -45,7 +45,13 @@ class ItemMetadata(BaseModel):
     :param str type: Schema.org type (e.g. 'Photograph', 'Book', 'Map').
     :param str name: Item title.
     :param str description: Item description.
-    :param str date_created: Creation date (ISO 8601 or year string).
+    :param str creator: Item creator/author.
+    :param str date_created: Creation date (ISO 8601 or year string), or an
+        XSD-typed literal dict — see digtk.lib.dc_mapping.typed_date_literal().
+    :param str|dict license: License/rights statement — a plain string, or
+        {"@id": uri} for a URI-shaped rights statement.
+    :param list[dict] about: Subject entries, each {"@id": value}.
+    :param str publisher: Item publisher.
     :param list identifiers: Additional identifiers (box, folder, etc.).
     :param dict field_sources: Per-field provenance map.
     """
@@ -54,7 +60,11 @@ class ItemMetadata(BaseModel):
     type: str = Field("CreativeWork", alias="@type")
     name: str | None = None
     description: str | None = None
-    date_created: str | None = Field(None, alias="dateCreated")
+    creator: str | None = None
+    date_created: str | dict | None = Field(None, alias="dateCreated")
+    license: str | dict | None = None
+    about: list[dict] = Field(default_factory=list)
+    publisher: str | None = None
     identifiers: list[Identifier] = Field(default_factory=list, alias="identifier")
     field_sources: dict[str, FieldSource] = Field(
         default_factory=dict, alias="argonath:fieldSources"
@@ -65,17 +75,50 @@ class ItemMetadata(BaseModel):
     def to_jsonld(self):
         """Serialize to a JSON-LD dict with full context.
 
+        Only fields that are actually set are included (besides the always-
+        present @context/@id/ark/@type) — an absent field is omitted rather
+        than written as null, so a consumer merging this into an existing
+        sidecar (see digtk.models.digital_website.pipeline.merge_dc_metadata())
+        never clobbers a value some other writer already set with a null.
+
         :returns: JSON-LD document dict ready for serialization.
         :rtype: dict
         """
-        raise NotImplementedError("phase 0.2")
+        doc = {"@context": SCHEMA_CONTEXT, "@id": self.id, "ark": self.ark, "@type": self.type}
+        for field, alias in (
+            ("name", "name"), ("description", "description"), ("creator", "creator"),
+            ("date_created", "dateCreated"), ("license", "license"), ("publisher", "publisher"),
+        ):
+            value = getattr(self, field)
+            if value is not None:
+                doc[alias] = value
+        if self.about:
+            doc["about"] = self.about
+        if self.identifiers:
+            doc["identifier"] = [i.model_dump(by_alias=True) for i in self.identifiers]
+        if self.field_sources:
+            doc["argonath:fieldSources"] = self.field_sources
+        return doc
 
     @classmethod
     def from_jsonld(cls, doc):
         """Deserialize from a JSON-LD dict.
 
-        :param dict doc: Parsed JSON-LD document.
+        :param dict doc: Parsed JSON-LD document — see to_jsonld() for shape.
         :returns: ItemMetadata instance.
         :rtype: ItemMetadata
         """
-        raise NotImplementedError("phase 0.2")
+        return cls(
+            id=doc["@id"],
+            ark=doc.get("ark", doc["@id"]),
+            type=doc.get("@type", "CreativeWork"),
+            name=doc.get("name"),
+            description=doc.get("description"),
+            creator=doc.get("creator"),
+            date_created=doc.get("dateCreated"),
+            license=doc.get("license"),
+            about=doc.get("about", []),
+            publisher=doc.get("publisher"),
+            identifiers=[Identifier.model_validate(i) for i in doc.get("identifier", [])],
+            field_sources=doc.get("argonath:fieldSources", {}),
+        )

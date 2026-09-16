@@ -5,8 +5,8 @@
 ```
 /
 ├── bronze/         # Raw, immutable, append-only captures
-├── silver/         # Derived artifacts (derivatives, OCR, AI metadata, RAG chunks)
-├── gold/           # Curated, per-app publish-ready view
+├── silver/         # Intermediate derived work product (OCR, AI metadata, RAG chunks)
+├── gold/           # Curated, per-app publish-ready view (incl. public-facing derivatives)
 └── workspace/      # Per-user staging (formerly user/)
     └── [username]/
         ├── [collection-name]/   # Working collections
@@ -73,15 +73,6 @@ Mirrors the bronze path exactly (`[group]/[collection]/[time]/[item]/`) but hold
 
 ```
 silver/[group]/[collection]/[time]/[item]/
-├── item.jsonld.json            # domain: associatedMedia refs to the derivatives below
-├── public-frontend-derivatives/
-│   └── images/
-│       └── photograph.tiff/    # named after the source's own bronze filename
-│           └── images/
-│               ├── manifest.json
-│               ├── small.jpg
-│               ├── medium.jpg
-│               └── large.jpg
 ├── ocr/
 │   ├── manifest.json
 │   ├── prep.jpg                # OCR-ready image: resized, 300 DPI, fuzz-whitened.
@@ -99,21 +90,28 @@ silver/[group]/[collection]/[time]/[item]/
     └── chunks.json                # text chunks + embedding IDs
 ```
 
-This is the layout for an **image** bronze item. `public-frontend-derivatives/` holds
-the small/medium/large product set every image and PDF page publishes for frontend
-consumption — see "PDF Pagination" below for how a PDF's pages nest under it
-differently than a plain image does. `ocr/` is reused (not media-specific) across
-image, PDF, video, and audio items alike — see the PDF/video/audio subsections below
-for how each format's own outputs land there, plus the `stream/` and `captions/`
-subdirectories video/audio items add. (Video and audio derivatives still use the
-older flat `derivatives/` name for now — see their subsections below.)
+`public-frontend-derivatives/` (the small/medium/large product set every image and PDF
+page publishes for frontend consumption) and its item-level `item.jsonld.json`
+(associatedMedia refs to those derivatives) live in **gold**, not silver — see "Gold
+Layout" below — since they're final public-facing products with no need for a
+group/time staging dimension: the digital_website pipeline writes them straight from
+bronze to gold, with no silver hop. `ocr/`, `metadata/`, and `rag/` above remain
+silver, staying group/time-dimensioned like bronze, since they're intermediate pipeline
+work product (OCR text feeds the still-silver AI-metadata step; nothing serves them
+directly to the public) rather than something the webapp renders. `ocr/` is reused
+(not media-specific) across image, PDF, video, and audio items alike — see the
+PDF/video/audio subsections below for how each format's own outputs land there, plus
+the `streaming/` and `captions/` subdirectories video/audio items add under gold.
+(Video and audio derivatives still use the older flat `derivatives/` name for now —
+see their subsections below.)
 
-Every source image gets its own nested directory under `public-frontend-derivatives/
-images/`, named after its own bronze filename — this holds regardless of whether the
-item has one source image or several, so there's no filename-prefixing scheme to
-disambiguate a multi-image item; each source's small/medium/large set and manifest
-just live in their own directory instead. `ocr/`, `metadata/`, and `rag/` are
-unaffected by this and remain flat, shared directories.
+Every source image gets its own nested directory under gold's
+`public-frontend-derivatives/images/`, named after its own bronze filename — this
+holds regardless of whether the item has one source image or several, so there's no
+filename-prefixing scheme to disambiguate a multi-image item; each source's
+small/medium/large set and manifest just live in their own directory instead. `ocr/`,
+`metadata/`, and `rag/` are unaffected by this and remain flat, shared silver
+directories.
 
 ### Scan Orientation
 
@@ -173,16 +171,18 @@ a PDF is a different kind of source than a plain image); within that, each page
 publishes into its own plain 1-indexed subdirectory:
 
 ```
-silver/[group]/[collection]/[time]/[item]/
+gold/[app]/[collection]/[item]/
 ├── item.jsonld.json                 # associatedMedia: one ImageObject per page, "position": N
-├── public-frontend-derivatives/
-│   ├── images/                      # sibling to document.pdf/ below — holds plain image sources
-│   │   └── ...
-│   └── document.pdf/                # named after the source's own bronze filename
-│       └── images/
-│           ├── manifest.json         # aggregate: page count, per-page orientation summary
-│           ├── 1/{manifest.json, small.jpg, medium.jpg, large.jpg}
-│           └── 2/...
+└── public-frontend-derivatives/
+    ├── images/                      # sibling to document.pdf/ below — holds plain image sources
+    │   └── ...
+    └── document.pdf/                # named after the source's own bronze filename
+        └── images/
+            ├── manifest.json         # aggregate: page count, per-page orientation summary
+            ├── 1/{manifest.json, small.jpg, medium.jpg, large.jpg}
+            └── 2/...
+
+silver/[group]/[collection]/[time]/[item]/
 └── ocr/
     ├── manifest.json
     ├── page-000/{manifest.json, prep.jpg or prep-deskew.jpg}
@@ -225,7 +225,7 @@ Publishes as `tiled.tif`, alongside (not in a separate directory from) the
 small/medium/large set, sharing that directory's manifest:
 
 ```
-silver/[group]/[collection]/[time]/[item]/
+gold/[app]/[collection]/[item]/
 └── public-frontend-derivatives/
     ├── images/
     │   └── photograph.tiff/
@@ -269,7 +269,7 @@ below) — `original`, `small`, `medium`, `large`, `tiled`, and `ocr`, each a
   },
   "small": {
     "size": { "width": "256", "height": "326" },
-    "url": "cask://silver/g/c/latest/item/public-frontend-derivatives/images/photograph.tiff/images/small.jpg"
+    "url": "cask://gold/digital-dev/c/item/public-frontend-derivatives/images/photograph.tiff/images/small.jpg"
   },
   "medium": { "size": { "width": "512", "height": "652" }, "url": "cask://.../medium.jpg" },
   "large": { "size": { "width": "1024", "height": "1304" }, "url": "cask://.../large.jpg" },
@@ -279,7 +279,7 @@ below) — `original`, `small`, `medium`, `large`, `tiled`, and `ocr`, each a
       { "width": "1536", "height": "1955" },
       { "width": "768", "height": "977" }
     ],
-    "url": "cask://silver/g/c/latest/item/public-frontend-derivatives/images/photograph.tiff/images/tiled.tif"
+    "url": "cask://gold/digital-dev/c/item/public-frontend-derivatives/images/photograph.tiff/images/tiled.tif"
   },
   "ocr": {
     "size": { "width": "2048", "height": "2610" },
@@ -329,7 +329,7 @@ source of record — see "PDF Pagination" above).
   "extractDensity": 600,
   "small": {
     "size": { "width": "256", "height": "333" },
-    "url": "cask://silver/g/c/latest/item/public-frontend-derivatives/document.pdf/images/70/small.jpg"
+    "url": "cask://gold/digital-dev/c/item/public-frontend-derivatives/document.pdf/images/70/small.jpg"
   },
   "medium": { "size": { "width": "512", "height": "667" }, "url": "cask://.../medium.jpg" },
   "large": { "size": { "width": "1024", "height": "1333" }, "url": "cask://.../large.jpg" },
@@ -339,7 +339,7 @@ source of record — see "PDF Pagination" above).
       { "width": "1536", "height": "2000" },
       { "width": "768", "height": "1000" }
     ],
-    "url": "cask://silver/g/c/latest/item/public-frontend-derivatives/document.pdf/images/70/tiled.tif"
+    "url": "cask://gold/digital-dev/c/item/public-frontend-derivatives/document.pdf/images/70/tiled.tif"
   },
   "ocr": {
     "size": { "width": "1024", "height": "1333" },
@@ -376,7 +376,7 @@ bronze filename (same disambiguation-for-free pattern a PDF's own directory uses
 holding a `streaming/` subdirectory:
 
 ```
-silver/[group]/[collection]/[time]/[item]/
+gold/[app]/[collection]/[item]/
 ├── item.jsonld.json          # associatedMedia: one VideoObject, "identifier": <stem>
 └── public-frontend-derivatives/
     └── movie.mp4/
@@ -413,7 +413,7 @@ nested content-kind subfolder, since this is the only kind of output audio
 produces here:
 
 ```
-silver/[group]/[collection]/[time]/[item]/
+gold/[app]/[collection]/[item]/
 ├── item.jsonld.json          # associatedMedia: one AudioObject, "identifier": <stem>
 └── public-frontend-derivatives/
     └── interview.wav/
@@ -430,10 +430,12 @@ every source video/audio file as part of their standard derivative set —
 using the sources already staged for HLS or transcode/waveform generation (no
 separate staging pass), producing a WebVTT caption file per source. Shared by
 both media types (Whisper pulls audio from a video file itself via ffmpeg
-internally), captions land in their own `captions/` subdirectory:
+internally), captions land in their own `captions/` subdirectory — in gold, alongside
+the streaming/transcode output they caption, since a caption is itself a final
+public-facing product with no need for silver's group/time staging:
 
 ```
-silver/[group]/[collection]/[time]/[item]/
+gold/[app]/[collection]/[item]/
 └── captions/
     ├── manifest.json
     └── output-en.vtt
@@ -463,15 +465,48 @@ dimensions by app instead of by source grouping.
 
 ```
 gold/[app]/[collection]/[item]/
-├── manifest.json          # structural: promotion status + provenance (source group/time promoted from)
-└── item.jsonld.json       # domain: final merged sidecar (argonath:fieldSources)
+├── manifest.json                     # structural: see the two arrival paths below
+├── item.jsonld.json                  # domain: final merged sidecar (argonath:fieldSources)
+├── public-frontend-derivatives/      # direct-write: digital_website's image/PDF page products
+│   └── images/photograph.tiff/images/{manifest.json, small.jpg, medium.jpg, large.jpg, tiled.tif}
+├── streaming/                        # direct-write: video's HLS ladder (nests under its own
+│   └── ...                          # <filename>/streaming/ directory — see "Video Streaming")
+└── captions/                         # direct-write: WebVTT captions for video/audio sources
+    ├── manifest.json
+    └── output-en.vtt
 ```
 
 `app` is one of `arda` (global cross-collection RAG aggregate — every collection
-ends up here), `digital-dev`, `digital-prod`, or future app targets. Because gold
-has no time dimension, its `manifest.json` is the only record of which bronze/silver
-snapshot a given entry was promoted from — promotion, not reprocessing, is what
-updates a gold entry.
+ends up here), `digital-dev`, `digital-prod`, or future app targets.
+
+Gold content arrives by one of two paths, and which one a given subtree has is a
+property of that content type, not a fixed convention for the whole gold layer:
+
+- **Direct-write** — `digital_website`'s derivative-generation pipeline
+  (`public-frontend-derivatives/`, `streaming/`, `captions/`, and the
+  `associatedMedia`/caption portion of `item.jsonld.json`) writes straight from
+  bronze to gold, with no silver staging step, since these are final public-facing
+  products that need no group/time dimension and no review gate before they're
+  public. `manifest.json` here records the run/command that produced the content —
+  the same generic shape any process-directory manifest has (see "manifest.json"
+  below) — not a "promoted from" reference.
+- **Promoted** — content that does go through silver first (AI-reviewed metadata,
+  RAG aggregation, eventually via `ops/lib/collections.js`'s `publishCollection()`,
+  currently unimplemented) is promoted into gold from a specific bronze/silver
+  group/time snapshot. Because gold itself has no time dimension, that
+  `manifest.json` is the only durable record of which snapshot a given entry was
+  promoted from — promotion, not reprocessing, is what updates a promoted gold
+  entry.
+
+The Dublin-Core-derived descriptive fields (`name`/`description`/`creator`/
+`dateCreated`/`license`/`publisher`/`about`/`identifier`) on `item.jsonld.json` are
+a third, narrower case: deterministically mapped from bronze's raw Preservica
+metadata (see `digtk.lib.dc_mapping`) and merged directly into gold — no silver
+hop, but also not really "promotion" in the review-gate sense above, since nothing
+is held for human review first. `digtk.models.digital_website.pipeline.merge_dc_metadata()`
+and `update_associated_media()` merge into disjoint sets of top-level keys on the
+same `item.jsonld.json`, so either can run before or after the other without
+clobbering the other's fields.
 
 ## Multi-Part Items
 
@@ -499,7 +534,7 @@ kinds of file, never merged into one:
 |---|---|---|
 | `manifest.json` | Structural/system: CaskFS layout facts, pipeline run records, item lists + hashes, promotion status | schema.org / descriptive fields |
 | `metadata.jsonld.json` / `<item>.jsonld.json` | Domain: schema.org descriptive metadata about the collection or item | Pipeline state, run history, promotion status |
-| `silver/.../[item]/item.jsonld.json` | Domain: `schema:associatedMedia` `ImageObject` refs to that item's derivatives, referencing the bronze original via `cask://` rather than copying it | Pipeline state, run history — and never the bronze sidecar's own fields, since bronze is immutable/append-only and this file lives in silver instead of amending it |
+| `gold/[app]/.../[item]/item.jsonld.json` | Domain: `schema:associatedMedia` refs to that item's public-facing derivatives (referencing the bronze original via `cask://` rather than copying it) merged with Dublin-Core-derived descriptive fields (see "Gold Layout" above) | Pipeline state, run history, promotion status — and never the bronze sidecar's own fields, since bronze is immutable/append-only and this file lives in gold instead of amending it |
 
 This is a deliberate reaction against LDP's convention of mixing container/structural
 triples with a resource's own descriptive triples in one graph — CaskFS keeps them as

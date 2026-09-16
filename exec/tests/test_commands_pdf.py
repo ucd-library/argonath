@@ -43,7 +43,7 @@ def test_thumbnail_calls_pdf_with_page_and_widths(monkeypatch):
     result = runner.invoke(pdf.app, ["thumbnail", ARK, "--page", "2", "--widths", "256,512"])
 
     assert result.exit_code == 0
-    assert seen["opts"] == {"page": 2, "widths": "256,512", "quality": 90}
+    assert seen["opts"] == {"page": 2, "widths": "256,512", "quality": 90, "app": "digital-dev"}
 
 
 def test_thumbnail_defaults_page_to_zero(monkeypatch):
@@ -62,7 +62,7 @@ def test_convert_calls_pdf_with_page_and_format(monkeypatch):
     result = runner.invoke(pdf.app, ["convert", ARK, "--page", "1", "--format", "png"])
 
     assert result.exit_code == 0
-    assert seen["opts"] == {"page": 1, "format": "png"}
+    assert seen["opts"] == {"page": 1, "format": "png", "app": "digital-dev"}
 
 
 def test_deskew_calls_pdf_with_page_and_threshold(monkeypatch):
