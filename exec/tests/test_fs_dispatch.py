@@ -48,8 +48,15 @@ class FakeCaskBackend:
         self.link_calls.append((path, source_path, opts))
         return {"from_filepath": path, "to_filepath": source_path}
 
+    def move(self, src_path, dest_path, opts={}):
+        self.files[dest_path] = self.files.pop(src_path)
+        return {"src_filepath": src_path, "dest_filepath": dest_path}
+
     def find_by_subject(self, subject, opts={}):
         return [f"/bronze/{subject}.jsonld.json"]
+
+    def find_by_partition_keys(self, partition_keys, opts={}):
+        return [f"/bronze/{'-'.join(partition_keys)}/metadata.json"]
 
 
 @pytest.fixture
@@ -126,9 +133,42 @@ def test_add_derivative_link_rejects_local_path(tmp_path, fake_cask):
         fs.add_derivative_link("cask:/silver/x.jpg", str(tmp_path / "x.tiff"))
 
 
+def test_move_local_to_local(tmp_path):
+    src = str(tmp_path / "a.txt")
+    dest = str(tmp_path / "b.txt")
+    fs.write(src, data=b"hi")
+    fs.move(src, dest)
+    assert fs.exists(src) is False
+    assert fs.read(dest) == b"hi"
+
+
+def test_move_cask_to_cask_uses_cask_backend(fake_cask):
+    fake_cask.files["/bronze/old.txt"] = b"hi"
+    result = fs.move("cask:/bronze/old.txt", "cask:/bronze/new.txt")
+    assert result == {"src_filepath": "/bronze/old.txt", "dest_filepath": "/bronze/new.txt"}
+    assert fake_cask.files == {"/bronze/new.txt": b"hi"}
+
+
+def test_move_rejects_crossing_backends(tmp_path, fake_cask):
+    with pytest.raises(ValueError):
+        fs.move(str(tmp_path / "a.txt"), "cask:/bronze/a.txt")
+    with pytest.raises(ValueError):
+        fs.move("cask:/bronze/a.txt", str(tmp_path / "a.txt"))
+
+
+def test_move_cask_only_opts_rejected_for_local_path(tmp_path):
+    with pytest.raises(ValueError, match="recheck_mime_type"):
+        fs.move(str(tmp_path / "a.txt"), str(tmp_path / "b.txt"), opts={"recheck_mime_type": True})
+
+
 def test_find_by_subject_dispatches_to_cask_backend(fake_cask):
     result = fs.find_by_subject("ark:/87287/d7abc1234")
     assert result == ["/bronze/ark:/87287/d7abc1234.jsonld.json"]
+
+
+def test_find_by_partition_keys_dispatches_to_cask_backend(fake_cask):
+    result = fs.find_by_partition_keys(["ref-io-1", "collection-haeger"])
+    assert result == ["/bronze/ref-io-1-collection-haeger/metadata.json"]
 
 
 def test_get_cask_backend_raises_without_configured_connection(monkeypatch):

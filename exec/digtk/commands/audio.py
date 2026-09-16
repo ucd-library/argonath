@@ -22,6 +22,7 @@ from digtk.lib.config import (
     AudioWaveformWidthOption,
     CaptionsLanguageOption,
     CaptionsModelOption,
+    GoldAppOption,
 )
 from digtk.models.digital_website import audio
 
@@ -44,11 +45,12 @@ def transcode(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
     format: AudioTranscodeFormatOption = CONFIG["audio"]["transcode_format"],
     bitrate: AudioTranscodeBitrateOption = CONFIG["audio"]["transcode_bitrate"],
+    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Convert source audio to the specified format."""
     try:
         utils.log(f"Transcoding {ark} to {format} @ {bitrate}")
-        utils.result(audio.transcode(ark, opts={"format": format, "bitrate": bitrate}))
+        utils.result(audio.transcode(ark, opts={"format": format, "bitrate": bitrate, "app": app}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -58,11 +60,12 @@ def waveform(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
     width: AudioWaveformWidthOption = CONFIG["audio"]["waveform_width"],
     height: AudioWaveformHeightOption = CONFIG["audio"]["waveform_height"],
+    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Generate a waveform image."""
     try:
         utils.log(f"Generating waveform for {ark} ({width}x{height})")
-        utils.result(audio.waveform(ark, opts={"width": width, "height": height}))
+        utils.result(audio.waveform(ark, opts={"width": width, "height": height, "app": app}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -73,12 +76,13 @@ def derivatives(
     format: AudioTranscodeFormatOption = CONFIG["audio"]["transcode_format"],
     language: CaptionsLanguageOption = CONFIG["captions"]["language"],
     model: CaptionsModelOption = CONFIG["captions"]["model"],
+    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Generate the full derivative set: transcode + waveform + WebVTT caption
     (local Whisper ASR — machine-generated and unreviewed)."""
     try:
         utils.log(f"Generating derivatives for {ark}")
-        result = audio.derivatives(ark, opts={"format": format, "language": language, "model": model})
+        result = audio.derivatives(ark, opts={"format": format, "language": language, "model": model, "app": app})
         utils.result(result)
     except _ERRORS as e:
         utils.error(str(e))

@@ -42,6 +42,7 @@ def credentials_path(tmp_path, monkeypatch):
     monkeypatch.setattr(auth, "CREDENTIALS_PATH", path)
     monkeypatch.delenv(auth.API_URL_ENV, raising=False)
     monkeypatch.delenv(auth.API_KEY_ENV, raising=False)
+    monkeypatch.delenv(auth.TRUSTED_USER_ENV, raising=False)
     return path
 
 
@@ -54,7 +55,7 @@ def cask_environments_path(tmp_path, monkeypatch):
 
 def test_resolve_with_nothing_configured():
     creds = auth.resolve()
-    assert creds == {"api_url": None, "token": None, "user": None}
+    assert creds == {"api_url": None, "token": None, "user": None, "trusted_user": None}
 
 
 def test_save_and_load_stored():
@@ -71,7 +72,12 @@ def test_save_stored_sets_owner_only_permissions(credentials_path):
 def test_resolve_uses_stored_file():
     auth.save_stored({"api_url": "https://cask.example", "token": "tok", "user": "jdoe"})
     creds = auth.resolve()
-    assert creds == {"api_url": "https://cask.example", "token": "tok", "user": "jdoe"}
+    assert creds == {
+        "api_url": "https://cask.example",
+        "token": "tok",
+        "user": "jdoe",
+        "trusted_user": None,
+    }
 
 
 def test_env_vars_override_stored_file(monkeypatch):
@@ -82,6 +88,12 @@ def test_env_vars_override_stored_file(monkeypatch):
     assert creds["api_url"] == "https://override.example"
     assert creds["token"] == "override-tok"
     assert creds["user"] == "jdoe"  # user only ever comes from the stored file
+
+
+def test_resolve_trusted_user_is_env_only_with_no_stored_fallback(monkeypatch):
+    monkeypatch.setenv(auth.TRUSTED_USER_ENV, "dagster-worker")
+    creds = auth.resolve()
+    assert creds["trusted_user"] == "dagster-worker"
 
 
 def test_clear_stored_removes_file(credentials_path):

@@ -23,7 +23,7 @@ def test_thumbnail_calls_image_with_parsed_options(monkeypatch):
 
     assert result.exit_code == 0
     assert seen["ark"] == ARK
-    assert seen["opts"] == {"widths": "256,512", "quality": 80}
+    assert seen["opts"] == {"widths": "256,512", "quality": 80, "app": "digital-dev"}
     assert last_json_line(result.output) == {"status": "success"}
 
 
@@ -45,7 +45,7 @@ def test_convert_calls_image_with_format(monkeypatch):
     result = runner.invoke(image.app, ["convert", ARK, "--format", "png"])
 
     assert result.exit_code == 0
-    assert seen["opts"] == {"format": "png"}
+    assert seen["opts"] == {"format": "png", "app": "digital-dev"}
 
 
 def test_convert_routes_exception_through_utils_error(monkeypatch):

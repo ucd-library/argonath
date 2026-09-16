@@ -2,26 +2,36 @@
 digtk preservica — pull a collection out of Preservica into bronze.
 
 Subcommands:
-  config — show the current Preservica connection and settings (nothing is set
-           by this command — see its help for how to actually set values)
-  token  — print a live access token (and, given a URL, a ready-to-run curl
-           command) for manually replaying a request outside the client's
-           retry logic
-  list   — browse a Preservica structural object's children (or the collection
-           root), to discover the ref to pass to `import` (calls digtk.lib.preservica
-           directly — no bronze/collection business logic involved)
-  import — walk a Preservica collection into bronze's by-ref/ layout
-           (see digtk.models.collection.preservica_import)
-  tree   — rebuild bronze's tree/ layout from an already-imported by-ref/
-           (see digtk.models.collection.preservica_tree)
+  config  — show the current Preservica connection and settings (nothing is set
+            by this command — see its help for how to actually set values)
+  token   — print a live access token (and, given a URL, a ready-to-run curl
+            command) for manually replaying a request outside the client's
+            retry logic
+  list    — browse a Preservica structural object's children (or the collection
+            root), to discover the ref to pass to `import` (calls digtk.lib.preservica
+            directly — no bronze/collection business logic involved)
+  import  — walk a Preservica collection into bronze's by-ref/ layout, always
+            registering the collection along the way (see
+            digtk.models.collection.preservica_import/register_collection)
+  sync    — sync only specific changed entities (folders/items) for an
+            already-registered collection, never a full re-walk (see
+            digtk.models.collection.preservica_sync_entities) — used by
+            Dagster's reconcile_collection_items
+  tree    — rebuild bronze's tree/ layout from an already-imported by-ref/
+            (see digtk.models.collection.preservica_tree)
+  changes — list registered Preservica collections with any change since a
+            given timestamp (see digtk.models.collection.find_changed_preservica_collections)
+            — used by Dagster's preservica_auto_sync_sensor
 """
 from typing import Annotated
 
 import typer
 
 from digtk.lib import preservica, utils
+from digtk.lib.config import CONFIG, GoldAppOption
 from digtk.lib.preservica import PreservicaAuthError, PreservicaRequestError
 from digtk.models import collection as collection_model
+from digtk.models.digital_website import pipeline
 
 app = typer.Typer(help="Pull a collection out of Preservica into bronze.", no_args_is_help=True)
 
@@ -164,23 +174,157 @@ def import_(
     })
 
 
+@app.command("sync")
+def sync(
+    collection: Annotated[str, typer.Option(help="Collection name — must already be registered (see `import`).")],
+    group: Annotated[str, typer.Option(
+        help="Bronze group namespace. Defaults to 'preservica', same as `import`.",
+    )] = "preservica",
+    changed: Annotated[list[str], typer.Option(
+        "--changed", help="One changed entity, as 'TYPE:REF' (TYPE is 'SO' for a folder "
+        "or 'IO' for an item), e.g. '--changed IO:1a2b3c...' or '--changed SO:9f8e7d...'. "
+        "Repeat for multiple entities.",
+    )] = [],
+    dest_root: Annotated[str | None, typer.Option(
+        "--dest-root", help="Override the bronze root — see `import`'s.",
+    )] = None,
+    skip_unchanged: Annotated[bool, typer.Option(
+        "--skip-unchanged", help="Opt-in fixity skip for unchanged files — see `import`'s.",
+    )] = False,
+):
+    """Sync only the specific Preservica entities that changed — never a full
+    recursive re-walk (see `import` for that). Each --changed folder (SO) is
+    refreshed and its immediate children diffed; each --changed item (IO) is
+    fully re-fetched."""
+    entities = []
+    for raw in changed:
+        entity_type, _, ref = raw.partition(":")
+        if entity_type not in ("SO", "IO") or not ref:
+            utils.error(f"--changed value must be 'SO:<ref>' or 'IO:<ref>', got {raw!r}")
+        entities.append({"ref": ref, "type": entity_type})
+    if not entities:
+        utils.error("--changed must be given at least once.")
+
+    opts = {"dest_root": dest_root, "on_progress": utils.log, "skip_unchanged": skip_unchanged}
+    try:
+        result = collection_model.preservica_sync_entities(collection, group, entities, opts)
+    except ValueError as e:
+        utils.error(str(e))
+    except (PreservicaAuthError, PreservicaRequestError) as e:
+        utils.error(str(e))
+
+    utils.log(
+        f"Synced {group}/{collection}: +{len(result['added'])} added, "
+        f"-{len(result['removed'])} removed, ~{len(result['changed'])} changed "
+        f"({len(result['errors'])} error(s), {len(result['warnings'])} warning(s))"
+    )
+    utils.result({
+        "status": "success",
+        "collection": collection,
+        "group": group,
+        "added": result["added"],
+        "removed": result["removed"],
+        "changed": result["changed"],
+    })
+
+
+def _merge_dc_metadata(item_metadata_list, app):
+    """Merge each newly tree-built item's Dublin-Core-derived metadata into its
+    gold item.jsonld.json — tolerant of per-item failure (e.g. an item whose
+    ARK hasn't been minted into bronze's by-ref/ sidecar yet, see
+    digtk.lib.items.resolve()'s phase-0.3 dependency) so one bad item never
+    fails the whole tree rebuild/patch.
+
+    :param list[digtk.lib.schema.ItemMetadata] item_metadata_list: Items to merge.
+    :param str app: Target gold app.
+    """
+    for item_metadata in item_metadata_list:
+        try:
+            pipeline.merge_dc_metadata(item_metadata, app=app)
+        except (LookupError, OSError, RuntimeError, ValueError) as e:
+            utils.log(f"Warning: could not merge gold metadata for {item_metadata.ark}: {e}")
+
+
 @app.command("tree")
 def tree(
     collection: Annotated[str, typer.Option(help="Collection name.")],
     group: Annotated[str, typer.Option(
         help="Bronze group namespace. Defaults to 'preservica', same as `import`.",
     )] = "preservica",
+    changed: Annotated[list[str], typer.Option(
+        "--changed", help="One changed entity, as 'TYPE:REF' (same shape as `sync`'s "
+        "--changed). When given, only these entities' tree/ entries are patched in "
+        "place (preservica_tree_partial()) instead of doing a full rebuild — repeat "
+        "for multiple entities. Omit entirely for a full rebuild.",
+    )] = [],
     dest_root: Annotated[str | None, typer.Option(
         "--dest-root", help="Override the bronze root — must match whatever --dest-root "
         "(or its cask:/ default) the matching `import` run used.",
     )] = None,
+    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
-    """Rebuild bronze's tree/ layout from an already-imported by-ref/. Makes no
-    network calls to Preservica — reads only what's already in bronze."""
+    """Rebuild bronze's tree/ layout from an already-imported by-ref/, and merge
+    any Dublin-Core-derived schema.org metadata discovered along the way into
+    gold's item.jsonld.json for each affected item (see
+    digtk.models.digital_website.pipeline.merge_dc_metadata()). Makes no
+    network calls to Preservica — reads only what's already in bronze. A gold
+    merge failure for one item is logged and skipped rather than failing the
+    whole tree rebuild/patch."""
     opts = {"dest_root": dest_root}
+
+    if changed:
+        entities = []
+        for raw in changed:
+            entity_type, _, ref = raw.partition(":")
+            if entity_type not in ("SO", "IO") or not ref:
+                utils.error(f"--changed value must be 'SO:<ref>' or 'IO:<ref>', got {raw!r}")
+            entities.append({"ref": ref, "type": entity_type})
+
+        try:
+            result = collection_model.preservica_tree_partial(collection, group, entities, opts)
+        except FileNotFoundError as e:
+            utils.error(str(e))
+
+        utils.log(
+            f"Patched tree for {group}/{collection}: +{len(result['added'])} added, "
+            f"-{len(result['removed'])} removed, ~{len(result['moved'])} moved"
+            + (f", {len(result['unresolved'])} unresolved" if result["unresolved"] else "")
+        )
+        _merge_dc_metadata(result["item_metadata"], app)
+        utils.result({
+            "status": "success", "collection": collection,
+            **{k: v for k, v in result.items() if k != "item_metadata"},
+        })
+        return
+
     try:
-        count = collection_model.preservica_tree(collection, group, opts)
+        count, item_metadata = collection_model.preservica_tree(collection, group, opts)
     except FileNotFoundError as e:
         utils.error(str(e))
 
+    _merge_dc_metadata(item_metadata, app)
     utils.result({"status": "success", "collection": collection, "items": count})
+
+
+@app.command("changes")
+def changes(
+    since: Annotated[str, typer.Option(
+        help="ISO-8601 timestamp/date — only changes at or after this point are reported.",
+    )],
+):
+    """List registered Preservica collections with any change since `since` —
+    the basis for Dagster's preservica_auto_sync_sensor. Also auto-registers a
+    brand-new folder the first time its own 'argonath' identifier is seen."""
+    try:
+        result = collection_model.find_changed_preservica_collections(since)
+    except ValueError as e:
+        utils.error(str(e))
+    except (PreservicaAuthError, PreservicaRequestError) as e:
+        utils.error(str(e))
+
+    for c in result["collections"]:
+        utils.log(f"{c['group']}/{c['name']}  (ref {c['root_ref']})")
+    if not result["collections"]:
+        utils.log(f"(no changes since {since})")
+
+    utils.result({"status": "success", "since": since, "collections": result["collections"]})

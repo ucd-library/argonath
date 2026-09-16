@@ -10,6 +10,7 @@ from lib.configs import (
     items_partitions,
     IngestItemConfig,
     ReconcileCollectionConfig,
+    RebuildTreeConfig,
     DerivativesConfig,
     OcrConfig,
     SearchIndexConfig,
@@ -31,19 +32,33 @@ def reconcile_collection_items(context: dg.AssetExecutionContext, config: Reconc
     deleted). Digital-collection sources are additive-only — nothing is ever
     auto-deleted for them.
 
+    Preservica sources are targeted, not a full re-ingest: `config.preservica_changed`
+    (populated by preservica_auto_sync_sensor from
+    digtk.models.collection.find_changed_preservica_collections()) names the
+    specific folder(s)/item(s) that actually changed, and only those are
+    synced — see digtk.models.collection.preservica_sync_entities(). A brand
+    new collection's initial full import is out of scope here; that's still
+    a manual `digtk preservica import` (see that command's own docs).
+
     Not partitioned itself: this asset expands into partitions, it doesn't run
     within one. Upstream of ingest_item and friends, which then run per (collection, item).
 
     :param context: Dagster asset execution context.
-    :param config: ReconcileCollectionConfig with group, collection, source_type, source_uri.
+    :param config: ReconcileCollectionConfig with group, collection, source_type,
+        source_uri (non-preservica sources) / preservica_changed (preservica).
     :returns: Dict with the collection key and added/removed/changed ARK lists.
     """
     collection_key = f"{config.group}/{config.collection}"
+
+    preservica_cmd = ["digtk", "preservica", "sync"]
+    for entity in config.preservica_changed:
+        preservica_cmd += ["--changed", f"{entity.type}:{entity.ref}"]
 
     cmd_map = {
         "website": ["digtk", "ingest", "crawl", config.source_uri],
         "db-dump": ["digtk", "ingest", "db-dump", config.source_uri],
         "digital-collection": ["digtk", "ingest", "batch", config.source_uri],
+        "preservica": preservica_cmd,
     }
     cmd = cmd_map[config.source_type] + ["--collection", config.collection, "--group", config.group]
     result = exec(cmd)
@@ -64,6 +79,60 @@ def reconcile_collection_items(context: dg.AssetExecutionContext, config: Reconc
         f"Reconciled {collection_key}: +{len(added)} added, -{len(removed)} removed, ~{len(changed)} changed"
     )
     return dg.Output({"collection": collection_key, "added": added, "removed": removed, "changed": changed})
+
+
+@dg.asset(
+    deps=[reconcile_collection_items],
+    group_name="ingest",
+)
+def rebuild_collection_tree(context: dg.AssetExecutionContext, config: RebuildTreeConfig):
+    """Update bronze's tree/ (human-readable, title-keyed) layout for a
+    Preservica collection from its just-synced by-ref/ state — no network
+    calls (see digtk.models.collection.preservica_tree()/preservica_tree_partial()).
+
+    Runs immediately after reconcile_collection_items in the same job, so
+    tree/ stays current after every incremental Preservica sync (see
+    preservica_auto_sync_sensor) instead of only after a manual `digtk
+    preservica tree` run. A no-op for the other three source types — tree/
+    is derived purely from by-ref/, and only Preservica writes by-ref/.
+
+    When config.preservica_changed is non-empty (the sensor always populates
+    it with the same changed entities passed to reconcile_collection_items),
+    only those entities' tree/ entries are patched in place
+    (preservica_tree_partial()) — this both fixes the rename case (a targeted
+    sync never refreshes a parent's cached children.json, so a full rebuild
+    alone can't be trusted to pick up a new title/slug for an unrelated
+    ref — see preservica_tree_partial()'s docstring) and avoids a full
+    delete-and-rebuild of tree/ on every sync for large collections.
+    preservica_changed is left empty for a full preservica_tree() rebuild —
+    e.g. a manually-triggered run, or right after `preservica import`.
+
+    :param context: Dagster asset execution context.
+    :param config: RebuildTreeConfig with group, collection, source_type,
+        preservica_changed.
+    """
+    if config.source_type != "preservica":
+        context.log.info(
+            f"Skipping tree rebuild for {config.group}/{config.collection}: "
+            f"source_type={config.source_type!r} has no by-ref/ to rebuild from."
+        )
+        return dg.Output({"skipped": True})
+
+    if config.preservica_changed:
+        cmd = ["digtk", "preservica", "tree", "--collection", config.collection, "--group", config.group]
+        for entity in config.preservica_changed:
+            cmd += ["--changed", f"{entity.type}:{entity.ref}"]
+        result = exec(cmd)
+        context.log.info(
+            f"Patched tree for {config.group}/{config.collection}: "
+            f"+{len(result.get('added', []))} added, -{len(result.get('removed', []))} removed, "
+            f"~{len(result.get('moved', []))} moved"
+        )
+        return dg.Output(result)
+
+    result = exec(["digtk", "preservica", "tree", "--collection", config.collection, "--group", config.group])
+    context.log.info(f"Rebuilt tree for {config.group}/{config.collection}: {result.get('items')} item(s)")
+    return dg.Output(result)
 
 
 @dg.asset(
@@ -106,10 +175,10 @@ def generate_derivatives(context: dg.AssetExecutionContext, config: DerivativesC
     separate, not-yet-scoped piece of work.
 
     :param context: Dagster asset execution context.
-    :param config: DerivativesConfig with thumbnail widths.
+    :param config: DerivativesConfig with thumbnail widths and target gold app.
     """
     ark = context.partition_key.keys_by_dimension["item"]
-    result = exec(["digtk", "public-dc", "image", "derivatives", ark, "--widths", config.widths])
+    result = exec(["digtk", "public-dc", "image", "derivatives", ark, "--widths", config.widths, "--app", config.app])
     context.log.info(f"Derivatives result: {result}")
     return dg.Output(result)
 

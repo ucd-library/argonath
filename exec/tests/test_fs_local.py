@@ -81,6 +81,43 @@ def test_ls_on_file_raises_not_a_directory(tmp_path):
         local.ls(path)
 
 
+def test_move_file_to_new_path(tmp_path):
+    src = str(tmp_path / "old.txt")
+    dest = str(tmp_path / "sub" / "new.txt")
+    local.write_bytes(src, b"hello")
+    local.move(src, dest)
+    assert not os.path.exists(src)
+    assert local.read_bytes(dest) == b"hello"
+
+
+def test_move_directory_moves_whole_subtree(tmp_path):
+    src = tmp_path / "old-dir"
+    (src / "nested").mkdir(parents=True)
+    (src / "a.txt").write_bytes(b"a")
+    (src / "nested" / "b.txt").write_bytes(b"b")
+    dest = str(tmp_path / "renamed" / "new-dir")
+
+    local.move(str(src), dest)
+
+    assert not src.exists()
+    assert local.read_bytes(os.path.join(dest, "a.txt")) == b"a"
+    assert local.read_bytes(os.path.join(dest, "nested", "b.txt")) == b"b"
+
+
+def test_move_missing_source_raises_file_not_found(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        local.move(str(tmp_path / "nope.txt"), str(tmp_path / "dest.txt"))
+
+
+def test_move_existing_destination_raises_file_exists(tmp_path):
+    src = str(tmp_path / "src.txt")
+    dest = str(tmp_path / "dest.txt")
+    local.write_bytes(src, b"x")
+    local.write_bytes(dest, b"y")
+    with pytest.raises(FileExistsError):
+        local.move(src, dest)
+
+
 def test_delete_file(tmp_path):
     path = str(tmp_path / "file.txt")
     local.write_bytes(path, b"x")

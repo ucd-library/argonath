@@ -61,12 +61,15 @@ def thumbnails(ark, opts={}):
     :param str ark: Item ARK identifier.
     :param dict opts: 'widths' (comma-separated str, default
         CONFIG["image"]["thumbnail_widths"]) — must resolve to exactly 3 widths
-        (small/medium/large), 'quality' (int).
+        (small/medium/large), 'quality' (int), 'app' (str) — target gold app,
+        these thumbnails are a final public-facing product with no silver
+        staging (see docs/cask-conventions.md's Gold Layout section).
     :returns: {"status": "success", "ark": str, "images": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
     widths = pipeline.parse_widths(opts.get("widths", CONFIG["image"]["thumbnail_widths"]))
+    app = opts.get("app")
     item = items.resolve(ark)
     image_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "image")
     start = time.monotonic()
@@ -85,6 +88,7 @@ def thumbnails(ark, opts={}):
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images", local_outputs,
                 command=["digtk", "image", "thumbnail", ark, "--widths", ",".join(map(str, widths))],
                 params={"widths": widths},
+                type="gold", type_opts={"app": app},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
                     "link_relation": _LINK_RELATION_BY_SUBDIR["derivatives"],
@@ -101,11 +105,13 @@ def convert(ark, opts={}):
     not part of generate()'s standard derivative set.
 
     :param str ark: Item ARK identifier.
-    :param dict opts: 'format' (str, default CONFIG["image"]["convert_format"]), 'quality' (int).
+    :param dict opts: 'format' (str, default CONFIG["image"]["convert_format"]),
+        'quality' (int), 'app' (str) — target gold app, see thumbnails().
     :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
     """
     fmt = opts.get("format", CONFIG["image"]["convert_format"])
+    app = opts.get("app")
     ext = pipeline.EXTENSION_BY_FORMAT.get(fmt.lower(), f".{fmt.lower()}")
     item = items.resolve(ark)
     image_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "image")
@@ -127,6 +133,7 @@ def convert(ark, opts={}):
             item, pipeline.PUBLIC_FRONTEND_DIR, local_outputs,
             command=["digtk", "image", "convert", ark, "--format", fmt],
             params={"format": fmt},
+            type="gold", type_opts={"app": app},
             opts={
                 "manifest_opts": {"duration_s": time.monotonic() - start},
                 "link_relation": _LINK_RELATION_BY_SUBDIR["derivatives"],
@@ -144,10 +151,11 @@ def deskew(ark, opts={}):
 
     :param str ark: Item ARK identifier.
     :param dict opts: Forwarded to image_magick.deskew() (threshold, working_width,
-        output_width, quality).
+        output_width, quality); 'app' (str) — target gold app, see thumbnails().
     :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
     """
+    app = opts.get("app")
     item = items.resolve(ark)
     image_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "image")
     start = time.monotonic()
@@ -168,6 +176,7 @@ def deskew(ark, opts={}):
             item, pipeline.PUBLIC_FRONTEND_DIR, local_outputs,
             command=["digtk", "image", "deskew", ark],
             params={k: v for k, v in opts.items() if k in ("threshold", "working_width", "output_width", "quality")},
+            type="gold", type_opts={"app": app},
             opts={
                 "manifest_opts": {"duration_s": time.monotonic() - start},
                 "link_relation": _LINK_RELATION_BY_SUBDIR["derivatives"],
@@ -250,13 +259,16 @@ def generate(ark, opts={}):
     :param dict opts: 'widths' (comma-separated str, default
         CONFIG["image"]["thumbnail_widths"]) — must resolve to exactly 3 widths
         (small/medium/large); forwarded to image_magick/ocr_utils: 'quality', 'dpi',
-        'fuzz', 'threshold', etc.
+        'fuzz', 'threshold', etc. 'app' (str) — target gold app for the published
+        derivative set + associated-media sidecar (OCR-prep output stays silver,
+        see docs/cask-conventions.md's Gold Layout section).
     :returns: {"status": "success", "ark": str, "derivatives": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}, "ocr": {...},
         "orientation": {stem: {"deskew": bool, "stats": {...}}, ...}}
     :rtype: dict
     """
     widths = pipeline.parse_widths(opts.get("widths", CONFIG["image"]["thumbnail_widths"]))
+    app = opts.get("app")
     item = items.resolve(ark)
     image_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "image")
     start = time.monotonic()
@@ -301,7 +313,9 @@ def generate(ark, opts={}):
 
             utils.log(f"[{i}/{total}] {stem}: probing derivative dimensions...")
             size_by_label = {label: image_magick.probe_dimensions(local_path) for label, (fn, local_path) in zip(pipeline.THUMBNAIL_SIZE_LABELS, thumb_set)}
-            images_dir = pipeline.derivative_dir(item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images")
+            images_dir = pipeline.derivative_dir(
+                item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images", type="gold", type_opts={"app": app},
+            )
             ocr_dir = pipeline.derivative_dir(item, "ocr")
 
             utils.log(f"[{i}/{total}] {stem}: building OCR text layer...")
@@ -341,6 +355,7 @@ def generate(ark, opts={}):
                     "widths": widths,
                     "orientation": {"deskew_selected": apply_deskew, "stats": orientation["stats"]},
                 },
+                type="gold", type_opts={"app": app},
                 opts={
                     "manifest_opts": {"extra": manifest_extra},
                     "link_relation": _LINK_RELATION_BY_SUBDIR["derivatives"],
@@ -375,7 +390,7 @@ def generate(ark, opts={}):
         )
 
         utils.log("Updating associated-media sidecar...")
-        pipeline.update_associated_media(item, image_objects, [src["bronze_path"] for src in sources], "image")
+        pipeline.update_associated_media(item, image_objects, [src["bronze_path"] for src in sources], "image", app=app)
 
     return {
         "status": "success",

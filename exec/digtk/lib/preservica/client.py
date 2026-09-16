@@ -10,8 +10,10 @@ was found unavailable (404/500) on that tier, so file bytes are pulled through t
 Entity API's bitstream `/content` sub-resource instead, and thumbnails are treated
 as best-effort (see get_thumbnail()).
 """
+import datetime
 import threading
 import time
+import urllib.parse
 
 import httpx
 
@@ -24,6 +26,29 @@ _CONFIG = CONFIG["preservica"]
 # error like 401/403/404. Observed in practice on Preservica's Starter tier under
 # concurrent bitstream `/content` downloads (see PreservicaClient.request()).
 _RETRYABLE_STATUSES = {502, 503, 504}
+
+
+def _normalize_since(since):
+    """Expand a user-supplied ISO-8601 date/timestamp into the full
+    timestamp-with-offset form confirmed to work against
+    `/entities/updated-since` (see get_entities_updated_since()) — a bare
+    date or an offset-less timestamp is filled out (midnight, UTC) rather
+    than sent to Preservica as-is.
+
+    :param str since: ISO-8601 date ('2026-09-13'), timestamp
+        ('2026-09-13T18:23:26'), or full timestamp-with-offset
+        ('2026-09-13T18:23:26.328904+00:00').
+    :returns: Full ISO-8601 timestamp with UTC offset.
+    :rtype: str
+    :raises ValueError: `since` isn't a valid ISO-8601 date/timestamp.
+    """
+    try:
+        parsed = datetime.datetime.fromisoformat(since)
+    except ValueError:
+        raise ValueError(f"Invalid ISO-8601 date/timestamp for 'since': {since!r}")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.isoformat()
 
 
 class PreservicaAuthError(RuntimeError):
@@ -279,6 +304,50 @@ class PreservicaClient:
             if not page:
                 break
         return children
+
+    def get_entities_updated_since(self, since, opts={}):
+        """List entities changed since a given timestamp (paged) — the basis for
+        the Preservica auto-sync sensor's polling
+        (dagster/lib/sensors.py's preservica_auto_sync_sensor).
+
+        Unlike get_children(), this is tenant-wide, not scoped to one folder —
+        resolving a changed ref to a registered collection (root-level match, or
+        walking up its parent chain) is the caller's job, see
+        digtk.models.collection.get_registration().
+
+        :param str since: ISO-8601 date ('2026-09-13'), timestamp
+            ('2026-09-13T18:23:26'), or full timestamp-with-offset — only
+            entities changed at or after this point are returned. A bare date
+            or offset-less timestamp is treated as UTC.
+        :param dict opts: 'page_size' (default CONFIG['preservica']['page_size']).
+        :returns: Every changed entity across all pages: [{'ref', 'type'}, ...]
+            ('type' is 'SO', 'IO', or 'CO').
+        :rtype: list[dict]
+        :raises ValueError: `since` isn't a valid ISO-8601 date/timestamp.
+        """
+        page_size = opts.get("page_size", _CONFIG["page_size"])
+        base_path = f"{self.base_url}/api/entity/entities/updated-since"
+        encoded_since = urllib.parse.quote(_normalize_since(since), safe="")
+
+        entities = []
+        start = 0
+        total = None
+        while total is None or start < total:
+            parsed = self._get_xml(f"{base_path}?date={encoded_since}&start={start}&max={page_size}")
+            response = parsed.get("EntitiesResponse") or {}
+            total = int((response.get("Paging") or {}).get("TotalResults") or 0)
+
+            page = pxml.as_list((response.get("Entities") or {}).get("Entity"))
+            for entity in page:
+                entities.append({
+                    "ref": pxml.attr_of(entity, "ref"),
+                    "type": pxml.attr_of(entity, "type"),
+                })
+
+            start += page_size
+            if not page:
+                break
+        return entities
 
     def get_entity(self, data_type, ref, opts={}):
         """Get entity detail for a structural or information object.

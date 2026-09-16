@@ -289,12 +289,16 @@ def test_publish_records_manifest_and_source_files(fake_derivative, tmp_path):
 
 def test_update_associated_media_creates_new_sidecar(fake_derivative, monkeypatch):
     monkeypatch.setattr(pipeline.fs, "exists", lambda path: False)
-    media = [{"@type": "ImageObject", "contentUrl": "cask://silver/g/c/latest/item/derivatives/thumb-256.jpg"}]
+    media = [{"@type": "ImageObject", "contentUrl": "cask://gold/digital-dev/c/item/derivatives/thumb-256.jpg"}]
 
-    doc = pipeline.update_associated_media(ITEM, media, ["cask:/bronze/g/c/latest/item/photo.tiff"], "image")
+    doc = pipeline.update_associated_media(
+        ITEM, media, ["cask:/bronze/g/c/latest/item/photo.tiff"], "image", app="digital-dev",
+    )
     assert doc["@id"] == ARK
     assert doc["associatedMedia"] == media
     assert doc["associatedMedia"][0]["argonath:sourceGroup"] == "image"
+    assert fake_derivative[0]["type"] == "gold"
+    assert fake_derivative[0]["opts"]["app"] == "digital-dev"
 
 
 def test_update_associated_media_preserves_other_source_groups(fake_derivative, monkeypatch):
@@ -308,7 +312,9 @@ def test_update_associated_media_preserves_other_source_groups(fake_derivative, 
     monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps(existing_doc).encode())
 
     pdf_media = [{"@type": "ImageObject", "contentUrl": "cask://.../page-000/thumb-256.jpg"}]
-    doc = pipeline.update_associated_media(ITEM, pdf_media, ["cask:/bronze/g/c/latest/item/document.pdf"], "pdf")
+    doc = pipeline.update_associated_media(
+        ITEM, pdf_media, ["cask:/bronze/g/c/latest/item/document.pdf"], "pdf", app="digital-dev",
+    )
 
     groups = {e["argonath:sourceGroup"] for e in doc["associatedMedia"]}
     assert groups == {"image", "pdf"}
@@ -327,8 +333,66 @@ def test_update_associated_media_replaces_only_matching_source_group(fake_deriva
     monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps(existing_doc).encode())
 
     new_image_media = [{"@type": "ImageObject", "contentUrl": "cask://.../new-thumb-256.jpg"}]
-    doc = pipeline.update_associated_media(ITEM, new_image_media, ["cask:/bronze/g/c/latest/item/photo.tiff"], "image")
+    doc = pipeline.update_associated_media(
+        ITEM, new_image_media, ["cask:/bronze/g/c/latest/item/photo.tiff"], "image", app="digital-dev",
+    )
 
     by_group = {e["argonath:sourceGroup"]: e for e in doc["associatedMedia"]}
     assert by_group["image"]["contentUrl"] == "cask://.../new-thumb-256.jpg"
     assert by_group["pdf"]["contentUrl"] == "cask://.../page-000/thumb-256.jpg"
+
+
+def test_update_associated_media_requires_app():
+    with pytest.raises(TypeError):
+        pipeline.update_associated_media(ITEM, [], ["cask:/bronze/g/c/latest/item/photo.tiff"], "image")
+
+
+# --- merge_dc_metadata() -----------------------------------------------------
+
+def test_merge_dc_metadata_writes_new_sidecar(fake_derivative, monkeypatch):
+    from digtk.lib.schema import ItemMetadata
+
+    monkeypatch.setattr(pipeline.items, "resolve", lambda ark: ITEM)
+    monkeypatch.setattr(pipeline.fs, "exists", lambda path: False)
+
+    item_metadata = ItemMetadata(
+        id=ARK, ark=ARK, name="Old Vines", field_sources={"name": "human"},
+    )
+    doc = pipeline.merge_dc_metadata(item_metadata, app="digital-dev")
+
+    assert doc["name"] == "Old Vines"
+    assert doc["argonath:fieldSources"] == {"name": "human"}
+    assert fake_derivative[0]["type"] == "gold"
+    assert fake_derivative[0]["opts"]["app"] == "digital-dev"
+
+
+def test_merge_dc_metadata_does_not_clobber_associated_media(fake_derivative, monkeypatch):
+    from digtk.lib.schema import ItemMetadata
+
+    existing_doc = {
+        "@id": ARK, "ark": ARK,
+        "associatedMedia": [{"@type": "ImageObject", "contentUrl": "cask://.../thumb-256.jpg"}],
+    }
+    monkeypatch.setattr(pipeline.items, "resolve", lambda ark: ITEM)
+    monkeypatch.setattr(pipeline.fs, "exists", lambda path: True)
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps(existing_doc).encode())
+
+    item_metadata = ItemMetadata(id=ARK, ark=ARK, name="Old Vines", field_sources={"name": "human"})
+    doc = pipeline.merge_dc_metadata(item_metadata, app="digital-dev")
+
+    assert doc["name"] == "Old Vines"
+    assert doc["associatedMedia"] == existing_doc["associatedMedia"]
+
+
+def test_merge_dc_metadata_merges_field_sources_rather_than_replacing(fake_derivative, monkeypatch):
+    from digtk.lib.schema import ItemMetadata
+
+    existing_doc = {"@id": ARK, "ark": ARK, "argonath:fieldSources": {"caption": "ai"}}
+    monkeypatch.setattr(pipeline.items, "resolve", lambda ark: ITEM)
+    monkeypatch.setattr(pipeline.fs, "exists", lambda path: True)
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps(existing_doc).encode())
+
+    item_metadata = ItemMetadata(id=ARK, ark=ARK, name="Old Vines", field_sources={"name": "human"})
+    doc = pipeline.merge_dc_metadata(item_metadata, app="digital-dev")
+
+    assert doc["argonath:fieldSources"] == {"caption": "ai", "name": "human"}

@@ -83,19 +83,19 @@ def error(message, code=1):
     raise SystemExit(code)
 
 
-def write_manifest(collection, rel_path, command, params, outputs, source_files, opts={}):
+def write_manifest(collection, rel_path, command, params, outputs, source_files, *, type="silver", opts={}):
     """Write a process-directory manifest.json, recording what a digtk command
     ran and produced (see docs/cask-conventions.md's manifest.json convention).
 
     Goes through digtk.lib.derivative.write() — the canonical way to write any
-    silver pipeline output (see CLAUDE.md) — rather than hand-building the path
+    silver/gold pipeline output (see CLAUDE.md) — rather than hand-building the path
     and calling fs.write() directly, so the manifest gets the same lineage
     tracking as the outputs it describes.
 
     This is distinct from dagster.lib.utils.write_manifest, which covers a
     separate, still-unimplemented bronze/collection-level structural manifest
     (item lists + hashes) owned by ingest. This one is digtk's own
-    responsibility for its process directories (e.g. silver/.../derivatives/),
+    responsibility for its process directories (e.g. gold/.../derivatives/),
     shared across phases (derivatives, OCR, metadata) so they don't each
     duplicate the same manifest-writing logic.
 
@@ -107,7 +107,9 @@ def write_manifest(collection, rel_path, command, params, outputs, source_files,
     :param list[str] outputs: Output filenames, relative to rel_path.
     :param list[str] source_files: CaskFS paths ('cask:/'-prefixed) the described
         outputs were derived from — this manifest's own lineage.
-    :param dict opts: 'group' (required), 'time' (default 'latest'), 'status'
+    :param str type: 'silver' (default) or 'gold' — see digtk.lib.derivative.dest_path().
+    :param dict opts: 'group'/'time' (silver — 'group' required, 'time' default
+        'latest') or 'app' (gold, required) — see dest_path(). Also: 'status'
         (default "success"), 'duration_s' (float), 'error' (str, only meaningful
         if status="error"), 'extra' (dict, optional) — additional top-level keys
         merged into the manifest as-is, for callers that need richer per-output
@@ -133,12 +135,17 @@ def write_manifest(collection, rel_path, command, params, outputs, source_files,
     if "extra" in opts:
         manifest.update(opts["extra"])
 
+    if type == "gold":
+        write_opts = {"app": opts.get("app"), "replace": True}
+    else:
+        write_opts = {"group": opts.get("group"), "time": opts.get("time"), "replace": True}
+
     derivative.write(
-        type="silver",
+        type=type,
         collection=collection,
         rel_path=f"{rel_path.rstrip('/')}/manifest.json",
         data=json.dumps(manifest, indent=2).encode(),
         source_files=source_files,
-        opts={"group": opts.get("group"), "time": opts.get("time"), "replace": True},
+        opts=write_opts,
     )
     return manifest

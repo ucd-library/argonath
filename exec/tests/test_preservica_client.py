@@ -580,3 +580,102 @@ def test_get_thumbnail_returns_none_on_failure():
 
     c = client(handler)
     assert c.get_thumbnail("ref1") is None
+
+
+# --- get_entities_updated_since --------------------------------------------
+
+def test_get_entities_updated_since_paginates_and_parses_entity_attrs():
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        start = int(dict(request.url.params)["start"])
+        if start == 0:
+            body = (
+                "<EntitiesResponse><Paging><TotalResults>2</TotalResults></Paging>"
+                '<Entities><Entity ref="r1" type="SO">u1</Entity></Entities></EntitiesResponse>'
+            )
+        else:
+            body = (
+                "<EntitiesResponse><Paging><TotalResults>2</TotalResults></Paging>"
+                '<Entities><Entity ref="r2" type="IO">u2</Entity></Entities></EntitiesResponse>'
+            )
+        return httpx.Response(200, text=body)
+
+    c = client(handler)
+    entities = c.get_entities_updated_since("2026-09-01T00:00:00Z", {"page_size": 1})
+    assert entities == [
+        {"ref": "r1", "type": "SO"},
+        {"ref": "r2", "type": "IO"},
+    ]
+
+
+def test_get_entities_updated_since_passes_date_query_param():
+    seen = {}
+
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        seen["query"] = dict(request.url.params)
+        return httpx.Response(200, text="<EntitiesResponse><Paging><TotalResults>0</TotalResults></Paging></EntitiesResponse>")
+
+    c = client(handler)
+    c.get_entities_updated_since("2026-09-01T00:00:00Z")
+    assert seen["query"]["date"] == "2026-09-01T00:00:00+00:00"
+
+
+def test_get_entities_updated_since_encodes_offset_timestamp():
+    seen = {}
+
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        seen["query"] = dict(request.url.params)
+        return httpx.Response(200, text="<EntitiesResponse><Paging><TotalResults>0</TotalResults></Paging></EntitiesResponse>")
+
+    c = client(handler)
+    c.get_entities_updated_since("2026-09-13T18:23:26.328904+00:00")
+    assert seen["query"]["date"] == "2026-09-13T18:23:26.328904+00:00"
+
+
+def test_get_entities_updated_since_expands_bare_date_to_midnight_utc():
+    seen = {}
+
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        seen["query"] = dict(request.url.params)
+        return httpx.Response(200, text="<EntitiesResponse><Paging><TotalResults>0</TotalResults></Paging></EntitiesResponse>")
+
+    c = client(handler)
+    c.get_entities_updated_since("2026-09-13")
+    assert seen["query"]["date"] == "2026-09-13T00:00:00+00:00"
+
+
+def test_get_entities_updated_since_assumes_utc_when_offset_omitted():
+    seen = {}
+
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        seen["query"] = dict(request.url.params)
+        return httpx.Response(200, text="<EntitiesResponse><Paging><TotalResults>0</TotalResults></Paging></EntitiesResponse>")
+
+    c = client(handler)
+    c.get_entities_updated_since("2026-09-13T18:23:26")
+    assert seen["query"]["date"] == "2026-09-13T18:23:26+00:00"
+
+
+def test_get_entities_updated_since_rejects_invalid_timestamp():
+    c = client(lambda request: login_response())
+    with pytest.raises(ValueError, match="Invalid ISO-8601"):
+        c.get_entities_updated_since("not-a-date")
+
+
+def test_get_entities_updated_since_returns_empty_list_when_nothing_changed():
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        return httpx.Response(200, text="<EntitiesResponse><Paging><TotalResults>0</TotalResults></Paging></EntitiesResponse>")
+
+    c = client(handler)
+    assert c.get_entities_updated_since("2026-09-01T00:00:00Z") == []
