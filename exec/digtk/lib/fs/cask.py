@@ -39,21 +39,32 @@ class CaskBackend:
 
     :param str api_url: CaskFS API base URL (e.g. 'https://caskfs.library.ucdavis.edu/api').
     :param str token: Bearer token for authentication, if any.
+    :param str trusted_user: If set, sent as the X-Anduin-User header on every request —
+        for callers running behind the same trusted perimeter as CaskFS with no auth-gateway
+        hop in between (see CASK_TRUSTED_USER in digtk.lib.auth's module docstring). Sent
+        independently of `token`; either, both, or neither may be set.
     :param httpx.BaseTransport transport: Optional custom transport (used by tests to mock
         the HTTP layer via httpx.MockTransport); defaults to httpx's normal network transport.
     """
 
-    def __init__(self, api_url, token=None, transport=None):
+    def __init__(self, api_url, token=None, trusted_user=None, transport=None):
         self.base_url = api_url.rstrip("/")
         self.token = token
+        self.trusted_user = trusted_user
         self._client = httpx.Client(headers=self._auth_headers(), transport=transport)
 
     def _auth_headers(self):
         """
-        :returns: Authorization header dict, or {} if no token is configured.
+        :returns: Authorization and/or X-Anduin-User header dict, or {} if neither a
+            token nor a trusted_user is configured.
         :rtype: dict
         """
-        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if self.trusted_user:
+            headers["X-Anduin-User"] = jsonlib.dumps({"username": self.trusted_user})
+        return headers
 
     def _raise_for_status(self, response):
         """Translate a non-2xx CaskFS response into the matching Python builtin exception.
@@ -91,6 +102,35 @@ class CaskBackend:
             raise ValueError(message)
         raise CaskFsError(status, response.text)
 
+    def _parse_json_response(self, res, action):
+        """Parse a CaskFS response body as JSON, for a response that already
+        passed _raise_for_status() (so a 2xx/3xx status, not a mapped API error).
+
+        An empty body is treated as a valid no-content success (some endpoints —
+        writes and deletes especially — may reply 204/200 with nothing further to
+        report), not an error. A genuinely non-empty-but-unparseable body (HTML,
+        garbage, a truncated response) means something about the connection
+        itself is wrong — a stale/misconfigured CASK_API_URL hitting the wrong
+        service, a proxy in between, etc — so that raises a clear CaskFsError
+        rather than letting a cryptic json.JSONDecodeError propagate.
+
+        :param httpx.Response res: Response to parse.
+        :param str action: Short description for the error message, e.g. 'write'.
+        :returns: Parsed JSON body, or {} if the body was empty.
+        :rtype: dict
+        :raises CaskFsError: If the body is non-empty but not valid JSON.
+        """
+        if not res.text:
+            return {}
+        try:
+            return res.json()
+        except ValueError:
+            raise CaskFsError(
+                res.status_code,
+                f"non-JSON response from CaskFS {action} ({res.text[:200]!r}) — "
+                f"check CASK_API_URL and the CaskFS connection (see `digtk auth whoami`)",
+            )
+
     def read_bytes(self, path):
         """Read a CaskFS file fully into memory.
 
@@ -122,7 +162,9 @@ class CaskBackend:
         :param str path: CaskFS-absolute path.
         :param bytes|iterator[bytes] body: Content to send as the request body.
         :param dict opts: 'partition_keys', 'bucket', 'metadata', 'mime_type'.
-        :returns: The canonical file record from the response ('file' key), or the raw response body.
+        :returns: The canonical file record from the response ('file' key), the raw
+            response body if there's no 'file' key, or {} if the server replied
+            with no body at all (e.g. 204 No Content on a successful write).
         :rtype: dict
         """
         params = {}
@@ -154,7 +196,7 @@ class CaskBackend:
             content=body,
         )
         self._raise_for_status(res)
-        result = res.json()
+        result = self._parse_json_response(res, "write")
         return result.get("file", result)
 
     def write_bytes(self, path, data, opts={}):
@@ -182,7 +224,7 @@ class CaskBackend:
         return self._write(method, path, chunks, opts)
 
     def exists(self, path):
-        """Check whether a path exists in CaskFS.
+        """Check whether a path exists in CaskFS, whether it's a file or a directory.
 
         :param str path: CaskFS-absolute path.
         :returns: True if the path exists.
@@ -191,7 +233,10 @@ class CaskBackend:
         res = self._client.get(f"{self.base_url}/fs{path}", params={"metadata": "true"})
         if res.status_code == 404:
             return False
-        self._raise_for_status(res)
+        try:
+            self._raise_for_status(res)
+        except IsADirectoryError:
+            return True
         return True
 
     def ls(self, path, opts={}):
@@ -240,7 +285,8 @@ class CaskBackend:
 
         :param str path: CaskFS-absolute path.
         :param dict opts: 'directory' (bool) to delete a directory tree, 'soft_delete' (bool).
-        :returns: Server response body.
+        :returns: Server response body, or {} if the server replied with no body
+            (e.g. 204 No Content on a successful delete).
         :rtype: dict
         """
         params = {}
@@ -250,7 +296,35 @@ class CaskBackend:
             params["softDelete"] = "true"
         res = self._client.request("DELETE", f"{self.base_url}/fs{path}", params=params)
         self._raise_for_status(res)
-        return res.json()
+        return self._parse_json_response(res, "delete")
+
+    def move(self, src_path, dest_path, opts={}):
+        """Rename or move a file or directory within CaskFS (cask: -> cask: only).
+
+        Wraps CaskFS's move endpoint (POST /fs/mv). Preserves file_id/directory_id
+        and everything keyed by them (partition keys, lineage links) — only the
+        path is rewritten. Destination parent directories are created
+        automatically. After the move commits, CaskFS automatically reharvests
+        the moved file (or, for a directory, every RDF file in the subtree), so
+        JSON-LD sidecar lookups (see find_by_subject()) stay valid post-move.
+
+        :param str src_path: CaskFS-absolute path of the file or directory to move.
+        :param str dest_path: CaskFS-absolute destination path.
+        :param dict opts: 'recheck_mime_type' (bool) — force a MIME-type/resourceType
+            recheck against the new extension for a single-file move (normally
+            skipped, since a rename doesn't change file bytes).
+        :returns: Server response body describing the move.
+        :rtype: dict
+        :raises FileNotFoundError: If `src_path` does not exist.
+        :raises FileExistsError: If `dest_path` already exists — there is no
+            unix-`mv`-style nesting into an existing directory.
+        """
+        body = {"srcPath": src_path, "destPath": dest_path}
+        if opts.get("recheck_mime_type"):
+            body["recheckMimeType"] = True
+        res = self._client.post(f"{self.base_url}/fs/mv", json=body)
+        self._raise_for_status(res)
+        return self._parse_json_response(res, "move")
 
     def add_derivative_link(self, path, source_path, opts={}):
         """Record CaskFS derivative-link lineage: `path` was derived from `source_path`.
@@ -277,7 +351,7 @@ class CaskBackend:
             body["metadata"] = opts["metadata"]
         res = self._client.post(f"{self.base_url}/lineage/add", json=body)
         self._raise_for_status(res)
-        return res.json()
+        return self._parse_json_response(res, "add_derivative_link")
 
     def find_by_subject(self, subject, opts={}):
         """Find files whose RDF graph contains a triple with the given subject,
@@ -314,8 +388,42 @@ class CaskBackend:
             params["graph"] = opts["graph"]
         if opts.get("partition_keys"):
             params["partitionKeys"] = ",".join(opts["partition_keys"])
+        return self._find_paginated(params, opts.get("page_size", 100))
 
-        page_size = opts.get("page_size", 100)
+    def find_by_partition_keys(self, partition_keys, opts={}):
+        """Find files tagged with all of the given partition keys — no RDF/
+        JSON-LD content required, unlike find_by_subject(). Wraps the same
+        CaskFS Layer-3 search (GET /cask/find): with no subject/predicate/
+        object given, CaskFS's file filter query resolves to a plain
+        partition-key search over every file in the system, so this is a
+        much simpler way to make a plain (non-JSON-LD) file findable later —
+        just tag it with a partition key at write time (see fs.write()'s
+        'partition_keys' opt).
+
+        :param list[str] partition_keys: Partition keys a file must carry (all of them).
+        :param dict opts: 'page_size' (int, default 100 — see find_by_subject()'s).
+        :returns: Every matching file's CaskFS-absolute path.
+        :rtype: list[str]
+        """
+        params = {"partitionKeys": ",".join(partition_keys)}
+        return self._find_paginated(params, opts.get("page_size", 100))
+
+    def _find_paginated(self, params, page_size):
+        """Shared GET /cask/find pagination walk for find_by_subject()/find_by_partition_keys().
+
+        The response is paginated (confirmed against a real CaskFS instance:
+        {"totalCount": int, "results": [{"filepath": str, ...}], "offset": int,
+        "limit": int} — same shape as /cask/dir's, server defaults limit to 20).
+        This transparently walks every page and returns the flat list of
+        matching filepaths — callers resolving "every part of this item" need
+        the complete set regardless of how many pages that takes.
+
+        :param dict params: Base query params (subject/predicate/... or partitionKeys).
+        :param int page_size: Pagination page size for the underlying requests —
+            not a cap on the total results returned.
+        :returns: Every matching file's CaskFS-absolute path.
+        :rtype: list[str]
+        """
         offset = 0
         filepaths = []
         while True:

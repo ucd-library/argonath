@@ -1,7 +1,110 @@
 """
-Dagster sensor definitions — chain pipeline phases on job completion.
+Dagster sensor definitions — chain pipeline phases on job completion, plus two
+source-polling sensors for the collection registry (see
+digtk.models.collection.register_collection/find_changed_preservica_collections
+and exec/digtk/sql/collection_registry.sql, applied via `digtk collection init-pg`):
+
+  preservica_auto_sync_sensor      — polls Preservica's /entities/updated-since
+                                      and reconciles only the registered
+                                      collections that actually changed.
+  collection_partition_sync_sensor — keeps Dagster's 'collections' dynamic
+                                      partition in sync with the registry, so a
+                                      collection registered via CLI (before its
+                                      first successful reconcile run) is
+                                      immediately visible as a partition.
 """
+import datetime
+
 import dagster as dg
+
+from lib.utils import exec
+
+
+# Default lookback for a sensor's very first tick, before it has a cursor of
+# its own to resume from.
+_INITIAL_LOOKBACK = datetime.timedelta(days=1)
+
+
+@dg.sensor(job_name="reconcile_collection_job", minimum_interval_seconds=300)
+def preservica_auto_sync_sensor(context: dg.SensorEvaluationContext):
+    """Poll Preservica for changes since the last tick and sync only the
+    specific entities that changed, for only the registered collections
+    actually affected — untouched collections are skipped entirely, and an
+    affected collection gets a targeted sync of just its changed folder(s)/
+    item(s), never a full re-walk (see
+    digtk.models.collection.find_changed_preservica_collections(), which also
+    auto-registers a brand-new labeled folder the first time it's seen, and
+    preservica_sync_entities(), which reconcile_collection_items calls with
+    each RunRequest's preservica_changed list).
+
+    A registered Preservica collection is always checked here regardless of
+    its workflow tags or whether it was first registered manually (`digtk
+    preservica import`) or by this sensor's own auto-discovery.
+
+    :param context: Dagster sensor evaluation context.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    since = context.cursor or (now - _INITIAL_LOOKBACK).isoformat()
+
+    result = exec(["digtk", "preservica", "changes", "--since", since])
+    changed = result.get("collections", [])
+
+    context.update_cursor(now.isoformat())
+
+    if not changed:
+        return dg.SkipReason(f"No Preservica changes since {since}")
+
+    return [
+        dg.RunRequest(
+            run_key=f"preservica-sync-{c['group']}-{c['name']}-{now.isoformat()}",
+            run_config={"ops": {
+                "reconcile_collection_items": {"config": {
+                    "group": c["group"],
+                    "collection": c["name"],
+                    "source_type": "preservica",
+                    "preservica_changed": [{"ref": e["ref"], "type": e["type"]} for e in c["changed"]],
+                }},
+                "rebuild_collection_tree": {"config": {
+                    "group": c["group"],
+                    "collection": c["name"],
+                    "source_type": "preservica",
+                    "preservica_changed": [{"ref": e["ref"], "type": e["type"]} for e in c["changed"]],
+                }},
+            }},
+        )
+        for c in changed
+    ]
+
+
+@dg.sensor(minimum_interval_seconds=300)
+def collection_partition_sync_sensor(context: dg.SensorEvaluationContext):
+    """Add a Dagster 'collections' dynamic partition for every active
+    registered collection that doesn't already have one — the bridge between
+    `digtk collection add`/`digtk preservica import` (which always register,
+    see digtk.models.collection.register_collection()) and Dagster, since a
+    partition is otherwise only created lazily as a side effect of a
+    *successful* reconcile_collection_items run.
+
+    Add-only: a disabled collection's partition is deliberately left in place
+    (pruning it is a separate, explicit ops action) so run/partition history is
+    never silently severed.
+
+    :param context: Dagster sensor evaluation context.
+    """
+    result = exec(["digtk", "collection", "list"])
+    active = result.get("collections", [])
+
+    existing = set(context.instance.get_dynamic_partitions("collections"))
+    missing = [
+        f"{c['group_name']}/{c['name']}" for c in active
+        if f"{c['group_name']}/{c['name']}" not in existing
+    ]
+    if missing:
+        context.instance.add_dynamic_partitions("collections", missing)
+
+    return dg.SkipReason(
+        f"{len(missing)} partition(s) added, {len(active)} active collection(s) total"
+    )
 
 
 @dg.sensor(job_name="derivatives_job")

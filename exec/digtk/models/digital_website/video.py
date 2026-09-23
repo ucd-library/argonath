@@ -71,11 +71,14 @@ def hls(ark, opts={}):
     :param str ark: Item ARK identifier.
     :param dict opts: 'resolutions' (comma-separated str, default
         CONFIG["video"]["resolutions"]); forwarded to ffmpeg_utils.hls_ladder().
+        'app' (str) — target gold app, this stream is a final public-facing
+        product with no silver staging.
     :returns: {"status": "success", "ark": str, "videos": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
     resolutions = _parse_resolutions(opts.get("resolutions", CONFIG["video"]["resolutions"]))
+    app = opts.get("app")
     item = items.resolve(ark)
     video_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "video")
     start = time.monotonic()
@@ -99,6 +102,7 @@ def hls(ark, opts={}):
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}/streaming", local_outputs,
                 command=["digtk", "video", "hls", ark, "--resolutions", ",".join(resolutions)],
                 params={"resolutions": resolutions},
+                type="gold", type_opts={"app": app},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
                     "link_relation": _LINK_RELATION,
@@ -125,12 +129,14 @@ def derivatives(ark, opts={}):
     :param str ark: Item ARK identifier.
     :param dict opts: 'resolutions' (comma-separated str, default
         CONFIG["video"]["resolutions"]); 'language'/'model' for the caption step (see
-        captions.transcribe_sources()); forwarded to ffmpeg_utils.
+        captions.transcribe_sources()); forwarded to ffmpeg_utils. 'app' (str) —
+        target gold app for the stream + associated-media sidecar + captions.
     :returns: {"status": "success", "ark": str, "stream": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}, "captions": {...}}
     :rtype: dict
     """
     resolutions = _parse_resolutions(opts.get("resolutions", CONFIG["video"]["resolutions"]))
+    app = opts.get("app")
     item = items.resolve(ark)
     video_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "video")
     start = time.monotonic()
@@ -157,6 +163,7 @@ def derivatives(ark, opts={}):
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}/streaming", stream_outputs,
                 command=["digtk", "video", "derivatives", ark, "--resolutions", ",".join(resolutions)],
                 params={"resolutions": resolutions},
+                type="gold", type_opts={"app": app},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
                     "link_relation": _LINK_RELATION,
@@ -175,7 +182,7 @@ def derivatives(ark, opts={}):
                 "contentUrl": pipeline.cask_public_ref(f"{stream_results[filename]['dir']}/playlist.m3u8"),
                 "encodingFormat": "application/vnd.apple.mpegurl",
             })
-        pipeline.update_associated_media(item, video_objects, [src["bronze_path"] for src in sources], "video")
+        pipeline.update_associated_media(item, video_objects, [src["bronze_path"] for src in sources], "video", app=app)
 
         utils.log("Transcribing captions...")
         captions_result = captions.transcribe_sources(

@@ -30,18 +30,59 @@ Samwise's embedding model and stores vectors in project-anduin's Postgres, scope
 `--space` and queried with ranked, ARK-referenced results. Indexing is triggered by
 the `index_for_rag` Dagster asset and can also be run ad hoc through the ops CLI.
 
-## Testing
+## Local Development
 
-The `digtk` CLI (`exec/`) is tested with pytest.
+Requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
+(`pip install uv` if you don't have it) — the same tool the Docker image installs with
+(see `Dockerfile`), so local dependency resolution stays consistent with the built image.
 
 ```sh
 cd exec
-python3 -m venv .venv && source .venv/bin/activate   # first time only
-pip install -e ".[dev]"                              # first time only
+uv venv .venv                # first time only
+uv pip install -e ".[dev]"   # first time only; auto-detects .venv above, no activation
+                              # needed; the [dev] extra pulls in pytest for Testing below
 
-python3 -m pytest                    # run the full suite
-python3 -m pytest tests/test_ai.py   # run one file
-python3 -m pytest -k get_client       # run tests matching a name
+uv run digtk --help   # confirm it works
+```
+
+`-e` (editable) means changes under `digtk/` take effect immediately, no reinstall needed.
+
+Use `uv run digtk ...` (not a bare `digtk ...`) unless you've `source .venv/bin/activate`d —
+`uv run` always runs *this* project's venv install regardless of what else is on PATH.
+A bare `digtk` depends on PATH order and will silently run a different install if one
+exists elsewhere (e.g. a global pipx/pip install) — if that happens you'll see an error
+like `ModuleNotFoundError: No module named 'bs4'` from a stale copy missing a dependency
+this project added later. `which digtk` should point inside `exec/.venv/bin/` — if it
+points anywhere else, that's the shadowing.
+
+Most subcommands talk to an external service and need credentials, set as environment
+variables (never as CLI flags — see `digtk.lib.auth`/`digtk.lib.config`):
+
+- **Samwise** (AI chat/embeddings — `digtk ai`, `digtk metadata`, ...):
+  `export SAMWISE_API_KEY=...` (`SAMWISE_API_URL` too, if not using the default).
+- **CaskFS** (file storage — `digtk ingest`, `digtk collection`, any `cask:/`-prefixed path):
+  `digtk auth login` opens a browser to log in via the Anduin auth gateway and stores
+  the result in `~/.digtk/credentials.json` (or set `CASK_API_URL`/`CASK_API_KEY`
+  directly — see `digtk auth whoami` to check what's currently resolved).
+- **Preservica** (`digtk preservica import|tree`): `export PRESERVICA_TENANT=...
+  PRESERVICA_USERNAME=... PRESERVICA_PASSWORD=...` (`PRESERVICA_BASE_URL` too, if the
+  tenant-derived default doesn't apply) — see `digtk.lib.auth.resolve_preservica()`.
+
+`digtk config show` prints every setting's current resolved value; `digtk config set
+<dotpath> [value]` persists a non-secret default to `~/.digtk/config.json` (omit `value`
+to be prompted, with hidden input for secrets) so you don't need to re-export env vars
+every session.
+
+## Testing
+
+The `digtk` CLI (`exec/`) is tested with pytest — the `uv pip install -e ".[dev]"` step
+above already includes it.
+
+```sh
+cd exec
+uv run pytest                    # run the full suite
+uv run pytest tests/test_ai.py   # run one file
+uv run pytest -k get_client       # run tests matching a name
 ```
 
 Coverage reports print automatically after each run (configured in `exec/pyproject.toml`).

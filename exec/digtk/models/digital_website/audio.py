@@ -56,12 +56,15 @@ def transcode(ark, opts={}):
 
     :param str ark: Item ARK identifier.
     :param dict opts: 'format' (str, default CONFIG["audio"]["transcode_format"]),
-        'bitrate' (str, default CONFIG["audio"]["transcode_bitrate"]).
+        'bitrate' (str, default CONFIG["audio"]["transcode_bitrate"]), 'app' (str)
+        — target gold app, this transcode is a final public-facing product with
+        no silver staging.
     :returns: {"status": "success", "ark": str, "audios": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
     fmt = opts.get("format", CONFIG["audio"]["transcode_format"])
+    app = opts.get("app")
     item = items.resolve(ark)
     audio_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "audio")
     start = time.monotonic()
@@ -80,6 +83,7 @@ def transcode(ark, opts={}):
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}", local_outputs,
                 command=["digtk", "audio", "transcode", ark, "--format", fmt],
                 params={"format": fmt},
+                type="gold", type_opts={"app": app},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
                     "link_relation": _LINK_RELATION,
@@ -100,11 +104,12 @@ def waveform(ark, opts={}):
     :param str ark: Item ARK identifier.
     :param dict opts: 'width' (int, default CONFIG["audio"]["waveform_width"]), 'height'
         (int, default CONFIG["audio"]["waveform_height"]), 'color' (str, default
-        CONFIG["audio"]["waveform_color"]).
+        CONFIG["audio"]["waveform_color"]), 'app' (str) — target gold app, see transcode().
     :returns: {"status": "success", "ark": str, "audios": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
+    app = opts.get("app")
     item = items.resolve(ark)
     audio_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "audio")
     start = time.monotonic()
@@ -125,6 +130,7 @@ def waveform(ark, opts={}):
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}", local_outputs,
                 command=["digtk", "audio", "waveform", ark],
                 params={k: v for k, v in opts.items() if k in ("width", "height", "color")},
+                type="gold", type_opts={"app": app},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
                     "link_relation": _LINK_RELATION,
@@ -147,12 +153,15 @@ def derivatives(ark, opts={}):
     :param str ark: Item ARK identifier.
     :param dict opts: 'format' (str, default CONFIG["audio"]["transcode_format"]),
         'width'/'height' (waveform dimensions); 'language'/'model' for the caption
-        step (see captions.transcribe_sources()); forwarded to ffmpeg_utils.
+        step (see captions.transcribe_sources()); forwarded to ffmpeg_utils. 'app'
+        (str) — target gold app for the transcode/waveform + associated-media
+        sidecar + captions.
     :returns: {"status": "success", "ark": str, "derivatives": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}, "captions": {...}}
     :rtype: dict
     """
     fmt = opts.get("format", CONFIG["audio"]["transcode_format"])
+    app = opts.get("app")
     item = items.resolve(ark)
     audio_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "audio")
     start = time.monotonic()
@@ -184,6 +193,7 @@ def derivatives(ark, opts={}):
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}", local_outputs,
                 command=["digtk", "audio", "derivatives", ark],
                 params={"format": fmt},
+                type="gold", type_opts={"app": app},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
                     "link_relation": _LINK_RELATION,
@@ -199,7 +209,7 @@ def derivatives(ark, opts={}):
             utils.log(f"[{i}/{total}] {stem}: done")
 
         utils.log("Updating associated-media sidecar...")
-        pipeline.update_associated_media(item, audio_objects, [src["bronze_path"] for src in sources], "audio")
+        pipeline.update_associated_media(item, audio_objects, [src["bronze_path"] for src in sources], "audio", app=app)
 
         utils.log("Transcribing captions...")
         captions_result = captions.transcribe_sources(

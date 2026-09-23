@@ -35,9 +35,13 @@ conn = psycopg2.connect(
 def exec(cmd, opts={}):
     """Run a digtk CLI command, stream output to stdout, and return the last line as JSON.
 
-    The digtk CLI prints progress lines to stdout and emits a JSON object as its
-    final line. This function captures that stream so all output appears in
-    Dagster's run logs, then returns the parsed JSON result.
+    The digtk CLI's default --output mode ('auto') already prints its final JSON
+    result line whenever stdout isn't a terminal — true here regardless, since
+    subprocess.Popen's stdout=PIPE below is never a tty — but `--output json` is
+    inserted explicitly anyway so this bridge never silently depends on that
+    auto-detection (see digtk.lib.utils's module docstring). This function
+    captures the whole stream so all output appears in Dagster's run logs, then
+    returns the parsed JSON result.
 
     :param list cmd: Command and arguments (e.g. ['digtk', 'ingest', 'file', path]).
     :param dict opts: Options: check (bool, default True), no_json_parse (bool).
@@ -48,6 +52,7 @@ def exec(cmd, opts={}):
     check = opts.get("check", True)
     no_json_parse = opts.get("no_json_parse", False)
 
+    cmd = [cmd[0], "--output", "json"] + list(cmd[1:])
     print(f"Executing: {' '.join(cmd)}")
 
     process = subprocess.Popen(

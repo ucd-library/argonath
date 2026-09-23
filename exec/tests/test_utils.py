@@ -1,6 +1,76 @@
 import json
+import sys
+
+import pytest
 
 from digtk.lib import derivative, utils
+
+
+@pytest.fixture(autouse=True)
+def reset_output_mode():
+    """utils._output_mode is process-wide state set by main.py's --output option —
+    reset it around every test so one test's mode never leaks into another."""
+    utils.set_output_mode(None)
+    yield
+    utils.set_output_mode(None)
+
+
+# --- output mode / result() / error() ----------------------------------------
+
+def test_result_prints_json_when_mode_is_json(capsys):
+    utils.set_output_mode("json")
+    with pytest.raises(SystemExit) as exc_info:
+        utils.result({"status": "success"})
+    assert exc_info.value.code == 0
+    assert json.loads(capsys.readouterr().out) == {"status": "success"}
+
+
+def test_result_prints_nothing_when_mode_is_text(capsys):
+    utils.set_output_mode("text")
+    with pytest.raises(SystemExit):
+        utils.result({"status": "success"})
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_result_auto_mode_prints_json_when_stdout_is_not_a_tty(capsys, monkeypatch):
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+    with pytest.raises(SystemExit):
+        utils.result({"status": "success"})
+    assert json.loads(capsys.readouterr().out) == {"status": "success"}
+
+
+def test_result_auto_mode_prints_nothing_when_stdout_is_a_tty(capsys, monkeypatch):
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    with pytest.raises(SystemExit):
+        utils.result({"status": "success"})
+    assert capsys.readouterr().out == ""
+
+
+def test_error_prints_json_when_mode_is_json(capsys):
+    utils.set_output_mode("json")
+    with pytest.raises(SystemExit) as exc_info:
+        utils.error("boom")
+    assert exc_info.value.code == 1
+    assert json.loads(capsys.readouterr().out) == {"status": "error", "error": "boom"}
+
+
+def test_error_prints_plain_message_to_stderr_when_mode_is_text(capsys):
+    utils.set_output_mode("text")
+    with pytest.raises(SystemExit) as exc_info:
+        utils.error("boom")
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Error: boom\n"
+
+
+def test_error_respects_custom_exit_code():
+    utils.set_output_mode("text")
+    with pytest.raises(SystemExit) as exc_info:
+        utils.error("boom", code=3)
+    assert exc_info.value.code == 3
 
 
 def test_write_manifest_writes_expected_shape(monkeypatch):

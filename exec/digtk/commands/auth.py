@@ -2,21 +2,64 @@
 digtk auth — manage the CLI's CaskFS connection.
 
 Subcommands:
-  login   — authenticate against CaskFS and store credentials (not yet implemented)
-  whoami  — show the currently resolved CaskFS connection and user
-  logout  — clear stored credentials
+  login         — authenticate against the Anduin auth gateway and store credentials
+  update-cask   — copy the current login token into a caskfs CLI environment
+  whoami        — show the currently resolved CaskFS connection and user
+  logout        — clear stored credentials
 """
+from typing import Annotated
+
 import typer
 
 from digtk.lib import auth, utils
 
 app = typer.Typer(help="Manage CaskFS authentication.", no_args_is_help=True)
 
+CaskEnvOption = Annotated[str | None, typer.Option(
+    "--cask-env", help="Also write the token into this existing caskfs CLI environment.",
+)]
+
+
+def _sync_cask_env(env_name, creds):
+    """Write `creds` into a caskfs CLI environment, exiting with an error on failure.
+
+    :param str env_name: Name of an existing environment in ~/.caskfs/environments.json.
+    :param dict creds: Credentials dict with 'token', 'user', 'api_url' keys.
+    """
+    try:
+        auth.update_cask_env(env_name, creds["token"], creds.get("user"), creds["api_url"])
+    except auth.LoginError as e:
+        utils.error(str(e))
+    utils.log(f"Updated caskfs environment '{env_name}' with the login token.")
+
 
 @app.command()
-def login():
-    """Authenticate against CaskFS and store credentials in ~/.digtk/credentials.json."""
-    raise NotImplementedError("OIDC/Keycloak login integration pending")
+def login(cask_env: CaskEnvOption = None):
+    """Log in via the browser and store credentials in ~/.digtk/credentials.json."""
+    utils.log(f"Opening browser to log in via {auth.GATEWAY_URL} ...")
+    try:
+        creds = auth.login()
+    except auth.LoginError as e:
+        utils.error(str(e))
+
+    utils.log(f"Logged in as {creds.get('user') or '(unknown)'}.")
+    if cask_env:
+        _sync_cask_env(cask_env, creds)
+
+    utils.result({"status": "success", "user": creds.get("user")})
+
+
+@app.command(name="update-cask")
+def update_cask(
+    env: Annotated[str, typer.Argument(help="Name of an existing caskfs CLI environment to update.")],
+):
+    """Copy the current digtk login token into an existing caskfs CLI environment."""
+    creds = auth.resolve()
+    if not creds.get("token"):
+        utils.error("Not logged in. Run `digtk auth login` first.")
+
+    _sync_cask_env(env, creds)
+    utils.result({"status": "success", "env": env})
 
 
 @app.command()

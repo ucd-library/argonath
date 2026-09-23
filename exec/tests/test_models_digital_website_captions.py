@@ -70,20 +70,22 @@ def fake_whisper(monkeypatch):
 
 
 def test_transcribe_sources_publishes_vtt_and_manifest(fake_fs, fake_derivative, fake_whisper, tmp_path):
-    result = captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND)
-    assert result["dir"] == "cask:/silver/g/c/latest/item/captions"
+    result = captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND, opts={"app": "digital-dev"})
+    assert result["dir"] == "cask:/gold/digital-dev/c/item/captions"
     assert result["outputs"] == ["output-en.vtt"]
     write_call = fake_derivative[0]
     assert write_call["opts"]["link_relation"] == "https://lib.ucdavis.edu/argonath/ns#captionOf"
 
 
 def test_transcribe_sources_honors_language_opt(fake_fs, fake_derivative, fake_whisper, tmp_path):
-    result = captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND, opts={"language": "es"})
+    result = captions.transcribe_sources(
+        ITEM, _sources(ITEM), str(tmp_path), COMMAND, opts={"language": "es", "app": "digital-dev"},
+    )
     assert result["outputs"] == ["output-es.vtt"]
 
 
 def test_transcribe_sources_creates_placeholder_sidecar_entry_when_no_existing_media(fake_fs, fake_derivative, fake_whisper, tmp_path):
-    captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND)
+    captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND, opts={"app": "digital-dev"})
     sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
     doc = json.loads(sidecar_write["data"])
     assert len(doc["associatedMedia"]) == 1
@@ -99,19 +101,19 @@ def test_transcribe_sources_merges_into_existing_video_object(fake_fs, fake_deri
         "@id": ARK, "ark": ARK,
         "associatedMedia": [{
             "@type": "VideoObject", "identifier": "video",
-            "contentUrl": "cask://silver/g/c/latest/item/stream/playlist.m3u8",
+            "contentUrl": "cask://gold/digital-dev/c/item/stream/playlist.m3u8",
         }],
     }).encode()
 
-    captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND, opts={"language": "en"})
+    captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND, opts={"language": "en", "app": "digital-dev"})
 
     sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
     doc = json.loads(sidecar_write["data"])
     assert len(doc["associatedMedia"]) == 1
     media = doc["associatedMedia"][0]
     assert media["@type"] == "VideoObject"  # untouched
-    assert media["contentUrl"] == "cask://silver/g/c/latest/item/stream/playlist.m3u8"  # untouched
-    assert media["caption"]["contentUrl"] == "cask://silver/g/c/latest/item/captions/output-en.vtt"
+    assert media["contentUrl"] == "cask://gold/digital-dev/c/item/stream/playlist.m3u8"  # untouched
+    assert media["caption"]["contentUrl"] == "cask://gold/digital-dev/c/item/captions/output-en.vtt"
 
 
 def test_transcribe_sources_multi_source_matches_captions_to_correct_identifier(fake_fs, fake_derivative, fake_whisper, tmp_path):
@@ -123,7 +125,7 @@ def test_transcribe_sources_multi_source_matches_captions_to_correct_identifier(
         ],
     }).encode()
 
-    captions.transcribe_sources(MULTI_ITEM, _sources(MULTI_ITEM), str(tmp_path), COMMAND)
+    captions.transcribe_sources(MULTI_ITEM, _sources(MULTI_ITEM), str(tmp_path), COMMAND, opts={"app": "digital-dev"})
 
     sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
     doc = json.loads(sidecar_write["data"])

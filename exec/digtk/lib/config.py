@@ -13,13 +13,14 @@ using the same env var name (this also documents it in --help); library code wit
 CLI surface (digtk.lib.ai, digtk.lib.auth, digtk.lib.ark, ...) just reads CONFIG
 directly and gets the same env override for free, without needing any Typer plumbing.
 
-Secrets (bearer tokens, API keys) are deliberately kept out of CONFIG's resolved
-values — only their *env var names* are recorded here (SAMWISE_API_KEY_ENV,
-CASK_API_KEY_ENV) — see digtk.lib.auth for why a token must never be a CLI flag or a
-default that could get logged (shell history, process listings). A secret set via
-`digtk config set samwise.api_key` is written to the home config file (which gets the
-same owner-only permissions as ~/.digtk/credentials.json) and is only ever surfaced
-back to a caller as an env var, never as a CONFIG value.
+Secrets (bearer tokens, API keys, passwords) are deliberately kept out of CONFIG's
+resolved values — only their *env var names* are recorded here (SAMWISE_API_KEY_ENV,
+CASK_API_KEY_ENV, PRESERVICA_PASSWORD_ENV) — see digtk.lib.auth for why a token must
+never be a CLI flag or a default that could get logged (shell history, process
+listings). A secret set via `digtk config set samwise.api_key` (or
+`preservica.password`) is written to the home config file (which gets the same
+owner-only permissions as ~/.digtk/credentials.json) with hidden-input prompting, and
+is only ever surfaced back to a caller as an env var, never as a CONFIG value.
 """
 import json
 import os
@@ -97,6 +98,23 @@ CASK_API_URL_ENV = "CASK_API_URL"
 CASK_API_KEY_ENV = "CASK_API_KEY"
 CREDENTIALS_PATH_ENV = "DIGTK_CREDENTIALS_PATH"
 
+GATEWAY_URL_ENV = "DIGTK_GATEWAY_URL"
+AUTH_LOGIN_TIMEOUT_ENV = "DIGTK_AUTH_LOGIN_TIMEOUT_S"
+
+# Preservica connection secrets (tenant/username/password) are resolved by
+# digtk.lib.auth the same way as CASK_API_URL/CASK_API_KEY above — env var
+# overrides ~/.digtk/credentials.json, never a CLI flag, never in CONFIG/SETTINGS.
+PRESERVICA_TENANT_ENV = "PRESERVICA_TENANT"
+PRESERVICA_USERNAME_ENV = "PRESERVICA_USERNAME"
+PRESERVICA_PASSWORD_ENV = "PRESERVICA_PASSWORD"
+PRESERVICA_BASE_URL_ENV = "PRESERVICA_BASE_URL"
+PRESERVICA_REQUEST_TIMEOUT_S_ENV = "DIGTK_PRESERVICA_REQUEST_TIMEOUT_S"
+PRESERVICA_CONCURRENCY_ENV = "DIGTK_PRESERVICA_CONCURRENCY"
+PRESERVICA_PAGE_SIZE_ENV = "DIGTK_PRESERVICA_PAGE_SIZE"
+PRESERVICA_TOKEN_REFRESH_BUFFER_S_ENV = "DIGTK_PRESERVICA_TOKEN_REFRESH_BUFFER_S"
+PRESERVICA_MAX_RETRIES_ENV = "DIGTK_PRESERVICA_MAX_RETRIES"
+PRESERVICA_RETRY_BACKOFF_S_ENV = "DIGTK_PRESERVICA_RETRY_BACKOFF_S"
+
 ARK_NAAN_ENV = "DIGTK_ARK_NAAN"
 ARK_SHOULDER_ENV = "DIGTK_ARK_SHOULDER"
 ARK_NOID_ALPHABET_ENV = "DIGTK_ARK_NOID_ALPHABET"
@@ -163,6 +181,23 @@ CAPTIONS_TIMEOUT_S_ENV = "DIGTK_CAPTIONS_TIMEOUT_S"
 
 GCS_BUCKET_ENV = "DIGTK_GCS_BUCKET"
 
+# Gold app target for digital_website derivative/metadata writes — mirrors
+# dagster/lib/configs.py's GOLD_APPS Literal (["arda", "digital-dev",
+# "digital-prod"]); duplicated here rather than imported since digtk has no
+# dependency on the separate dagster package (dagster shells out to digtk, not
+# the reverse) — keep the two lists in sync by hand.
+GOLD_APP_ENV = "DIGTK_GOLD_APP"
+
+# argonath's own app-level Postgres schema (collection registry, etc.) — a
+# distinct database/credentials from Dagster's own run/event-log storage (see
+# dagster/lib/utils.py's `conn`, configured via dagster/dagster.yaml's
+# storage.postgres block instead of these settings).
+POSTGRES_HOST_ENV = "DIGTK_POSTGRES_HOST"
+POSTGRES_PORT_ENV = "DIGTK_POSTGRES_PORT"
+POSTGRES_DATABASE_ENV = "DIGTK_POSTGRES_DB"
+POSTGRES_USER_ENV = "DIGTK_POSTGRES_USER"
+POSTGRES_PASSWORD_ENV = "DIGTK_POSTGRES_PASSWORD"
+
 CONFIG_PATH_ENV = "DIGTK_CONFIG_PATH"
 
 
@@ -188,6 +223,8 @@ SETTINGS = [
     {"dotpath": "samwise.maint_end", "env": SAMWISE_MAINT_END_ENV, "cast": str, "secret": False},
     {"dotpath": "alt.max_chars", "env": ALT_MAX_CHARS_ENV, "cast": int, "secret": False},
     {"dotpath": "alt.want_description", "env": ALT_WANT_DESCRIPTION_ENV, "cast": _cast_bool, "secret": False},
+    {"dotpath": "gateway.url", "env": GATEWAY_URL_ENV, "cast": str, "secret": False},
+    {"dotpath": "auth.login_timeout_s", "env": AUTH_LOGIN_TIMEOUT_ENV, "cast": float, "secret": False},
     {"dotpath": "ark.naan", "env": ARK_NAAN_ENV, "cast": str, "secret": False},
     {"dotpath": "ark.shoulder", "env": ARK_SHOULDER_ENV, "cast": str, "secret": False},
     {"dotpath": "ark.noid_alphabet", "env": ARK_NOID_ALPHABET_ENV, "cast": str, "secret": False},
@@ -246,6 +283,22 @@ SETTINGS = [
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_angle_threshold", "env": OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "gcs.bucket", "env": GCS_BUCKET_ENV, "cast": str, "secret": False},
+    {"dotpath": "gold.app", "env": GOLD_APP_ENV, "cast": str, "secret": False},
+    {"dotpath": "postgres.host", "env": POSTGRES_HOST_ENV, "cast": str, "secret": False},
+    {"dotpath": "postgres.port", "env": POSTGRES_PORT_ENV, "cast": int, "secret": False},
+    {"dotpath": "postgres.database", "env": POSTGRES_DATABASE_ENV, "cast": str, "secret": False},
+    {"dotpath": "postgres.user", "env": POSTGRES_USER_ENV, "cast": str, "secret": False},
+    {"dotpath": "postgres.password", "env": POSTGRES_PASSWORD_ENV, "cast": str, "secret": True},
+    {"dotpath": "preservica.tenant", "env": PRESERVICA_TENANT_ENV, "cast": str, "secret": False},
+    {"dotpath": "preservica.username", "env": PRESERVICA_USERNAME_ENV, "cast": str, "secret": False},
+    {"dotpath": "preservica.password", "env": PRESERVICA_PASSWORD_ENV, "cast": str, "secret": True},
+    {"dotpath": "preservica.base_url", "env": PRESERVICA_BASE_URL_ENV, "cast": str, "secret": False},
+    {"dotpath": "preservica.request_timeout_s", "env": PRESERVICA_REQUEST_TIMEOUT_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "preservica.concurrency", "env": PRESERVICA_CONCURRENCY_ENV, "cast": int, "secret": False},
+    {"dotpath": "preservica.page_size", "env": PRESERVICA_PAGE_SIZE_ENV, "cast": int, "secret": False},
+    {"dotpath": "preservica.token_refresh_buffer_s", "env": PRESERVICA_TOKEN_REFRESH_BUFFER_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "preservica.max_retries", "env": PRESERVICA_MAX_RETRIES_ENV, "cast": int, "secret": False},
+    {"dotpath": "preservica.retry_backoff_s", "env": PRESERVICA_RETRY_BACKOFF_S_ENV, "cast": float, "secret": False},
 ]
 _SETTINGS_BY_DOTPATH = {setting["dotpath"]: setting for setting in SETTINGS}
 
@@ -358,6 +411,14 @@ def _seed_env_from_home_config(path, settings):
 
 _seed_env_from_home_config(HOME_CONFIG_PATH, SETTINGS)
 
+# Computed once, ahead of the CONFIG literal below, so 'preservica.base_url' can
+# fall back to the tenant-derived default (Preservica's Starter tier derives the
+# tenant from the hostname) without recomputing 'preservica.tenant' twice.
+_PRESERVICA_TENANT_DEFAULT = _env(PRESERVICA_TENANT_ENV, "")
+_PRESERVICA_BASE_URL_DEFAULT = _env(PRESERVICA_BASE_URL_ENV, "") or (
+    f"https://{_PRESERVICA_TENANT_DEFAULT}.preservica.com" if _PRESERVICA_TENANT_DEFAULT else ""
+)
+
 
 CONFIG = {
     "ocr": {
@@ -398,6 +459,12 @@ CONFIG = {
         ),
         "api_url_env": CASK_API_URL_ENV,
         "api_key_env": CASK_API_KEY_ENV,
+        "login_timeout_s": _env(AUTH_LOGIN_TIMEOUT_ENV, 300.0, float),
+    },
+    # Anduin auth gateway that `digtk auth login`'s browser-based OIDC flow talks to.
+    # The stored CaskFS api_url is gateway.url + "/cask" — see digtk.lib.auth.login().
+    "gateway": {
+        "url": _env(GATEWAY_URL_ENV, "https://argonath.library.ucdavis.edu"),
     },
     "ark": {
         "naan": _env(ARK_NAAN_ENV, "87287"),
@@ -513,6 +580,60 @@ CONFIG = {
         # kept separate so a sync never touches production derivative data. See
         # digtk.lib.gcs_sync's module docstring.
         "bucket": _env(GCS_BUCKET_ENV, "dams-client-media-argonath"),
+    },
+    "gold": {
+        # Local-dev-friendly default ("digital-dev" — see dagster/lib/configs.py's
+        # GOLD_APPS) — a production Dagster run should set this explicitly rather
+        # than rely on it (see dagster/lib/configs.py's DerivativesConfig.app,
+        # which has no default of its own for exactly this reason).
+        "app": _env(GOLD_APP_ENV, "digital-dev"),
+    },
+    "postgres": {
+        # argonath's own app-level schema (collection registry, etc.) — the shared
+        # Postgres/pgvector instance project-anduin provisions, not Dagster's own
+        # run-storage database (dagster/lib/utils.py connects separately, via
+        # DAGSTER_POSTGRES_* env vars, to that one). 'password' is marked secret in
+        # SETTINGS (hidden-input prompt, never displayed by `digtk config show`) so
+        # its resolved value is deliberately NOT stored here — only its env var
+        # name is, mirroring CONFIG["preservica"] above — see digtk.lib.db.
+        "host": _env(POSTGRES_HOST_ENV, "localhost"),
+        "port": _env(POSTGRES_PORT_ENV, 5432, int),
+        "database": _env(POSTGRES_DATABASE_ENV, "argonath"),
+        "user": _env(POSTGRES_USER_ENV, "argonath"),
+        "password_env": POSTGRES_PASSWORD_ENV,
+    },
+    "preservica": {
+        # Unlike CaskFS's OIDC-issued session token (which has its own browser-login
+        # flow and credentials.json), Preservica has no separate credential store —
+        # tenant/username/base_url are plain dotpath settings like everything else in
+        # CONFIG, persisted via `digtk config set preservica.<name> <value>` same as
+        # e.g. samwise.api_url. 'password' is marked secret in SETTINGS (hidden-input
+        # prompt, never displayed by `digtk config show`/`digtk preservica config`) so
+        # its resolved value is deliberately NOT stored here — only its env var name
+        # is, mirroring CONFIG["samwise"]["api_key_env"] — see digtk.lib.auth.
+        "tenant": _PRESERVICA_TENANT_DEFAULT,
+        "tenant_env": PRESERVICA_TENANT_ENV,
+        "username": _env(PRESERVICA_USERNAME_ENV, ""),
+        "username_env": PRESERVICA_USERNAME_ENV,
+        "password_env": PRESERVICA_PASSWORD_ENV,
+        "base_url": _PRESERVICA_BASE_URL_DEFAULT,
+        "base_url_env": PRESERVICA_BASE_URL_ENV,
+        # Non-secret tuning knobs. request_timeout_s/page_size/token_refresh_buffer_s
+        # match preservica-etl's lib/config.js defaults (requestTimeoutMs, page size,
+        # tokenRefreshBufferMs); concurrency is lowered from that port's 8 to 2 —
+        # Preservica's Starter tier was observed to 502/drop connections on bitstream
+        # `/content` downloads under 8-way concurrent load (see max_retries below,
+        # which is the other half of the mitigation).
+        "request_timeout_s": _env(PRESERVICA_REQUEST_TIMEOUT_S_ENV, 30.0, float),
+        "concurrency": _env(PRESERVICA_CONCURRENCY_ENV, 2, int),
+        "page_size": _env(PRESERVICA_PAGE_SIZE_ENV, 100, int),
+        "token_refresh_buffer_s": _env(PRESERVICA_TOKEN_REFRESH_BUFFER_S_ENV, 60.0, float),
+        # Not in preservica-etl: that port never retried, but Preservica's Starter
+        # tier has turned out to intermittently 502/drop-connection on bitstream
+        # `/content` downloads under concurrent load (observed in practice), so
+        # PreservicaClient.request() retries transient failures with backoff.
+        "max_retries": _env(PRESERVICA_MAX_RETRIES_ENV, 4, int),
+        "retry_backoff_s": _env(PRESERVICA_RETRY_BACKOFF_S_ENV, 1.0, float),
     },
 }
 
@@ -648,4 +769,10 @@ SearchEmbedModelOption = Annotated[str | None, typer.Option(
 GcsBucketOption = Annotated[str, typer.Option(
     "--bucket", envvar=GCS_BUCKET_ENV,
     help=f"Target GCS bucket for the derivative sync. Env: {GCS_BUCKET_ENV}.",
+)]
+
+GoldAppOption = Annotated[str, typer.Option(
+    "--app", envvar=GOLD_APP_ENV,
+    help=f"Target gold app ('arda', 'digital-dev', or 'digital-prod' — see "
+         f"dagster/lib/configs.py's GOLD_APPS). Env: {GOLD_APP_ENV}.",
 )]

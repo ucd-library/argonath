@@ -20,6 +20,7 @@ from lib.assets import (
     reconcile_collection_items,
     detect_spreads,
     apply_spreads,
+    rebuild_collection_tree,
     ingest_item,
     generate_derivatives,
     run_ocr,
@@ -44,6 +45,8 @@ from lib.jobs import (
     full_pipeline_job,
 )
 from lib.sensors import (
+    preservica_auto_sync_sensor,
+    collection_partition_sync_sensor,
     derivatives_on_ingest,
     ocr_on_derivatives,
     metadata_on_ocr,
@@ -59,6 +62,7 @@ defs = dg.Definitions(
         reconcile_collection_items,
         detect_spreads,
         apply_spreads,
+        rebuild_collection_tree,
         ingest_item,
         generate_derivatives,
         run_ocr,
@@ -83,6 +87,8 @@ defs = dg.Definitions(
         full_pipeline_job,
     ],
     sensors=[
+        preservica_auto_sync_sensor,
+        collection_partition_sync_sensor,
         derivatives_on_ingest,
         ocr_on_derivatives,
         metadata_on_ocr,

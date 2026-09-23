@@ -63,10 +63,22 @@ def test_set_setting_preserves_other_keys(home_config_path):
     }
 
 
+def test_set_setting_persists_preservica_tenant(home_config_path):
+    config.set_setting("preservica.tenant", "mytenant", path=home_config_path)
+    assert config.read_home_config(home_config_path) == {"preservica.tenant": "mytenant"}
+
+
 def test_is_secret():
     assert config.is_secret("samwise.api_key") is True
     assert config.is_secret("samwise.api_url") is False
     assert config.is_secret("not.a.real.setting") is False
+
+
+def test_is_secret_preservica_password_only():
+    assert config.is_secret("preservica.password") is True
+    assert config.is_secret("preservica.tenant") is False
+    assert config.is_secret("preservica.username") is False
+    assert config.is_secret("preservica.base_url") is False
 
 
 def test_seed_env_from_home_config_sets_unset_vars(home_config_path, monkeypatch):
@@ -137,6 +149,12 @@ def test_alt_defaults():
     default since it changes generate_alt()'s prompt/return shape."""
     assert config.CONFIG["alt"]["max_chars"] == 150
     assert config.CONFIG["alt"]["want_description"] is False
+
+def test_gateway_and_login_timeout_defaults():
+    """Pins the Anduin auth gateway default and browser-login timeout that
+    digtk.lib.auth.login() reads via CONFIG['gateway']['url']/CONFIG['auth']['login_timeout_s']."""
+    assert config.CONFIG["gateway"]["url"] == "https://argonath.library.ucdavis.edu"
+    assert config.CONFIG["auth"]["login_timeout_s"] == 300.0
 
 
 def test_rag_chunking_defaults():

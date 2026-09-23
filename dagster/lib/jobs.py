@@ -9,6 +9,7 @@ from lib.assets import (
     reconcile_collection_items,
     detect_spreads,
     apply_spreads,
+    rebuild_collection_tree,
     ingest_item,
     generate_derivatives,
     run_ocr,
@@ -21,8 +22,9 @@ from lib.assets import (
 
 reconcile_collection_job = dg.define_asset_job(
     name="reconcile_collection_job",
-    selection=[reconcile_collection_items],
-    description="Reconcile a collection's bronze item list against its source and register/prune partitions.",
+    selection=[reconcile_collection_items, rebuild_collection_tree],
+    description="Reconcile a collection's bronze item list against its source, register/prune "
+    "partitions, and (Preservica sources) rebuild its tree/ layout.",
 )
 
 detect_spreads_job = dg.define_asset_job(

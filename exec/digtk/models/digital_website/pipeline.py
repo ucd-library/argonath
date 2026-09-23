@@ -11,13 +11,13 @@ format-specific lib module because a rasterized PDF page is itself just a local 
 file by the time these run, so PDF derivative generation reuses them unchanged.
 
 This is the only layer any orchestrator (digital_website.image, .pdf, .video, .audio)
-should go through to write silver pipeline output — see CLAUDE.md's
+should go through to write silver/gold pipeline output — see CLAUDE.md's
 digtk.lib.derivative entry. Reads still go through digtk.lib.fs directly.
 """
 import json
 import os
 
-from digtk.lib import derivative, djvu, fs, image_magick, ocr_utils, utils
+from digtk.lib import derivative, djvu, fs, image_magick, items, ocr_utils, utils
 from digtk.lib.config import CONFIG
 from digtk.lib.schema import SCHEMA_CONTEXT
 
@@ -254,8 +254,8 @@ def stage_sources(item, tmp_dir, opts={}):
     return sources
 
 
-def derivative_dir(item, subdir):
-    """Compute the CaskFS silver directory a publish() call to this subdir would use.
+def derivative_dir(item, subdir, *, type="silver", type_opts=None):
+    """Compute the CaskFS directory a publish() call to this subdir would use.
 
     A pure function of inputs already known before calling publish() — lets a
     caller (e.g. digtk.models.digital_website.image's generate(), building its
@@ -265,18 +265,28 @@ def derivative_dir(item, subdir):
 
     :param digtk.lib.items.ItemLocation item: Resolved item location.
     :param str subdir: Same 'subdir' publish() would be called with.
+    :param str type: 'silver' (default) or 'gold' — see digtk.lib.derivative.dest_path().
+    :param dict type_opts: dest_path()'s opts for `type`. Defaults to
+        {'group': item.group, 'time': item.time} when `type` is left at its
+        default 'silver'; required (no default) for any other `type`, since
+        there's no sensible 'app' to guess for a gold destination.
     :returns: CaskFS process directory ('cask:/...').
     :rtype: str
+    :raises ValueError: If `type_opts` is omitted for a non-silver `type`.
     """
     rel_path = f"{item.item_path}/{subdir}" if item.item_path else subdir
-    return f"cask:{derivative.dest_path(type='silver', collection=item.collection, rel_path=rel_path, opts={'group': item.group, 'time': item.time})}"
+    if type_opts is None:
+        if type != "silver":
+            raise ValueError(f"type_opts is required when type={type!r}")
+        type_opts = {"group": item.group, "time": item.time}
+    return f"cask:{derivative.dest_path(type=type, collection=item.collection, rel_path=rel_path, opts=type_opts)}"
 
 
-def publish(item, subdir, local_outputs, command, params, opts={}):
+def publish(item, subdir, local_outputs, command, params, *, type="silver", type_opts=None, opts={}):
     """Write local output files to CaskFS (with lineage) and record a manifest.
 
     Every write goes through digtk.lib.derivative.write() — the canonical way to
-    write a silver pipeline output (see CLAUDE.md) — rather than hand-building
+    write a silver/gold pipeline output (see CLAUDE.md) — rather than hand-building
     the CaskFS path and calling fs.write() directly, so each derivative's lineage
     back to the specific bronze binary it was generated from is recorded. CaskFS
     stores link metadata as opaque text (see caskfs's docs/structural-metadata.md),
@@ -284,7 +294,7 @@ def publish(item, subdir, local_outputs, command, params, opts={}):
     because CaskFS interprets it.
 
     :param digtk.lib.items.ItemLocation item: Resolved item location.
-    :param str subdir: Process directory under the item's silver location (e.g.
+    :param str subdir: Process directory under the item's silver/gold location (e.g.
         "derivatives", "ocr", "derivatives/page-000", "stream", "captions").
     :param list[tuple[str, str, str]] local_outputs: (filename, local_path, source_bronze_path)
         triples to publish — source_bronze_path is which of item.bronze_binary_paths this
@@ -292,6 +302,10 @@ def publish(item, subdir, local_outputs, command, params, opts={}):
     :param list[str] command: Full argv that produced these outputs, for the manifest
         and for each output's derivative-link metadata.
     :param dict params: Parsed/typed params, for the manifest and link metadata.
+    :param str type: 'silver' (default) or 'gold' — see derivative_dir().
+    :param dict type_opts: See derivative_dir() — forwarded as every output's
+        (and the manifest's) destination opts, merged with the link/manifest
+        opts below.
     :param dict opts: 'manifest_opts' forwarded to utils.write_manifest (e.g. duration_s).
         'link_relation' (str, optional) — forwarded to derivative.write() as every
         output's CaskFS lineage relation. The caller decides this per subdir rather than
@@ -300,10 +314,15 @@ def publish(item, subdir, local_outputs, command, params, opts={}):
         "derivatives/page-000" for a PDF page vs. plain "derivatives" for an image).
     :returns: {"dir": CaskFS process directory ('cask:/...'), "outputs": [filenames], "manifest": {...}}
     :rtype: dict
+    :raises ValueError: If `type_opts` is omitted for a non-silver `type`.
     """
     rel_path = f"{item.item_path}/{subdir}" if item.item_path else subdir
+    if type_opts is None:
+        if type != "silver":
+            raise ValueError(f"type_opts is required when type={type!r}")
+        type_opts = {"group": item.group, "time": item.time}
     write_opts = {
-        "group": item.group, "time": item.time, "replace": True,
+        **type_opts, "replace": True,
         "link_metadata": json.dumps({"command": command, "params": params}),
     }
     if opts.get("link_relation"):
@@ -315,7 +334,7 @@ def publish(item, subdir, local_outputs, command, params, opts={}):
         with open(local_path, "rb") as f:
             data = f.read()
         derivative.write(
-            type="silver", collection=item.collection, rel_path=f"{rel_path}/{filename}",
+            type=type, collection=item.collection, rel_path=f"{rel_path}/{filename}",
             data=data, source_files=[source_bronze_path], opts=write_opts,
         )
         outputs.append(filename)
@@ -325,9 +344,10 @@ def publish(item, subdir, local_outputs, command, params, opts={}):
     manifest = utils.write_manifest(
         item.collection, rel_path, command, params, outputs,
         source_files=source_files,
-        opts={**opts.get("manifest_opts", {}), "group": item.group, "time": item.time},
+        type=type,
+        opts={**opts.get("manifest_opts", {}), **type_opts},
     )
-    dest_dir = derivative_dir(item, subdir)
+    dest_dir = derivative_dir(item, subdir, type=type, type_opts=type_opts)
     return {"dir": dest_dir, "outputs": outputs, "manifest": manifest}
 
 
@@ -360,11 +380,12 @@ def cask_public_ref(internal_path):
     return "cask:/" + internal_path[len("cask:"):]
 
 
-def update_associated_media(item, media_objects, source_files, source_group):
-    """Merge schema:associatedMedia refs into the item's silver sidecar, creating
+def update_associated_media(item, media_objects, source_files, source_group, *, app):
+    """Merge schema:associatedMedia refs into the item's gold sidecar, creating
     it if absent. Never touches the bronze sidecar — bronze is immutable/append-only,
-    so derivative metadata lives in a new silver/.../[item]/item.jsonld.json instead
-    (see docs/cask-conventions.md).
+    so derivative metadata lives in a new gold/[app]/.../[item]/item.jsonld.json
+    instead (see docs/cask-conventions.md) — these are final public-facing
+    products with no silver group/time staging dimension.
 
     Merges by `source_group` rather than replacing the whole associatedMedia array:
     an item's bronze binaries can legitimately span more than one media format (e.g.
@@ -375,6 +396,12 @@ def update_associated_media(item, media_objects, source_files, source_group):
     from a different group's earlier run are left untouched, so e.g. running `digtk
     showcase pdf derivatives` after `digtk showcase image derivatives` against the
     same item doesn't wipe out the image run's associatedMedia entries.
+
+    Merges only the associatedMedia array — never the top-level DC-metadata fields
+    (name/description/creator/dateCreated/license/publisher/about/identifier)
+    merge_dc_metadata() below owns, so a DC-metadata run and a derivative run can
+    update the same gold sidecar independently, in either order, without clobbering
+    each other.
 
     Uses a plain dict read/merge/write rather than digtk.lib.schema.ItemMetadata
     (its to_jsonld/from_jsonld round-trip is itself an unimplemented phase-0.2
@@ -392,12 +419,13 @@ def update_associated_media(item, media_objects, source_files, source_group):
     :param str source_group: Which pipeline produced media_objects — "image", "pdf",
         "video", or "audio". Existing entries carrying this same group are replaced;
         entries from other groups are preserved.
+    :param str app: Target gold app.
     :returns: The full sidecar dict that was written.
     :rtype: dict
     """
     rel_path = f"{item.item_path}/item.jsonld.json" if item.item_path else "item.jsonld.json"
-    write_opts = {"group": item.group, "time": item.time, "replace": True}
-    dest = derivative.dest_path(type="silver", collection=item.collection, rel_path=rel_path, opts=write_opts)
+    write_opts = {"app": app, "replace": True}
+    dest = derivative.dest_path(type="gold", collection=item.collection, rel_path=rel_path, opts=write_opts)
     sidecar_path = f"cask:{dest}"
 
     if fs.exists(sidecar_path):
@@ -411,8 +439,55 @@ def update_associated_media(item, media_objects, source_files, source_group):
     doc["associatedMedia"] = [e for e in existing if e.get("argonath:sourceGroup") != source_group] + media_objects
 
     derivative.write(
-        type="silver", collection=item.collection, rel_path=rel_path,
+        type="gold", collection=item.collection, rel_path=rel_path,
         data=json.dumps(doc, indent=2).encode(), source_files=source_files, opts=write_opts,
+    )
+    return doc
+
+
+# DC-metadata top-level keys merge_dc_metadata() owns in gold's item.jsonld.json —
+# kept disjoint from update_associated_media()'s associatedMedia array (see above)
+# so the two writers never clobber each other regardless of run order.
+_DC_METADATA_KEYS = ("name", "description", "creator", "dateCreated", "license", "publisher", "about", "identifier")
+
+
+def merge_dc_metadata(item_metadata, *, app):
+    """Merge Dublin-Core-derived schema.org fields into an item's gold
+    item.jsonld.json sidecar, read-modify-write — same non-destructive
+    convention as update_associated_media() above, just scoped to a disjoint
+    set of top-level keys (_DC_METADATA_KEYS) instead of associatedMedia, so a
+    DC-metadata run (see digtk.models.collection's Preservica tree-building)
+    and a derivative-generation run can update the same gold sidecar
+    independently, in either order, without clobbering each other.
+
+    :param digtk.lib.schema.ItemMetadata item_metadata: DC-mapped fields for one
+        item, built from bronze's raw Preservica Dublin Core metadata (see
+        digtk.lib.dc_mapping).
+    :param str app: Target gold app.
+    :returns: The full sidecar dict that was written.
+    :rtype: dict
+    """
+    item = items.resolve(item_metadata.ark)
+    rel_path = f"{item.item_path}/item.jsonld.json" if item.item_path else "item.jsonld.json"
+    write_opts = {"app": app, "replace": True}
+    dest = derivative.dest_path(type="gold", collection=item.collection, rel_path=rel_path, opts=write_opts)
+    sidecar_path = f"cask:{dest}"
+
+    if fs.exists(sidecar_path):
+        doc = json.loads(fs.read(sidecar_path))
+    else:
+        doc = {"@context": SCHEMA_CONTEXT, "@id": item.ark, "ark": item.ark}
+
+    dc_doc = item_metadata.to_jsonld()
+    for key in _DC_METADATA_KEYS:
+        if key in dc_doc:
+            doc[key] = dc_doc[key]
+    doc.setdefault("argonath:fieldSources", {})
+    doc["argonath:fieldSources"].update(item_metadata.field_sources)
+
+    derivative.write(
+        type="gold", collection=item.collection, rel_path=rel_path,
+        data=json.dumps(doc, indent=2).encode(), source_files=item.bronze_binary_paths, opts=write_opts,
     )
     return doc
 
