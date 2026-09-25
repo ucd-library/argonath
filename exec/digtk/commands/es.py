@@ -1,5 +1,5 @@
 """
-digtk public-dc es — index items into the DAMS website's Elasticsearch index.
+digtk showcase es — index items into the DAMS website's Elasticsearch index.
 
 Subcommands:
   upsert  — index a single item by ark

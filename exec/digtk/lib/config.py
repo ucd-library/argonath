@@ -74,6 +74,26 @@ SAMWISE_API_KEY_ENV = "SAMWISE_API_KEY"
 SAMWISE_LLM_MODEL_ENV = "DIGTK_SAMWISE_LLM_MODEL"
 SAMWISE_EMBED_MODEL_ENV = "DIGTK_SAMWISE_EMBED_MODEL"
 
+# Transport hardening, tuned values ported from the standalone digitization
+# toolkit's vllm_client.py — proven against real samwise flakiness (backend
+# wedges where a third of requests hang until the read timeout, while
+# /v1/models still answers) across 6,000+ item batches.
+SAMWISE_CONNECT_TIMEOUT_S_ENV = "DIGTK_SAMWISE_CONNECT_TIMEOUT_S"
+SAMWISE_READ_TIMEOUT_S_ENV = "DIGTK_SAMWISE_READ_TIMEOUT_S"
+SAMWISE_RETRIES_ENV = "DIGTK_SAMWISE_RETRIES"
+# HH:MM, both empty disables the pause. Same window shape as digtk's
+# DIGTK_MAINT_START/END — a long-running batch pauses through a nightly
+# maintenance window instead of burning retries against it.
+SAMWISE_MAINT_START_ENV = "DIGTK_SAMWISE_MAINT_START"
+SAMWISE_MAINT_END_ENV = "DIGTK_SAMWISE_MAINT_END"
+
+# Global defaults for digtk.models.alt_utils's generate_alt() opts — collection-specific
+# tuning (collection_context, name_people, transcribe_text, extra_instructions) stays
+# per-run (CLI flag / Dagster job config) since there's no per-collection settings
+# registry yet to back a persisted default for those.
+ALT_MAX_CHARS_ENV = "DIGTK_ALT_MAX_CHARS"
+ALT_WANT_DESCRIPTION_ENV = "DIGTK_ALT_WANT_DESCRIPTION"
+
 CASK_API_URL_ENV = "CASK_API_URL"
 CASK_API_KEY_ENV = "CASK_API_KEY"
 CREDENTIALS_PATH_ENV = "DIGTK_CREDENTIALS_PATH"
@@ -111,6 +131,12 @@ PDF_TARGET_PIXEL_WIDTH_ENV = "DIGTK_PDF_TARGET_PIXEL_WIDTH"
 PDF_DEFAULT_DENSITY_ENV = "DIGTK_PDF_DEFAULT_DENSITY"
 PDF_RASTER_FORMAT_ENV = "DIGTK_PDF_RASTER_FORMAT"
 PDF_PDFINFO_BIN_ENV = "DIGTK_PDF_PDFINFO_BIN"
+
+ACCESSIBILITY_VERAPDF_BIN_ENV = "DIGTK_VERAPDF_BIN"
+ACCESSIBILITY_TAG_LOOKAHEAD_ENV = "DIGTK_TAG_LOOKAHEAD"
+ACCESSIBILITY_MIN_WORD_CONFIDENCE_ENV = "DIGTK_MIN_WORD_CONFIDENCE"
+
+SPLIT_MAX_PX_ENV = "DIGTK_SPLIT_MAX_PX"
 
 IMAGE_THUMBNAIL_WIDTHS_ENV = "DIGTK_IMAGE_THUMBNAIL_WIDTHS"
 IMAGE_CONVERT_FORMAT_ENV = "DIGTK_IMAGE_CONVERT_FORMAT"
@@ -155,12 +181,18 @@ CAPTIONS_TIMEOUT_S_ENV = "DIGTK_CAPTIONS_TIMEOUT_S"
 
 GCS_BUCKET_ENV = "DIGTK_GCS_BUCKET"
 
-# Gold app target for digital_website derivative/metadata writes — mirrors
-# dagster/lib/configs.py's GOLD_APPS Literal (["arda", "digital-dev",
-# "digital-prod"]); duplicated here rather than imported since digtk has no
-# dependency on the separate dagster package (dagster shells out to digtk, not
-# the reverse) — keep the two lists in sync by hand.
-GOLD_APP_ENV = "DIGTK_GOLD_APP"
+# The shared postgres instance's default 'postgres' database — same one
+# cask/anduin-gateway connect to (distinct from CONFIG["postgres"]'s own
+# dedicated 'argonath' database above, and from Dagster's own run/event
+# storage — see dagster/lib/utils.py's DAGSTER_POSTGRES_* connection),
+# scoped to its own 'reporting' schema. See digtk.lib.reporting's module
+# docstring for why job-tracking rows live here instead of either of those.
+REPORTING_PG_HOST_ENV = "DIGTK_REPORTING_PG_HOST"
+REPORTING_PG_PORT_ENV = "DIGTK_REPORTING_PG_PORT"
+REPORTING_PG_DATABASE_ENV = "DIGTK_REPORTING_PG_DATABASE"
+REPORTING_PG_USER_ENV = "DIGTK_REPORTING_PG_USER"
+REPORTING_PG_PASSWORD_ENV = "DIGTK_REPORTING_PG_PASSWORD"
+REPORTING_JOB_ID_ENV = "DIGTK_REPORTING_JOB_ID"
 
 # argonath's own app-level Postgres schema (collection registry, etc.) — a
 # distinct database/credentials from Dagster's own run/event-log storage (see
@@ -190,6 +222,13 @@ SETTINGS = [
     {"dotpath": "samwise.api_key", "env": SAMWISE_API_KEY_ENV, "cast": str, "secret": True},
     {"dotpath": "samwise.llm_model", "env": SAMWISE_LLM_MODEL_ENV, "cast": str, "secret": False},
     {"dotpath": "samwise.embed_model", "env": SAMWISE_EMBED_MODEL_ENV, "cast": str, "secret": False},
+    {"dotpath": "samwise.connect_timeout_s", "env": SAMWISE_CONNECT_TIMEOUT_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "samwise.read_timeout_s", "env": SAMWISE_READ_TIMEOUT_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "samwise.retries", "env": SAMWISE_RETRIES_ENV, "cast": int, "secret": False},
+    {"dotpath": "samwise.maint_start", "env": SAMWISE_MAINT_START_ENV, "cast": str, "secret": False},
+    {"dotpath": "samwise.maint_end", "env": SAMWISE_MAINT_END_ENV, "cast": str, "secret": False},
+    {"dotpath": "alt.max_chars", "env": ALT_MAX_CHARS_ENV, "cast": int, "secret": False},
+    {"dotpath": "alt.want_description", "env": ALT_WANT_DESCRIPTION_ENV, "cast": _cast_bool, "secret": False},
     {"dotpath": "gateway.url", "env": GATEWAY_URL_ENV, "cast": str, "secret": False},
     {"dotpath": "auth.login_timeout_s", "env": AUTH_LOGIN_TIMEOUT_ENV, "cast": float, "secret": False},
     {"dotpath": "ark.naan", "env": ARK_NAAN_ENV, "cast": str, "secret": False},
@@ -205,6 +244,10 @@ SETTINGS = [
     {"dotpath": "pdf.default_density", "env": PDF_DEFAULT_DENSITY_ENV, "cast": int, "secret": False},
     {"dotpath": "pdf.raster_format", "env": PDF_RASTER_FORMAT_ENV, "cast": str, "secret": False},
     {"dotpath": "pdf.pdfinfo_bin", "env": PDF_PDFINFO_BIN_ENV, "cast": str, "secret": False},
+    {"dotpath": "accessibility.verapdf_bin", "env": ACCESSIBILITY_VERAPDF_BIN_ENV, "cast": str, "secret": False},
+    {"dotpath": "accessibility.tag_lookahead", "env": ACCESSIBILITY_TAG_LOOKAHEAD_ENV, "cast": int, "secret": False},
+    {"dotpath": "accessibility.min_word_confidence", "env": ACCESSIBILITY_MIN_WORD_CONFIDENCE_ENV, "cast": float, "secret": False},
+    {"dotpath": "split.max_px", "env": SPLIT_MAX_PX_ENV, "cast": int, "secret": False},
     {"dotpath": "image.thumbnail_widths", "env": IMAGE_THUMBNAIL_WIDTHS_ENV, "cast": str, "secret": False},
     {"dotpath": "image.convert_format", "env": IMAGE_CONVERT_FORMAT_ENV, "cast": str, "secret": False},
     {"dotpath": "image.dpi", "env": IMAGE_DPI_ENV, "cast": int, "secret": False},
@@ -246,7 +289,6 @@ SETTINGS = [
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_angle_threshold", "env": OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "gcs.bucket", "env": GCS_BUCKET_ENV, "cast": str, "secret": False},
-    {"dotpath": "gold.app", "env": GOLD_APP_ENV, "cast": str, "secret": False},
     {"dotpath": "postgres.host", "env": POSTGRES_HOST_ENV, "cast": str, "secret": False},
     {"dotpath": "postgres.port", "env": POSTGRES_PORT_ENV, "cast": int, "secret": False},
     {"dotpath": "postgres.database", "env": POSTGRES_DATABASE_ENV, "cast": str, "secret": False},
@@ -404,6 +446,17 @@ CONFIG = {
         "api_key_env": SAMWISE_API_KEY_ENV,
         "llm_model": _env(SAMWISE_LLM_MODEL_ENV, "qwen3.6-fast:35b"),
         "embed_model": _env(SAMWISE_EMBED_MODEL_ENV, "qwen3-embed:4b"),
+        # Proven values from the standalone digitization toolkit's vllm_client.py.
+        "connect_timeout_s": _env(SAMWISE_CONNECT_TIMEOUT_S_ENV, 15.0, float),
+        "read_timeout_s": _env(SAMWISE_READ_TIMEOUT_S_ENV, 180.0, float),
+        "retries": _env(SAMWISE_RETRIES_ENV, 6, int),
+        "maint_start": _env(SAMWISE_MAINT_START_ENV, ""),
+        "maint_end": _env(SAMWISE_MAINT_END_ENV, ""),
+    },
+    "alt": {
+        # max_chars matches digtk.models.alt_utils.DEFAULT_MAX_ALT_CHARS.
+        "max_chars": _env(ALT_MAX_CHARS_ENV, 150, int),
+        "want_description": _env(ALT_WANT_DESCRIPTION_ENV, False, _cast_bool),
     },
     "auth": {
         "credentials_path": _env(
@@ -448,6 +501,21 @@ CONFIG = {
         "default_density": _env(PDF_DEFAULT_DENSITY_ENV, 600, int),
         "raster_format": _env(PDF_RASTER_FORMAT_ENV, "tif"),
         "pdfinfo_bin": _env(PDF_PDFINFO_BIN_ENV, "pdfinfo"),
+    },
+    "accessibility": {
+        "verapdf_bin": _env(ACCESSIBILITY_VERAPDF_BIN_ENV, "verapdf"),
+        # Matches digtk.models.pdf_tag.DEFAULT_LOOKAHEAD.
+        "tag_lookahead": _env(ACCESSIBILITY_TAG_LOOKAHEAD_ENV, 40, int),
+        # tag_pdf()'s searchable-PDF text layer: drop hOCR words below this
+        # confidence (0-100) instead of baking OCR noise into the invisible
+        # text layer. Default 0.0 (disabled) — opt in per collection/batch,
+        # ported from the reference toolkit's words.py --min-conf.
+        "min_word_confidence": _env(ACCESSIBILITY_MIN_WORD_CONFIDENCE_ENV, 0.0, float),
+    },
+    "split": {
+        # Detection render width for the vision gutter call — matches the
+        # reference toolkit's split.py default.
+        "max_px": _env(SPLIT_MAX_PX_ENV, 1400, int),
     },
     "image": {
         "thumbnail_widths": _env(IMAGE_THUMBNAIL_WIDTHS_ENV, "256,512,1024"),
@@ -518,13 +586,6 @@ CONFIG = {
         # digtk.lib.gcs_sync's module docstring.
         "bucket": _env(GCS_BUCKET_ENV, "dams-client-media-argonath"),
     },
-    "gold": {
-        # Local-dev-friendly default ("digital-dev" — see dagster/lib/configs.py's
-        # GOLD_APPS) — a production Dagster run should set this explicitly rather
-        # than rely on it (see dagster/lib/configs.py's DerivativesConfig.app,
-        # which has no default of its own for exactly this reason).
-        "app": _env(GOLD_APP_ENV, "digital-dev"),
-    },
     "postgres": {
         # argonath's own app-level schema (collection registry, etc.) — the shared
         # Postgres/pgvector instance project-anduin provisions, not Dagster's own
@@ -571,6 +632,17 @@ CONFIG = {
         # PreservicaClient.request() retries transient failures with backoff.
         "max_retries": _env(PRESERVICA_MAX_RETRIES_ENV, 4, int),
         "retry_backoff_s": _env(PRESERVICA_RETRY_BACKOFF_S_ENV, 1.0, float),
+    },
+    "reporting": {
+        # host/port default to a local-dev port-forward target (e.g.
+        # `kubectl port-forward svc/postgres 5432:5432 -n argonath`), not a
+        # real network path -- see digtk.lib.reporting's module docstring.
+        # Compose/k8s override these to the in-cluster 'postgres' service.
+        "host": _env(REPORTING_PG_HOST_ENV, "localhost"),
+        "port": _env(REPORTING_PG_PORT_ENV, 5432, int),
+        "database": _env(REPORTING_PG_DATABASE_ENV, "postgres"),
+        "user": _env(REPORTING_PG_USER_ENV, "postgres"),
+        "password_env": REPORTING_PG_PASSWORD_ENV,
     },
 }
 
@@ -627,6 +699,21 @@ ImageFuzzThresholdOption = Annotated[int, typer.Option(
 ImageThumbnailQualityOption = Annotated[int, typer.Option(
     "--quality", envvar=IMAGE_THUMBNAIL_QUALITY_ENV,
     help=f"JPEG quality (1-100). Env: {IMAGE_THUMBNAIL_QUALITY_ENV}.",
+)]
+
+SplitMaxPxOption = Annotated[int, typer.Option(
+    "--max-px", envvar=SPLIT_MAX_PX_ENV,
+    help=f"Detection render width, in pixels. Env: {SPLIT_MAX_PX_ENV}.",
+)]
+
+AltMaxCharsOption = Annotated[int, typer.Option(
+    "--max-alt-chars", envvar=ALT_MAX_CHARS_ENV,
+    help=f"Maximum alt-text length in characters. Env: {ALT_MAX_CHARS_ENV}.",
+)]
+
+AltWantDescriptionOption = Annotated[bool, typer.Option(
+    "--want-description", envvar=ALT_WANT_DESCRIPTION_ENV,
+    help=f"Also generate a 2-4 sentence catalog description. Env: {ALT_WANT_DESCRIPTION_ENV}.",
 )]
 
 VideoResolutionsOption = Annotated[str, typer.Option(
@@ -693,8 +780,21 @@ GcsBucketOption = Annotated[str, typer.Option(
     help=f"Target GCS bucket for the derivative sync. Env: {GCS_BUCKET_ENV}.",
 )]
 
-GoldAppOption = Annotated[str, typer.Option(
-    "--app", envvar=GOLD_APP_ENV,
-    help=f"Target gold app ('arda', 'digital-dev', or 'digital-prod' — see "
-         f"dagster/lib/configs.py's GOLD_APPS). Env: {GOLD_APP_ENV}.",
+# Shared by every command digtk.lib.reporting.track() instruments. No CONFIG
+# default (unlike the options above) -- reporting is opt-in per invocation:
+# omitting --reporting-job-id means "don't record this command at all" (see
+# digtk.lib.reporting's module docstring), so there's no sensible default
+# other than None.
+ReportingJobIdOption = Annotated[str | None, typer.Option(
+    "--reporting-job-id", envvar=REPORTING_JOB_ID_ENV,
+    help="Job identifier (e.g. a Dagster run ID) to record this command's "
+         "outcome under in reporting.command. Omit to skip reporting entirely. "
+         f"Env: {REPORTING_JOB_ID_ENV}.",
+)]
+
+ReportingCollectionOption = Annotated[str | None, typer.Option(
+    "--reporting-collection",
+    help="Collection key to record alongside this command, if known (e.g. "
+         "Dagster's collection partition key). Purely descriptive -- has no "
+         "effect unless --reporting-job-id is also set.",
 )]

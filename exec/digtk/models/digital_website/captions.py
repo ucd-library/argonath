@@ -40,7 +40,7 @@ from digtk.models.digital_website import pipeline
 _LINK_RELATION = f"{ARGONATH_NS}captionOf"
 
 
-def _merge_caption_into_sidecar(item, captions_by_stem, captions_dir, language, source_files, *, app):
+def _merge_caption_into_sidecar(item, captions_by_stem, captions_dir, language, source_files):
     """Inject a 'caption' MediaObject into whichever associatedMedia entry shares
     each caption's source stem as 'identifier'. If no sidecar or matching entry exists
     yet (e.g. captions run before derivatives()), a bare placeholder entry is added
@@ -51,13 +51,12 @@ def _merge_caption_into_sidecar(item, captions_by_stem, captions_dir, language, 
     :param str captions_dir: CaskFS captions/ process directory ('cask:/...').
     :param str language: BCP-47-ish language code used for every caption this call wrote.
     :param list[str] source_files: CaskFS paths this sidecar update is derived from.
-    :param str app: Target gold app.
     :returns: The full sidecar dict that was written.
     :rtype: dict
     """
     rel_path = f"{item.item_path}/item.jsonld.json" if item.item_path else "item.jsonld.json"
-    write_opts = {"app": app, "replace": True}
-    dest = derivative.dest_path(type="gold", collection=item.collection, rel_path=rel_path, opts=write_opts)
+    write_opts = {"group": item.group, "time": item.time, "replace": True}
+    dest = derivative.dest_path(type="silver", collection=item.collection, rel_path=rel_path, opts=write_opts)
     sidecar_path = f"cask:{dest}"
 
     if fs.exists(sidecar_path):
@@ -94,7 +93,7 @@ def _merge_caption_into_sidecar(item, captions_by_stem, captions_dir, language, 
 
     doc["argonath:fieldSources"]["caption"] = "ai"
     derivative.write(
-        type="gold", collection=item.collection, rel_path=rel_path,
+        type="silver", collection=item.collection, rel_path=rel_path,
         data=json.dumps(doc, indent=2).encode(), source_files=source_files, opts=write_opts,
     )
     return doc
@@ -119,14 +118,12 @@ def transcribe_sources(item, sources, tmp_dir, command, opts={}):
         manifest/lineage the same way every other publish() call in that run is.
     :param dict opts: 'language' (str, default CONFIG["captions"]["language"]), 'model'
         (str, default CONFIG["captions"]["model"], must be one of
-        digtk.lib.whisper_utils.MODEL_CHOICES), 'app' (str) — target gold app,
-        captions are a final public-facing product with no silver staging.
+        digtk.lib.whisper_utils.MODEL_CHOICES).
     :returns: {"dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
     """
     language = opts.get("language", CONFIG["captions"]["language"])
     model = opts.get("model", CONFIG["captions"]["model"])
-    app = opts.get("app")
     start = time.monotonic()
     total = len(sources)
     multi = total > 1
@@ -146,7 +143,6 @@ def transcribe_sources(item, sources, tmp_dir, command, opts={}):
         item, "captions", local_outputs,
         command=command,
         params={"language": language, "model": model},
-        type="gold", type_opts={"app": app},
         opts={
             "manifest_opts": {"duration_s": time.monotonic() - start},
             "link_relation": _LINK_RELATION,
@@ -155,7 +151,7 @@ def transcribe_sources(item, sources, tmp_dir, command, opts={}):
 
     utils.log("Merging captions into associated-media sidecar...")
     _merge_caption_into_sidecar(
-        item, captions_by_stem, result["dir"], language, [src["bronze_path"] for src in sources], app=app,
+        item, captions_by_stem, result["dir"], language, [src["bronze_path"] for src in sources],
     )
 
     return result

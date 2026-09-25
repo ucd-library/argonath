@@ -3,6 +3,13 @@ ARG CASKFS_IMAGE
 FROM ${CASKFS_IMAGE} as caskfs
 FROM ${DAGSTER_IMAGE}
 
+# veraPDF version to install below (validate_ua()'s dependency, see
+# exec/digtk/digtk/models/pdf_tag.py) — pinned deliberately, matching the
+# current default in veraPDF's own Dockerfile (veraPDF/veraPDF-apps,
+# integration branch). Bump both parts together when upgrading.
+ARG VERAPDF_VERSION=1.30
+ARG VERAPDF_MINOR_VERSION=2
+
 RUN apt-get update && \
     apt-get install -y wget gnupg2 lsb-release && \
     echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
@@ -18,8 +25,30 @@ RUN apt-get update && \
     poppler-utils \
     ffmpeg \
     libmagic1 \
-    postgresql-client-16 && \
+    postgresql-client-16 \
+    unzip \
+    default-jre-headless && \
     rm -rf /var/lib/apt/lists/*
+
+# veraPDF's own installer (IzPack-based, needs a JRE to run) — downloaded
+# from their official release server, installed unattended via their own
+# docker-install.xml (see that file's header for provenance), verified with
+# a real --version call so a broken install fails the build loudly rather
+# than shipping a Docker image where `digtk accessibility tag-pdf --validate`
+# silently can't find veraPDF. Java stays installed afterward (default-jre-headless,
+# above — the version-agnostic metapackage, since a version-pinned openjdk-*
+# package name breaks across base-image OS upgrades: this already happened
+# once, openjdk-17-jre-headless doesn't exist on this image's Debian trixie,
+# only openjdk-21) since the resulting `verapdf` script also needs it at
+# runtime, not just for the installer.
+COPY docker-install.xml /tmp/docker-install.xml
+RUN wget --quiet -O /tmp/verapdf-installer.zip \
+    "https://software.verapdf.org/releases/${VERAPDF_VERSION}/verapdf-greenfield-${VERAPDF_VERSION}.${VERAPDF_MINOR_VERSION}-installer.zip" && \
+    cd /tmp && unzip -q verapdf-installer.zip && \
+    java -jar "verapdf-greenfield-${VERAPDF_VERSION}.${VERAPDF_MINOR_VERSION}/verapdf-izpack-installer-${VERAPDF_VERSION}.${VERAPDF_MINOR_VERSION}.jar" docker-install.xml && \
+    ln -s /opt/verapdf/verapdf /usr/local/bin/verapdf && \
+    verapdf --version && \
+    rm -rf /tmp/verapdf-installer.zip "/tmp/verapdf-greenfield-${VERAPDF_VERSION}.${VERAPDF_MINOR_VERSION}" /tmp/docker-install.xml
 
 RUN pip install --no-cache-dir uv
 

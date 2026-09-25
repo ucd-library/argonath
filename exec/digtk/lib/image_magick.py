@@ -218,6 +218,36 @@ def thumbnail(src_path, dest_path, width, opts={}):
     return {"argv": argv, "dest_path": dest_path}
 
 
+def crop(src_path, dest_path, box, opts={}):
+    """Crop a rectangular region out of an image, LZW-compressing the output.
+
+    `convert <src>[frame] -crop {w}x{h}+{x}+{y} +repage -compress lzw <dest>`.
+    `+repage` drops the crop's virtual canvas offset so the output's own page
+    geometry starts at (0, 0) instead of carrying the original image's
+    coordinates forward. ImageMagick preserves DPI/density metadata across a
+    TIFF->TIFF crop on its own, unlike callers that build a new image object
+    from scratch and must set it explicitly.
+
+    :param str src_path: Local source image path.
+    :param str dest_path: Local destination path (extension drives output format).
+    :param tuple box: (x, y, width, height) crop region in source-pixel coords.
+    :param dict opts: 'frame' (int|None), 'timeout' (float), 'magick' (bool) —
+        see _use_magick().
+    :returns: {"argv": list[str], "dest_path": str}
+    :rtype: dict
+    :raises ImageMagickError: If `convert` fails or times out.
+    """
+    x, y, width, height = box
+    src = _frame_suffix(src_path, opts.get("frame"))
+
+    argv = convert_argv(opts) + [
+        src, "-crop", f"{width}x{height}+{x}+{y}", "+repage", "-compress", "lzw",
+        dest_path,
+    ]
+    run(argv, opts)
+    return {"argv": argv, "dest_path": dest_path}
+
+
 def convert_format(src_path, dest_path, opts={}):
     """Convert an image to a different format via ImageMagick, without resizing.
 

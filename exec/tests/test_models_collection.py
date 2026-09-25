@@ -415,6 +415,63 @@ def test_list_active_collections_filters_by_source_type(fake_registry):
     assert {c["name"] for c in preservica_only} == {"preservica-col"}
 
 
+# --- list_item_arks -----------------------------------------------------------
+
+def test_list_item_arks_reads_ark_from_each_matching_item_jsonld(monkeypatch):
+    monkeypatch.setattr(collection.fs, "find_by_partition_keys", lambda keys, opts={}: [
+        "/bronze/preservica/my-collection/latest/tree/box-1/item-1/item.jsonld.json",
+        "/bronze/preservica/my-collection/latest/tree/box-1/item-2/item.jsonld.json",
+    ])
+    docs = {
+        "cask:/bronze/preservica/my-collection/latest/tree/box-1/item-1/item.jsonld.json":
+            json.dumps({"ark": "ark:/1/one"}),
+        "cask:/bronze/preservica/my-collection/latest/tree/box-1/item-2/item.jsonld.json":
+            json.dumps({"ark": "ark:/1/two"}),
+    }
+    monkeypatch.setattr(collection.fs, "read", lambda path: docs[path])
+
+    assert collection.list_item_arks("my-collection") == ["ark:/1/one", "ark:/1/two"]
+
+
+def test_list_item_arks_falls_back_to_at_id_when_ark_field_missing(monkeypatch):
+    monkeypatch.setattr(collection.fs, "find_by_partition_keys", lambda keys, opts={}: [
+        "/bronze/preservica/my-collection/latest/tree/item-1/item.jsonld.json",
+    ])
+    monkeypatch.setattr(collection.fs, "read", lambda path: json.dumps({"@id": "ark:/1/one"}))
+
+    assert collection.list_item_arks("my-collection") == ["ark:/1/one"]
+
+
+def test_list_item_arks_ignores_non_item_jsonld_matches(monkeypatch):
+    # metadata.json/identifiers.json share the same partition keys as
+    # item.jsonld.json (see _tree_partition_keys()) -- only the latter is an
+    # item roster entry.
+    monkeypatch.setattr(collection.fs, "find_by_partition_keys", lambda keys, opts={}: [
+        "/bronze/preservica/my-collection/latest/tree/box-1/metadata.json",
+        "/bronze/preservica/my-collection/latest/tree/box-1/item-1/item.jsonld.json",
+    ])
+    monkeypatch.setattr(collection.fs, "read", lambda path: json.dumps({"ark": "ark:/1/one"}))
+
+    assert collection.list_item_arks("my-collection") == ["ark:/1/one"]
+
+
+def test_list_item_arks_empty_when_no_matches(monkeypatch):
+    monkeypatch.setattr(collection.fs, "find_by_partition_keys", lambda keys, opts={}: [])
+    assert collection.list_item_arks("my-collection") == []
+
+
+def test_list_item_arks_queries_medallion_bronze_and_collection_name(monkeypatch):
+    seen = {}
+
+    def _find(keys, opts={}):
+        seen["keys"] = keys
+        return []
+
+    monkeypatch.setattr(collection.fs, "find_by_partition_keys", _find)
+    collection.list_item_arks("my-collection")
+    assert seen["keys"] == ["medallion-bronze", "collection-my-collection"]
+
+
 # --- helpers: _slugify / _is_ark / _resolve_identifier_key / _unique_tree_slug ---
 
 def test_slugify_lowercases_and_collapses_non_alnum():

@@ -470,6 +470,47 @@ def list_active_collections(source_type=None, opts={}):
     return db.query(sql, params, opts)
 
 
+def list_item_arks(collection, opts={}):
+    """List every item ARK currently in a collection's tree/ layout.
+
+    Reuses the 'collection-<name>' partition key preservica_tree()/
+    preservica_tree_partial() already tag each tree/.../item.jsonld.json
+    write with (see _tree_partition_keys(), applied in
+    _write_tree_item_jsonld()) — a plain CaskFS Layer-2 partition-key query
+    (fs.find_by_partition_keys()), no new bronze bookkeeping needed. Built
+    for Dagster's collection-level fan-out (one run per collection, mapping
+    over every item in it — see dagster/lib/pipeline_fanout.py), which needs
+    a collection's current item roster without registering a Dagster
+    partition per item the way items_partitions-based assets do.
+
+    `group` isn't part of the lookup key: collection names are unique among
+    active registrations regardless of group (see register_collection()'s
+    collection_registry_active_name_uq), so the partition key tagged at
+    write time is scoped by name alone and that's enough here too.
+
+    Local (non-CaskFS) collections built via local_to_bronze_tree() aren't
+    covered — _write_tree_item_jsonld() only applies partition_keys when
+    writing to real CaskFS ('cask:' root), and local_to_bronze_tree() also
+    doesn't call it at all today (no Dublin-Core-sourced item.jsonld.json
+    for a manual disk collection).
+
+    :param str collection: Collection name.
+    :param dict opts: Forwarded to fs.find_by_partition_keys() (currently unused there).
+    :returns: Item ARKs currently in the collection's tree/, sorted.
+    :rtype: list[str]
+    """
+    paths = fs.find_by_partition_keys(["medallion-bronze", f"collection-{collection}"], opts)
+    arks = set()
+    for path in paths:
+        if not path.endswith("/item.jsonld.json"):
+            continue
+        doc = json.loads(fs.read(f"cask:{path}"))
+        ark = doc.get("ark") or doc.get("@id")
+        if ark:
+            arks.add(ark)
+    return sorted(arks)
+
+
 def _get_active_registration_by_name(name, group, opts={}):
     """Look up an active registered collection by its own name + group pair —
     used by preservica_sync_entities(), whose caller (the CLI's `sync`

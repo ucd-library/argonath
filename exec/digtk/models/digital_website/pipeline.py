@@ -50,6 +50,13 @@ FORMAT_BY_EXTENSION = {
     ".pdf": "pdf",
     ".mp4": "video", ".mov": "video", ".avi": "video", ".mkv": "video", ".webm": "video",
     ".mp3": "audio", ".wav": "audio", ".flac": "audio", ".m4a": "audio", ".ogg": "audio",
+    # Recognized-but-unclaimed: no showcase pipeline processes these, but an
+    # item legitimately having one shouldn't fail filter_binaries_by_format()'s
+    # unrecognized-extension safety net the way a truly unhandled binary type
+    # should -- e.g. Preservica's "Access" representation bundle includes a
+    # plain-text OCR transcript (its own, not digtk.models.ocr's) alongside
+    # page images/a combined PDF for the same item.
+    ".txt": "text",
 }
 
 
@@ -80,6 +87,55 @@ def filter_binaries_by_format(bronze_binary_paths, media_types):
     return matches
 
 
+def detect_formats(bronze_binary_paths):
+    """Detect which media-type formats are present among an item's bronze binaries.
+
+    Unlike filter_binaries_by_format(), never raises — a format simply absent
+    from bronze_binary_paths is a normal, expected case here, and an
+    unrecognized/unclaimed extension (e.g. ".txt") is silently ignored rather
+    than treated as an error. Used by dagster/lib/pipeline_fanout.py's
+    process_derivatives to decide which `digtk showcase <format> derivatives`
+    commands apply to a given (possibly mixed-format) item.
+
+    :param list[str] bronze_binary_paths: CaskFS paths ('cask:/'-prefixed).
+    :returns: Formats present, a subset of {"image", "pdf", "video", "audio"}.
+    :rtype: set[str]
+    """
+    formats = set()
+    for path in bronze_binary_paths:
+        ext = os.path.splitext(path)[1].lower()
+        fmt = FORMAT_BY_EXTENSION.get(ext)
+        if fmt in ("image", "pdf", "video", "audio"):
+            formats.add(fmt)
+    return formats
+
+
+def partition_by_format(bronze_binary_paths):
+    """Split an item's bronze binaries into image and PDF subsets.
+
+    Unlike filter_binaries_by_format(), doesn't raise when a format has zero
+    matches (a real item may have only one of the two, or — rarely — both), and
+    doesn't raise on a binary of a format the caller just doesn't apply to
+    (video/audio, or something unrecognized) — silently skips it rather than
+    enforcing every binary be a recognized format. Shared by
+    digtk.models.accessibility (alt-text/tagging, image or PDF) and
+    digtk.models.ocr (Tesseract + vision OCR, same either-or shape).
+
+    :param list[str] bronze_binary_paths: CaskFS paths ('cask:/'-prefixed).
+    :returns: (image_paths, pdf_paths), each a subset of bronze_binary_paths, in order.
+    :rtype: tuple[list[str], list[str]]
+    """
+    image_paths, pdf_paths = [], []
+    for path in bronze_binary_paths:
+        ext = os.path.splitext(path)[1].lower()
+        fmt = FORMAT_BY_EXTENSION.get(ext)
+        if fmt == "image":
+            image_paths.append(path)
+        elif fmt == "pdf":
+            pdf_paths.append(path)
+    return image_paths, pdf_paths
+
+
 def parse_widths(widths):
     """Parse a thumbnail-widths spec into a sorted list of ints.
 
@@ -90,6 +146,93 @@ def parse_widths(widths):
     if isinstance(widths, str):
         widths = [int(w.strip()) for w in widths.split(",")]
     return sorted(widths)
+
+
+def page_tag(page_index, count):
+    """Zero-padded page directory name, wide enough for the item's own page count.
+
+    Shared by digital_website.pdf (naming its ocr/page-NNN publish dirs) and
+    any other per-page PDF consumer (e.g. accessibility.tag_pdf, reading those
+    same published paths back) that needs to reconstruct the identical name.
+
+    :param int page_index: 0-indexed page number.
+    :param int count: Total page count (pad width scales with this, minimum 3 digits).
+    :rtype: str
+    """
+    pad = max(3, len(str(max(count - 1, 0))))
+    return f"page-{page_index:0{pad}d}"
+
+
+def pdf_ocr_prep_images(item, bronze_path, namespace_ocr):
+    """Read pdf.derivatives()'s aggregate OCR manifest for one PDF binary and
+    return each page's already-published OCR-prep image cask path, in page order.
+
+    Mirrors digtk.models.digital_website.pdf.derivatives()'s own ocr_prefix/
+    page_tag/filename construction exactly (ocr_prefix = f"{stem}/" if
+    namespace_ocr else "", filename = f"{stem}-{page_tag}-{prep[-deskew]}.jpg"),
+    so this reads back precisely what that command published. Shared by
+    digtk.models.accessibility.tag_pdf and digtk.models.ocr.run_ocr — both need
+    to locate the same published images, just to feed different tools.
+
+    :param ItemLocation item: Resolved item location.
+    :param str bronze_path: This PDF's bronze binary cask path.
+    :param bool namespace_ocr: True if pdf.derivatives() namespaced this PDF's
+        OCR output by its own filename — when the item has more than one PDF
+        binary, *or* the item also has non-PDF binaries (a bare "ocr/"
+        directory would otherwise collide with e.g. image.py's own
+        ocr/manifest.json for a co-located image binary). Callers compute
+        this the same way pdf.derivatives() does:
+        `len(pdf_paths) > 1 or len(pdf_paths) < len(item.bronze_binary_paths)`.
+    :returns: (page image cask paths, in page order; page count)
+    :rtype: tuple[list[str], int]
+    :raises FileNotFoundError: If `digtk showcase pdf derivatives` hasn't
+        published this PDF's OCR-prep images yet.
+    """
+    filename = bronze_path.rsplit("/", 1)[-1]
+    stem = filename.rsplit(".", 1)[0]
+    ocr_prefix = f"{stem}/" if namespace_ocr else ""
+    ocr_base_dir = derivative_dir(item, f"{ocr_prefix}ocr")
+    manifest = json.loads(fs.read(f"{ocr_base_dir}/manifest.json"))
+    count = manifest["params"]["pages"]
+    orientation = manifest["params"]["orientation"]
+
+    images = []
+    for page_no in range(1, count + 1):
+        tag = page_tag(page_no - 1, count)
+        deskewed = orientation[str(page_no)]["deskew_selected"]
+        base_name = "prep-deskew.jpg" if deskewed else "prep.jpg"
+        page_dir = derivative_dir(item, f"{ocr_prefix}ocr/{tag}")
+        images.append(f"{page_dir}/{stem}-{tag}-{base_name}")
+    return images, count
+
+
+def image_ocr_prep_image(item, bronze_path, multi_image):
+    """Read digital_website.image.generate()'s ocr/manifest.json for one image
+    binary and return its already-published OCR-prep image cask path.
+
+    Mirrors generate()'s own ocr_outputs filename construction exactly —
+    prep_filename = output_name(stem, "prep[-deskew].jpg", multi) — reading
+    the deskew decision back from the manifest params.orientation dict, keyed
+    by filename stem (not page number — that's the PDF aggregate manifest's
+    convention, see pdf_ocr_prep_images(), which this deliberately parallels
+    for the image case).
+
+    :param ItemLocation item: Resolved item location.
+    :param str bronze_path: This image's bronze binary cask path.
+    :param bool multi_image: True if the item has more than one image binary
+        (pipeline.filter_binaries_by_format(item.bronze_binary_paths, "image")).
+    :returns: The published OCR-prep image's cask path.
+    :rtype: str
+    :raises FileNotFoundError: If `digtk showcase image derivatives` hasn't
+        published this image's OCR-prep image yet.
+    """
+    filename = bronze_path.rsplit("/", 1)[-1]
+    stem = filename.rsplit(".", 1)[0]
+    ocr_dir = derivative_dir(item, "ocr")
+    manifest = json.loads(fs.read(f"{ocr_dir}/manifest.json"))
+    deskewed = manifest["params"]["orientation"][stem]["deskew_selected"]
+    base_name = "prep-deskew.jpg" if deskewed else "prep.jpg"
+    return f"{ocr_dir}/{output_name(stem, base_name, multi_image)}"
 
 
 def output_name(stem, base_name, multi):
@@ -267,12 +410,12 @@ def cask_public_ref(internal_path):
     return "cask:/" + internal_path[len("cask:"):]
 
 
-def update_associated_media(item, media_objects, source_files, source_group, *, app):
-    """Merge schema:associatedMedia refs into the item's gold sidecar, creating
+def update_associated_media(item, media_objects, source_files, source_group):
+    """Merge schema:associatedMedia refs into the item's silver sidecar, creating
     it if absent. Never touches the bronze sidecar — bronze is immutable/append-only,
-    so derivative metadata lives in a new gold/[app]/.../[item]/item.jsonld.json
-    instead (see docs/cask-conventions.md) — these are final public-facing
-    products with no silver group/time staging dimension.
+    so derivative metadata lives in the item's silver sidecar instead (see
+    docs/cask-conventions.md), at
+    silver/{group}/{collection}/{time}/{item_path}/item.jsonld.json.
 
     Merges by `source_group` rather than replacing the whole associatedMedia array:
     an item's bronze binaries can legitimately span more than one media format (e.g.
@@ -281,7 +424,7 @@ def update_associated_media(item, media_objects, source_files, source_group, *, 
     derivatives() umbrella runs independently, as its own CLI invocation. Only the
     entries this call's own `source_group` previously wrote are replaced; entries
     from a different group's earlier run are left untouched, so e.g. running `digtk
-    public-dc pdf derivatives` after `digtk public-dc image derivatives` against the
+    showcase pdf derivatives` after `digtk showcase image derivatives` against the
     same item doesn't wipe out the image run's associatedMedia entries.
 
     Merges only the associatedMedia array — never the top-level DC-metadata fields
@@ -306,13 +449,12 @@ def update_associated_media(item, media_objects, source_files, source_group, *, 
     :param str source_group: Which pipeline produced media_objects — "image", "pdf",
         "video", or "audio". Existing entries carrying this same group are replaced;
         entries from other groups are preserved.
-    :param str app: Target gold app.
     :returns: The full sidecar dict that was written.
     :rtype: dict
     """
     rel_path = f"{item.item_path}/item.jsonld.json" if item.item_path else "item.jsonld.json"
-    write_opts = {"app": app, "replace": True}
-    dest = derivative.dest_path(type="gold", collection=item.collection, rel_path=rel_path, opts=write_opts)
+    write_opts = {"group": item.group, "time": item.time, "replace": True}
+    dest = derivative.dest_path(type="silver", collection=item.collection, rel_path=rel_path, opts=write_opts)
     sidecar_path = f"cask:{dest}"
 
     if fs.exists(sidecar_path):
@@ -326,7 +468,7 @@ def update_associated_media(item, media_objects, source_files, source_group, *, 
     doc["associatedMedia"] = [e for e in existing if e.get("argonath:sourceGroup") != source_group] + media_objects
 
     derivative.write(
-        type="gold", collection=item.collection, rel_path=rel_path,
+        type="silver", collection=item.collection, rel_path=rel_path,
         data=json.dumps(doc, indent=2).encode(), source_files=source_files, opts=write_opts,
     )
     return doc
@@ -338,26 +480,25 @@ def update_associated_media(item, media_objects, source_files, source_group, *, 
 _DC_METADATA_KEYS = ("name", "description", "creator", "dateCreated", "license", "publisher", "about", "identifier")
 
 
-def merge_dc_metadata(item_metadata, *, app):
-    """Merge Dublin-Core-derived schema.org fields into an item's gold
+def merge_dc_metadata(item_metadata):
+    """Merge Dublin-Core-derived schema.org fields into an item's silver
     item.jsonld.json sidecar, read-modify-write — same non-destructive
     convention as update_associated_media() above, just scoped to a disjoint
     set of top-level keys (_DC_METADATA_KEYS) instead of associatedMedia, so a
     DC-metadata run (see digtk.models.collection's Preservica tree-building)
-    and a derivative-generation run can update the same gold sidecar
+    and a derivative-generation run can update the same silver sidecar
     independently, in either order, without clobbering each other.
 
     :param digtk.lib.schema.ItemMetadata item_metadata: DC-mapped fields for one
         item, built from bronze's raw Preservica Dublin Core metadata (see
         digtk.lib.dc_mapping).
-    :param str app: Target gold app.
     :returns: The full sidecar dict that was written.
     :rtype: dict
     """
     item = items.resolve(item_metadata.ark)
     rel_path = f"{item.item_path}/item.jsonld.json" if item.item_path else "item.jsonld.json"
-    write_opts = {"app": app, "replace": True}
-    dest = derivative.dest_path(type="gold", collection=item.collection, rel_path=rel_path, opts=write_opts)
+    write_opts = {"group": item.group, "time": item.time, "replace": True}
+    dest = derivative.dest_path(type="silver", collection=item.collection, rel_path=rel_path, opts=write_opts)
     sidecar_path = f"cask:{dest}"
 
     if fs.exists(sidecar_path):
@@ -373,7 +514,7 @@ def merge_dc_metadata(item_metadata, *, app):
     doc["argonath:fieldSources"].update(item_metadata.field_sources)
 
     derivative.write(
-        type="gold", collection=item.collection, rel_path=rel_path,
+        type="silver", collection=item.collection, rel_path=rel_path,
         data=json.dumps(doc, indent=2).encode(), source_files=item.bronze_binary_paths, opts=write_opts,
     )
     return doc

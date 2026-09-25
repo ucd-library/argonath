@@ -12,7 +12,7 @@ pattern digtk.models.digital_website.pdf uses for a PDF's own directory.
 This module only ever generates the stream itself — a video item's thumbnail, if it
 needs one, comes from a companion image bronze binary (supplied directly by the
 archiving team, e.g. a `.jpg` alongside the `.mp4`) processed independently by
-`digtk public-dc image derivatives`, under the ordinary Multi-Format Items convention (see
+`digtk showcase image derivatives`, under the ordinary Multi-Format Items convention (see
 docs/cask-conventions.md) — there's no ffmpeg-extracted poster frame here.
 
 Each source video gets one VideoObject associatedMedia entry, tagged with its own
@@ -71,14 +71,11 @@ def hls(ark, opts={}):
     :param str ark: Item ARK identifier.
     :param dict opts: 'resolutions' (comma-separated str, default
         CONFIG["video"]["resolutions"]); forwarded to ffmpeg_utils.hls_ladder().
-        'app' (str) — target gold app, this stream is a final public-facing
-        product with no silver staging.
     :returns: {"status": "success", "ark": str, "videos": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
     resolutions = _parse_resolutions(opts.get("resolutions", CONFIG["video"]["resolutions"]))
-    app = opts.get("app")
     item = items.resolve(ark)
     video_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "video")
     start = time.monotonic()
@@ -102,7 +99,6 @@ def hls(ark, opts={}):
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}/streaming", local_outputs,
                 command=["digtk", "video", "hls", ark, "--resolutions", ",".join(resolutions)],
                 params={"resolutions": resolutions},
-                type="gold", type_opts={"app": app},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
                     "link_relation": _LINK_RELATION,
@@ -114,7 +110,7 @@ def hls(ark, opts={}):
 
 def derivatives(ark, opts={}):
     """Generate the full derivative set for every source video in the item — the
-    umbrella `digtk public-dc video derivatives` calls.
+    umbrella `digtk showcase video derivatives` calls.
 
     Runs the HLS adaptive-bitrate ladder for every source video, publishing into its
     own `<video-filename>/streaming/` directory (see PUBLIC_FRONTEND_DIR and
@@ -129,14 +125,12 @@ def derivatives(ark, opts={}):
     :param str ark: Item ARK identifier.
     :param dict opts: 'resolutions' (comma-separated str, default
         CONFIG["video"]["resolutions"]); 'language'/'model' for the caption step (see
-        captions.transcribe_sources()); forwarded to ffmpeg_utils. 'app' (str) —
-        target gold app for the stream + associated-media sidecar + captions.
+        captions.transcribe_sources()); forwarded to ffmpeg_utils.
     :returns: {"status": "success", "ark": str, "stream": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}, "captions": {...}}
     :rtype: dict
     """
     resolutions = _parse_resolutions(opts.get("resolutions", CONFIG["video"]["resolutions"]))
-    app = opts.get("app")
     item = items.resolve(ark)
     video_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "video")
     start = time.monotonic()
@@ -163,7 +157,6 @@ def derivatives(ark, opts={}):
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}/streaming", stream_outputs,
                 command=["digtk", "video", "derivatives", ark, "--resolutions", ",".join(resolutions)],
                 params={"resolutions": resolutions},
-                type="gold", type_opts={"app": app},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
                     "link_relation": _LINK_RELATION,
@@ -182,7 +175,7 @@ def derivatives(ark, opts={}):
                 "contentUrl": pipeline.cask_public_ref(f"{stream_results[filename]['dir']}/playlist.m3u8"),
                 "encodingFormat": "application/vnd.apple.mpegurl",
             })
-        pipeline.update_associated_media(item, video_objects, [src["bronze_path"] for src in sources], "video", app=app)
+        pipeline.update_associated_media(item, video_objects, [src["bronze_path"] for src in sources], "video")
 
         utils.log("Transcribing captions...")
         captions_result = captions.transcribe_sources(

@@ -42,7 +42,7 @@ def test_hls_calls_video_with_resolutions(monkeypatch):
     result = runner.invoke(video.app, ["hls", ARK, "--resolutions", "360p,720p"])
 
     assert result.exit_code == 0
-    assert seen["opts"] == {"resolutions": "360p,720p", "app": "digital-dev"}
+    assert seen["opts"] == {"resolutions": "360p,720p"}
 
 
 def test_hls_defaults_to_configured_resolutions(monkeypatch):

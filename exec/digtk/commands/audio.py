@@ -1,5 +1,5 @@
 """
-digtk public-dc audio — audio derivative commands.
+digtk showcase audio — audio derivative commands.
 
 Subcommands:
   probe        — report ffprobe metadata (duration, codec, bitrate)
@@ -13,7 +13,7 @@ from typing import Annotated
 
 import typer
 
-from digtk.lib import utils
+from digtk.lib import reporting, utils
 from digtk.lib.config import (
     CONFIG,
     AudioTranscodeBitrateOption,
@@ -22,7 +22,8 @@ from digtk.lib.config import (
     AudioWaveformWidthOption,
     CaptionsLanguageOption,
     CaptionsModelOption,
-    GoldAppOption,
+    ReportingCollectionOption,
+    ReportingJobIdOption,
 )
 from digtk.models.digital_website import audio
 
@@ -45,12 +46,11 @@ def transcode(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
     format: AudioTranscodeFormatOption = CONFIG["audio"]["transcode_format"],
     bitrate: AudioTranscodeBitrateOption = CONFIG["audio"]["transcode_bitrate"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Convert source audio to the specified format."""
     try:
         utils.log(f"Transcoding {ark} to {format} @ {bitrate}")
-        utils.result(audio.transcode(ark, opts={"format": format, "bitrate": bitrate, "app": app}))
+        utils.result(audio.transcode(ark, opts={"format": format, "bitrate": bitrate}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -60,12 +60,11 @@ def waveform(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
     width: AudioWaveformWidthOption = CONFIG["audio"]["waveform_width"],
     height: AudioWaveformHeightOption = CONFIG["audio"]["waveform_height"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Generate a waveform image."""
     try:
         utils.log(f"Generating waveform for {ark} ({width}x{height})")
-        utils.result(audio.waveform(ark, opts={"width": width, "height": height, "app": app}))
+        utils.result(audio.waveform(ark, opts={"width": width, "height": height}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -76,13 +75,21 @@ def derivatives(
     format: AudioTranscodeFormatOption = CONFIG["audio"]["transcode_format"],
     language: CaptionsLanguageOption = CONFIG["captions"]["language"],
     model: CaptionsModelOption = CONFIG["captions"]["model"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
+    reporting_job_id: ReportingJobIdOption = None,
+    reporting_collection: ReportingCollectionOption = None,
 ):
     """Generate the full derivative set: transcode + waveform + WebVTT caption
-    (local Whisper ASR — machine-generated and unreviewed)."""
+    (local Whisper ASR — machine-generated and unreviewed). One of the commands
+    the collection-level fan-out job (dagster/lib/pipeline_fanout.py) calls for
+    an audio-bearing item — passing its own run id as --reporting-job-id, same
+    as image derivatives."""
     try:
         utils.log(f"Generating derivatives for {ark}")
-        result = audio.derivatives(ark, opts={"format": format, "language": language, "model": model, "app": app})
+        with reporting.track(
+            reporting_job_id, stage="derivatives", item_id=ark, collection=reporting_collection,
+            options={"format": format, "language": language, "model": model},
+        ):
+            result = audio.derivatives(ark, opts={"format": format, "language": language, "model": model})
         utils.result(result)
     except _ERRORS as e:
         utils.error(str(e))

@@ -1,5 +1,5 @@
 """
-digtk public-dc video — video derivative commands.
+digtk showcase video — video derivative commands.
 
 Subcommands:
   probe        — report ffprobe metadata (duration, codecs, dimensions)
@@ -8,18 +8,19 @@ Subcommands:
                  local Whisper ASR); `hls` above is a deterministic single-recipe
                  command for ad-hoc/manual use. A video item's thumbnail, if any,
                  comes from a companion image bronze binary processed independently
-                 by `digtk public-dc image derivatives` — not generated here.
+                 by `digtk showcase image derivatives` — not generated here.
 """
 from typing import Annotated
 
 import typer
 
-from digtk.lib import utils
+from digtk.lib import reporting, utils
 from digtk.lib.config import (
     CONFIG,
     CaptionsLanguageOption,
     CaptionsModelOption,
-    GoldAppOption,
+    ReportingCollectionOption,
+    ReportingJobIdOption,
     VideoResolutionsOption,
 )
 from digtk.models.digital_website import video
@@ -42,12 +43,11 @@ def probe(ark: Annotated[str, typer.Argument(help="Item ARK identifier.")]):
 def hls(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
     resolutions: VideoResolutionsOption = CONFIG["video"]["resolutions"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Generate the HLS adaptive-bitrate stream."""
     try:
         utils.log(f"Generating HLS stream for {ark} at resolutions {resolutions}")
-        utils.result(video.hls(ark, opts={"resolutions": resolutions, "app": app}))
+        utils.result(video.hls(ark, opts={"resolutions": resolutions}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -58,15 +58,23 @@ def derivatives(
     resolutions: VideoResolutionsOption = CONFIG["video"]["resolutions"],
     language: CaptionsLanguageOption = CONFIG["captions"]["language"],
     model: CaptionsModelOption = CONFIG["captions"]["model"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
+    reporting_job_id: ReportingJobIdOption = None,
+    reporting_collection: ReportingCollectionOption = None,
 ):
     """Generate the full derivative set: HLS stream + WebVTT caption (local Whisper
-    ASR — machine-generated and unreviewed)."""
+    ASR — machine-generated and unreviewed). One of the commands the
+    collection-level fan-out job (dagster/lib/pipeline_fanout.py) calls for a
+    video-bearing item — passing its own run id as --reporting-job-id, same as
+    image derivatives."""
     try:
         utils.log(f"Generating derivatives for {ark} at resolutions {resolutions}")
-        result = video.derivatives(ark, opts={
-            "resolutions": resolutions, "language": language, "model": model, "app": app,
-        })
+        with reporting.track(
+            reporting_job_id, stage="derivatives", item_id=ark, collection=reporting_collection,
+            options={"resolutions": resolutions, "language": language, "model": model},
+        ):
+            result = video.derivatives(ark, opts={
+                "resolutions": resolutions, "language": language, "model": model,
+            })
         utils.result(result)
     except _ERRORS as e:
         utils.error(str(e))

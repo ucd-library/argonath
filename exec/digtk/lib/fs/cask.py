@@ -175,7 +175,18 @@ class CaskBackend:
         if opts.get("metadata"):
             params["metadata"] = jsonlib.dumps(opts["metadata"])
 
-        mime_type = opts.get("mime_type") or mimetypes.guess_type(path)[0] or "application/octet-stream"
+        # Python's mimetypes only looks at the last extension, so it calls a
+        # ".jsonld.json" path "application/json" — wrong for CaskFS's own
+        # JSON-LD sidecar convention (see caskfs's docs/ld.md and
+        # Rdf.detectMimeType()'s matching special case). Sending the wrong
+        # Content-Type here doesn't just mislabel the file: CaskFS's RDF
+        # harvester decides how to parse a file's content based on this
+        # header, so "application/json" here makes it try to parse the raw
+        # JSON as if it were already N-Quads/Turtle, and it fails outright.
+        if path.endswith(".jsonld.json"):
+            mime_type = opts.get("mime_type") or "application/ld+json"
+        else:
+            mime_type = opts.get("mime_type") or mimetypes.guess_type(path)[0] or "application/octet-stream"
 
         res = self._client.request(
             method,

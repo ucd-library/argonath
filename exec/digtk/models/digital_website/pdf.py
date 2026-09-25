@@ -37,17 +37,6 @@ _LINK_RELATION = {
 }
 
 
-def _page_tag(page_index, count):
-    """Zero-padded page directory name, wide enough for the item's own page count.
-
-    :param int page_index: 0-indexed page number.
-    :param int count: Total page count (pad width scales with this, minimum 3 digits).
-    :rtype: str
-    """
-    pad = max(3, len(str(max(count - 1, 0))))
-    return f"page-{page_index:0{pad}d}"
-
-
 def _rasterize(pdf_path, page_index, tmp_dir, stem, page_tag, opts):
     """Rasterize one PDF page to a local image, named to avoid collisions across
     sources/pages sharing one temp directory.
@@ -89,16 +78,13 @@ def thumbnail(ark, opts={}):
 
     :param str ark: Item ARK identifier.
     :param dict opts: 'page' (int, default 0, 0-indexed), 'widths' (comma-separated str,
-        default CONFIG["image"]["thumbnail_widths"]), 'quality' (int), 'app' (str)
-        — target gold app, this thumbnail set is a final public-facing product
-        with no silver staging.
+        default CONFIG["image"]["thumbnail_widths"]), 'quality' (int).
     :returns: {"status": "success", "ark": str, "pdfs": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
     page = opts.get("page", 0)
     widths = pipeline.parse_widths(opts.get("widths", CONFIG["image"]["thumbnail_widths"]))
-    app = opts.get("app")
     item = items.resolve(ark)
     pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
     start = time.monotonic()
@@ -116,7 +102,6 @@ def thumbnail(ark, opts={}):
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{pdf_filename}/images/{page + 1}", local_outputs,
                 command=["digtk", "pdf", "thumbnail", ark, "--page", str(page), "--widths", ",".join(map(str, widths))],
                 params={"page": page, "widths": widths},
-                type="gold", type_opts={"app": app},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
                     "link_relation": _LINK_RELATION["derivatives"],
@@ -133,14 +118,12 @@ def convert(ark, opts={}):
 
     :param str ark: Item ARK identifier.
     :param dict opts: 'page' (int, default 0), 'format' (str, default
-        CONFIG["image"]["convert_format"]), 'quality' (int), 'app' (str) —
-        target gold app, see thumbnail().
+        CONFIG["image"]["convert_format"]), 'quality' (int).
     :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
     """
     page = opts.get("page", 0)
     fmt = opts.get("format", CONFIG["image"]["convert_format"])
-    app = opts.get("app")
     ext = pipeline.EXTENSION_BY_FORMAT.get(fmt.lower(), f".{fmt.lower()}")
     item = items.resolve(ark)
     pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
@@ -161,7 +144,6 @@ def convert(ark, opts={}):
             item, f"{pipeline.PUBLIC_FRONTEND_DIR}/page-{page:03d}", local_outputs,
             command=["digtk", "pdf", "convert", ark, "--page", str(page), "--format", fmt],
             params={"page": page, "format": fmt},
-            type="gold", type_opts={"app": app},
             opts={
                 "manifest_opts": {"duration_s": time.monotonic() - start},
                 "link_relation": _LINK_RELATION["derivatives"],
@@ -179,13 +161,11 @@ def deskew(ark, opts={}):
 
     :param str ark: Item ARK identifier.
     :param dict opts: 'page' (int, default 0), forwarded to image_magick.deskew()
-        (threshold, working_width, output_width, quality); 'app' (str) — target
-        gold app, see thumbnail().
+        (threshold, working_width, output_width, quality).
     :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
     """
     page = opts.get("page", 0)
-    app = opts.get("app")
     item = items.resolve(ark)
     pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
     start = time.monotonic()
@@ -205,7 +185,6 @@ def deskew(ark, opts={}):
             item, f"{pipeline.PUBLIC_FRONTEND_DIR}/page-{page:03d}", local_outputs,
             command=["digtk", "pdf", "deskew", ark, "--page", str(page)],
             params={k: v for k, v in opts.items() if k in ("page", "threshold", "working_width", "output_width", "quality")},
-            type="gold", type_opts={"app": app},
             opts={
                 "manifest_opts": {"duration_s": time.monotonic() - start},
                 "link_relation": _LINK_RELATION["derivatives"],
@@ -259,7 +238,7 @@ def prep_ocr(ark, opts={}):
 
 def derivatives(ark, opts={}):
     """Generate the full derivative set for every page of every source PDF in the
-    item — the umbrella `digtk public-dc pdf derivatives` calls.
+    item — the umbrella `digtk showcase pdf derivatives` calls.
 
     For each source PDF: rasterizes every page, decides scan orientation independently
     per page via a real OCR comparison (same digtk.models.digital_website.pipeline primitive
@@ -295,20 +274,27 @@ def derivatives(ark, opts={}):
     :param dict opts: 'widths' (comma-separated str, default
         CONFIG["image"]["thumbnail_widths"]); forwarded to pdf_render/image_magick/ocr_utils:
         'target_pixel_width', 'default_density', 'quality', 'dpi', 'fuzz', 'threshold', etc.
-        'app' (str) — target gold app for the published derivative set +
-        associated-media sidecar (OCR-prep output stays silver, see
-        docs/cask-conventions.md's Gold Layout section).
     :returns: {"status": "success", "ark": str, "pdfs": {filename: {"pages": int,
         "derivatives": {"pages": {page_number: {...}}, "manifest": {...}}, "ocr": {...},
         "orientation": {page_number: {...}}}}}
     :rtype: dict
     """
     widths = pipeline.parse_widths(opts.get("widths", CONFIG["image"]["thumbnail_widths"]))
-    app = opts.get("app")
     item = items.resolve(ark)
     pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
     start = time.monotonic()
     multi_pdf = len(pdf_paths) > 1
+    # Namespace the OCR output by the PDF's own filename whenever anything else
+    # could also publish to the item's bare "ocr/" directory — not just when
+    # there's more than one PDF. image.py's generate() publishes its own
+    # ocr/manifest.json (keyed by filename stem) to that exact same bare path
+    # for any co-located image binaries; without this, whichever of image/pdf
+    # derivatives ran most recently silently overwrites the other's manifest.
+    # (The "images_base" display-image path below has always been namespaced
+    # by pdf_filename regardless of multi_pdf — this brings ocr/ in line with
+    # that, only for the case that actually needs it, so a pure single-PDF
+    # item's existing ocr/ layout is unaffected.)
+    mixed_item = len(pdf_paths) < len(item.bronze_binary_paths)
 
     pdfs_result = {}
     image_objects = []
@@ -321,7 +307,7 @@ def derivatives(ark, opts={}):
             stem = src["stem"]
             pdf_path = src["local_path"]
             pdf_filename = os.path.basename(src["bronze_path"])
-            ocr_prefix = f"{stem}/" if multi_pdf else ""
+            ocr_prefix = f"{stem}/" if (multi_pdf or mixed_item) else ""
             images_base = f"{pipeline.PUBLIC_FRONTEND_DIR}/{pdf_filename}/images"
             count = pdf_render.page_count(pdf_path, opts)
             utils.log(f"[{pdf_i}/{total_pdfs}] {stem}: {count} page(s)")
@@ -333,7 +319,7 @@ def derivatives(ark, opts={}):
 
             for page_index in range(count):
                 page_no = page_index + 1
-                page_tag = _page_tag(page_index, count)  # still used for the (unchanged) ocr/ path
+                page_tag = pipeline.page_tag(page_index, count)  # still used for the (unchanged) ocr/ path
                 utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: rasterizing...")
                 raster = _rasterize(pdf_path, page_index, tmp_dir, stem, page_tag, opts)
                 raster_path = raster["dest_path"]
@@ -362,9 +348,7 @@ def derivatives(ark, opts={}):
 
                 utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: probing derivative dimensions...")
                 size_by_label = {label: image_magick.probe_dimensions(local_path) for label, (fn, local_path) in zip(pipeline.THUMBNAIL_SIZE_LABELS, thumb_set)}
-                images_dir = pipeline.derivative_dir(
-                    item, f"{images_base}/{page_no}", type="gold", type_opts={"app": app},
-                )
+                images_dir = pipeline.derivative_dir(item, f"{images_base}/{page_no}")
                 ocr_dir = pipeline.derivative_dir(item, f"{ocr_prefix}ocr/{page_tag}")
                 ocr_filename = os.path.basename(prep_path)
 
@@ -404,7 +388,6 @@ def derivatives(ark, opts={}):
                     item, f"{images_base}/{page_no}", thumb_outputs,
                     command=command,
                     params={"widths": widths, "page": page_index, "orientation": {"deskew_selected": apply_deskew, "stats": orientation["stats"]}},
-                    type="gold", type_opts={"app": app},
                     opts={
                         "manifest_opts": {"extra": page_manifest_extra},
                         "link_relation": _LINK_RELATION["derivatives"],
@@ -436,7 +419,6 @@ def derivatives(ark, opts={}):
             agg_images_rel_path = f"{item.item_path}/{images_base}" if item.item_path else images_base
             agg_ocr_rel_path = f"{item.item_path}/{ocr_prefix}ocr" if item.item_path else f"{ocr_prefix}ocr"
             manifest_opts = {"group": item.group, "time": item.time, "duration_s": duration_s}
-            gold_manifest_opts = {"app": app, "duration_s": duration_s}
 
             derivatives_manifest = utils.write_manifest(
                 item.collection, agg_images_rel_path,
@@ -446,8 +428,8 @@ def derivatives(ark, opts={}):
                 }},
                 outputs=[f"{tag}/" for tag in orientations],
                 source_files=[src["bronze_path"]],
-                type="gold",
-                opts={**gold_manifest_opts, "extra": {"pages": page_manifest_entries}},
+                type="silver",
+                opts={**manifest_opts, "extra": {"pages": page_manifest_entries}},
             )
             ocr_manifest = utils.write_manifest(
                 item.collection, agg_ocr_rel_path,
@@ -466,6 +448,6 @@ def derivatives(ark, opts={}):
             }
 
         utils.log("Updating associated-media sidecar...")
-        pipeline.update_associated_media(item, image_objects, [src["bronze_path"] for src in sources], "pdf", app=app)
+        pipeline.update_associated_media(item, image_objects, [src["bronze_path"] for src in sources], "pdf")
 
     return {"status": "success", "ark": ark, "pdfs": pdfs_result}

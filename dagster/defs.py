@@ -2,12 +2,16 @@
 Dagster definitions for the Argonath digital collections pipeline.
 
 Submodule layout (all files live alongside this one in dagster/):
-  lib/configs.py   — Config schemas and partition definitions
-  lib/utils.py     — DB connection, exec() helper, manifest writer
-  lib/assets.py    — All @dg.asset definitions
-  lib/jobs.py      — All dg.define_asset_job definitions
-  lib/sensors.py   — All @dg.sensor definitions
-  lib/schedules.py — All dg.ScheduleDefinition instances
+  lib/configs.py         — Config schemas and partition definitions
+  lib/utils.py           — DB connection, exec() helper, manifest writer
+  lib/assets.py          — All @dg.asset definitions
+  lib/jobs.py            — All dg.define_asset_job definitions
+  lib/sensors.py         — All @dg.sensor definitions
+  lib/schedules.py       — All dg.ScheduleDefinition instances
+  lib/pipeline_fanout.py — process_collection_job, the op-based collection-
+                            level fan-out alternative to derivatives_job/
+                            ocr_job's per-item partitions (see its own
+                            docstring)
 
 Note: Dagster inserts this file's parent directory into sys.path when loading
 via python_file in workspace.yaml, so sibling-module imports work without
@@ -18,20 +22,28 @@ import dagster as dg
 
 from lib.assets import (
     reconcile_collection_items,
+    detect_spreads,
+    apply_spreads,
     rebuild_collection_tree,
     ingest_item,
     generate_derivatives,
     run_ocr,
     generate_metadata,
+    generate_alt_text,
+    tag_accessible_pdf,
     index_for_rag,
     index_for_dams_search,
 )
 from lib.jobs import (
     reconcile_collection_job,
+    detect_spreads_job,
+    apply_spreads_job,
     ingest_collection_job,
     derivatives_job,
     ocr_job,
     metadata_job,
+    alt_text_job,
+    tag_pdf_job,
     search_index_job,
     dams_search_index_job,
     full_pipeline_job,
@@ -48,27 +60,37 @@ from lib.sensors import (
 from lib.schedules import (
     nightly_arda_index,
 )
+from lib.pipeline_fanout import process_collection_job
 
 defs = dg.Definitions(
     assets=[
         reconcile_collection_items,
+        detect_spreads,
+        apply_spreads,
         rebuild_collection_tree,
         ingest_item,
         generate_derivatives,
         run_ocr,
         generate_metadata,
+        generate_alt_text,
+        tag_accessible_pdf,
         index_for_rag,
         index_for_dams_search,
     ],
     jobs=[
         reconcile_collection_job,
+        detect_spreads_job,
+        apply_spreads_job,
         ingest_collection_job,
         derivatives_job,
         ocr_job,
         metadata_job,
+        alt_text_job,
+        tag_pdf_job,
         search_index_job,
         dams_search_index_job,
         full_pipeline_job,
+        process_collection_job,
     ],
     sensors=[
         preservica_auto_sync_sensor,

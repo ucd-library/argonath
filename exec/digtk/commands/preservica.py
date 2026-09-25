@@ -12,7 +12,11 @@ Subcommands:
             directly — no bronze/collection business logic involved)
   import  — walk a Preservica collection into bronze's by-ref/ layout, always
             registering the collection along the way (see
-            digtk.models.collection.preservica_import/register_collection)
+            digtk.models.collection.preservica_import/register_collection).
+            --source-dir reads a local directory instead of the live API (see
+            digtk.lib.preservica.LocalPreservicaClient) for offline staging/
+            testing before a collection exists in Preservica, or replaying an
+            already-fetched export.
   sync    — sync only specific changed entities (folders/items) for an
             already-registered collection, never a full re-walk (see
             digtk.models.collection.preservica_sync_entities) — used by
@@ -28,7 +32,6 @@ from typing import Annotated
 import typer
 
 from digtk.lib import preservica, utils
-from digtk.lib.config import CONFIG, GoldAppOption
 from digtk.lib.preservica import PreservicaAuthError, PreservicaRequestError
 from digtk.models import collection as collection_model
 from digtk.models.digital_website import pipeline
@@ -120,7 +123,10 @@ def list_children(
 
 @app.command("import")
 def import_(
-    ref: Annotated[str, typer.Argument(help="Root Preservica structural object ref to walk.")],
+    ref: Annotated[str, typer.Argument(
+        help="Root Preservica structural object ref to walk. With --source-dir, this is "
+        "just the root entry's directory name under it, not a real Preservica ref.",
+    )],
     collection: Annotated[str | None, typer.Option(
         help="Collection name. Defaults to a slugified version of the root entity's own "
         "title, fetched from Preservica (mirrors preservica-etl's behavior).",
@@ -136,11 +142,18 @@ def import_(
         "--dest-root", help="Override the bronze root (e.g. a local directory for dev/"
         "testing instead of real CaskFS). Defaults to cask:/bronze/<group>/<collection>.",
     )] = None,
+    source_dir: Annotated[str | None, typer.Option(
+        "--source-dir", help="Read from a local directory laid out like Preservica's own "
+        "Entity API responses (see digtk.lib.preservica.LocalPreservicaClient) instead of "
+        "the live API — no Preservica credentials needed. For offline staging/testing "
+        "before a collection exists in Preservica, or replaying an already-fetched export.",
+    )] = None,
     skip_unchanged: Annotated[bool, typer.Option(
         "--skip-unchanged", help="Opt-in: skip re-downloading a file whose Preservica-"
         "reported fixity already matches the local copy from a prior import. Off by "
         "default, since this version always does a full re-walk otherwise (entity/"
-        "identifiers/metadata/children JSON is still always re-fetched).",
+        "identifiers/metadata/children JSON is still always re-fetched). No effect with "
+        "--source-dir — a local import has no fixity to compare against.",
     )] = False,
 ):
     """Walk a Preservica collection into bronze's by-ref/ layout."""
@@ -150,6 +163,8 @@ def import_(
         "on_progress": utils.log,
         "skip_unchanged": skip_unchanged,
     }
+    if source_dir:
+        opts["client"] = preservica.LocalPreservicaClient(source_dir)
     try:
         manifest = collection_model.preservica_import(ref, collection, group, opts)
     except ValueError as e:
@@ -228,7 +243,7 @@ def sync(
     })
 
 
-def _merge_dc_metadata(item_metadata_list, app):
+def _merge_dc_metadata(item_metadata_list):
     """Merge each newly tree-built item's Dublin-Core-derived metadata into its
     gold item.jsonld.json — tolerant of per-item failure (e.g. an item whose
     ARK hasn't been minted into bronze's by-ref/ sidecar yet, see
@@ -236,11 +251,10 @@ def _merge_dc_metadata(item_metadata_list, app):
     fails the whole tree rebuild/patch.
 
     :param list[digtk.lib.schema.ItemMetadata] item_metadata_list: Items to merge.
-    :param str app: Target gold app.
     """
     for item_metadata in item_metadata_list:
         try:
-            pipeline.merge_dc_metadata(item_metadata, app=app)
+            pipeline.merge_dc_metadata(item_metadata)
         except (LookupError, OSError, RuntimeError, ValueError) as e:
             utils.log(f"Warning: could not merge gold metadata for {item_metadata.ark}: {e}")
 
@@ -261,7 +275,6 @@ def tree(
         "--dest-root", help="Override the bronze root — must match whatever --dest-root "
         "(or its cask:/ default) the matching `import` run used.",
     )] = None,
-    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Rebuild bronze's tree/ layout from an already-imported by-ref/, and merge
     any Dublin-Core-derived schema.org metadata discovered along the way into
@@ -290,7 +303,7 @@ def tree(
             f"-{len(result['removed'])} removed, ~{len(result['moved'])} moved"
             + (f", {len(result['unresolved'])} unresolved" if result["unresolved"] else "")
         )
-        _merge_dc_metadata(result["item_metadata"], app)
+        _merge_dc_metadata(result["item_metadata"])
         utils.result({
             "status": "success", "collection": collection,
             **{k: v for k, v in result.items() if k != "item_metadata"},
@@ -302,7 +315,7 @@ def tree(
     except FileNotFoundError as e:
         utils.error(str(e))
 
-    _merge_dc_metadata(item_metadata, app)
+    _merge_dc_metadata(item_metadata)
     utils.result({"status": "success", "collection": collection, "items": count})
 
 

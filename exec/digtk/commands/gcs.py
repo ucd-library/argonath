@@ -1,5 +1,5 @@
 """
-digtk public-dc gcs -- sync already-published derivatives into the legacy DAMS/fin GCS
+digtk showcase gcs -- sync already-published derivatives into the legacy DAMS/fin GCS
 bucket layout.
 
 Subcommands:

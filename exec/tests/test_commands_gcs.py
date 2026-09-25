@@ -23,7 +23,7 @@ def test_sync_calls_gcs_sync_with_parsed_bucket(monkeypatch):
 
     monkeypatch.setattr(gcs_sync, "sync_item", fake_sync_item)
 
-    result = runner.invoke(app, ["public-dc", "gcs", "sync", ARK, "--bucket", "test-bucket"])
+    result = runner.invoke(app, ["showcase", "gcs", "sync", ARK, "--bucket", "test-bucket"])
 
     assert result.exit_code == 0
     assert seen["ark"] == ARK
@@ -36,7 +36,7 @@ def test_sync_defaults_bucket_to_config(monkeypatch):
     seen = {}
     monkeypatch.setattr(gcs_sync, "sync_item", lambda ark, opts={}: seen.update(opts=opts) or {"status": "success"})
 
-    runner.invoke(app, ["public-dc", "gcs", "sync", ARK])
+    runner.invoke(app, ["showcase", "gcs", "sync", ARK])
 
     assert seen["opts"]["bucket"] == CONFIG["gcs"]["bucket"]
 
@@ -46,7 +46,7 @@ def test_sync_routes_exception_through_utils_error(monkeypatch):
         raise LookupError("no such item")
     monkeypatch.setattr(gcs_sync, "sync_item", raises)
 
-    result = runner.invoke(app, ["public-dc", "gcs", "sync", ARK])
+    result = runner.invoke(app, ["showcase", "gcs", "sync", ARK])
 
     assert result.exit_code == 1
     assert last_json_line(result.output) == {"status": "error", "error": "no such item"}

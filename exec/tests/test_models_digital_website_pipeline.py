@@ -53,6 +53,145 @@ def test_filter_binaries_by_format_raises_on_unrecognized_extension():
     with pytest.raises(ValueError, match="unrecognized media extension"):
         pipeline.filter_binaries_by_format(["cask:/bronze/g/c/latest/item/mystery.xyz"], "image")
 
+
+def test_filter_binaries_by_format_ignores_recognized_but_unclaimed_extension():
+    # Preservica's "Access" representation bundle includes a plain-text OCR
+    # transcript alongside page images/a combined PDF for the same item -- a
+    # recognized-but-unclaimed extension (like .txt) must not trip the
+    # unrecognized-extension safety net, nor match any real format filter.
+    paths = MIXED_FORMAT_PATHS + ["cask:/bronze/g/c/latest/item/document.txt"]
+    assert pipeline.filter_binaries_by_format(paths, "pdf") == ["cask:/bronze/g/c/latest/item/document.pdf"]
+    assert pipeline.filter_binaries_by_format(paths, "image") == [
+        "cask:/bronze/g/c/latest/item/page-001.tif", "cask:/bronze/g/c/latest/item/page-002.tif",
+    ]
+
+
+def test_partition_by_format_splits_images_and_pdfs():
+    assert pipeline.partition_by_format(MIXED_FORMAT_PATHS) == (
+        ["cask:/bronze/g/c/latest/item/page-001.tif", "cask:/bronze/g/c/latest/item/page-002.tif"],
+        ["cask:/bronze/g/c/latest/item/document.pdf"],
+    )
+
+
+def test_partition_by_format_ignores_unrecognized_and_other_formats():
+    paths = [
+        "cask:/bronze/g/c/latest/item/photo.tiff",
+        "cask:/bronze/g/c/latest/item/reel.mp4",
+        "cask:/bronze/g/c/latest/item/mystery.xyz",
+    ]
+    assert pipeline.partition_by_format(paths) == (["cask:/bronze/g/c/latest/item/photo.tiff"], [])
+
+
+def test_partition_by_format_empty_when_no_binaries_match():
+    assert pipeline.partition_by_format([]) == ([], [])
+
+
+def test_detect_formats_returns_every_format_present():
+    paths = MIXED_FORMAT_PATHS + ["cask:/bronze/g/c/latest/item/reel.mp4", "cask:/bronze/g/c/latest/item/interview.wav"]
+    assert pipeline.detect_formats(paths) == {"pdf", "image", "video", "audio"}
+
+
+def test_detect_formats_ignores_unrecognized_and_unclaimed_extensions():
+    paths = [
+        "cask:/bronze/g/c/latest/item/document.txt",
+        "cask:/bronze/g/c/latest/item/mystery.xyz",
+    ]
+    assert pipeline.detect_formats(paths) == set()
+
+
+def test_detect_formats_never_raises_for_a_single_format_item():
+    assert pipeline.detect_formats(["cask:/bronze/g/c/latest/item/photo.tiff"]) == {"image"}
+
+
+# --- pdf_ocr_prep_images() -------------------------------------------------------
+
+PDF_ITEM = ItemLocation(
+    ark=ARK, group="g", collection="c", time="latest", item_path="item",
+    bronze_binary_paths=["cask:/bronze/g/c/latest/item/document.pdf"],
+)
+
+
+def test_pdf_ocr_prep_images_builds_paths_per_page(monkeypatch):
+    manifest = json.dumps({"params": {
+        "pages": 2,
+        "orientation": {"1": {"deskew_selected": False}, "2": {"deskew_selected": True}},
+    }}).encode()
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: manifest)
+
+    images, count = pipeline.pdf_ocr_prep_images(
+        PDF_ITEM, "cask:/bronze/g/c/latest/item/document.pdf", namespace_ocr=False,
+    )
+
+    assert count == 2
+    assert images == [
+        "cask:/silver/g/c/latest/item/ocr/page-000/document-page-000-prep.jpg",
+        "cask:/silver/g/c/latest/item/ocr/page-001/document-page-001-prep-deskew.jpg",
+    ]
+
+
+def test_pdf_ocr_prep_images_uses_stem_prefixed_ocr_dir_for_multi_pdf_items(monkeypatch):
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps({
+        "params": {"pages": 1, "orientation": {"1": {"deskew_selected": False}}},
+    }).encode())
+
+    images, count = pipeline.pdf_ocr_prep_images(
+        PDF_ITEM, "cask:/bronze/g/c/latest/item/document.pdf", namespace_ocr=True,
+    )
+
+    assert images == ["cask:/silver/g/c/latest/item/document/ocr/page-000/document-page-000-prep.jpg"]
+
+
+def test_pdf_ocr_prep_images_raises_if_derivatives_not_published(monkeypatch):
+    def fake_read(path):
+        raise FileNotFoundError(path)
+    monkeypatch.setattr(pipeline.fs, "read", fake_read)
+
+    with pytest.raises(FileNotFoundError):
+        pipeline.pdf_ocr_prep_images(PDF_ITEM, "cask:/bronze/g/c/latest/item/document.pdf", namespace_ocr=False)
+
+
+# --- image_ocr_prep_image() -------------------------------------------------------
+
+def test_image_ocr_prep_image_builds_path_from_manifest(monkeypatch):
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps({
+        "params": {"orientation": {"photo": {"deskew_selected": False}}},
+    }).encode())
+
+    path = pipeline.image_ocr_prep_image(ITEM, "cask:/bronze/g/c/latest/item/photo.tiff", multi_image=False)
+
+    assert path == "cask:/silver/g/c/latest/item/ocr/prep.jpg"
+
+
+def test_image_ocr_prep_image_uses_deskewed_filename_when_selected(monkeypatch):
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps({
+        "params": {"orientation": {"photo": {"deskew_selected": True}}},
+    }).encode())
+
+    path = pipeline.image_ocr_prep_image(ITEM, "cask:/bronze/g/c/latest/item/photo.tiff", multi_image=False)
+
+    assert path == "cask:/silver/g/c/latest/item/ocr/prep-deskew.jpg"
+
+
+def test_image_ocr_prep_image_disambiguates_multi_image_items(monkeypatch):
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps({
+        "params": {"orientation": {"photo-a": {"deskew_selected": False}, "photo-b": {"deskew_selected": True}}},
+    }).encode())
+
+    a = pipeline.image_ocr_prep_image(MULTI_ITEM, "cask:/bronze/g/c/latest/box-1/folder-3/photo-a.tiff", multi_image=True)
+    b = pipeline.image_ocr_prep_image(MULTI_ITEM, "cask:/bronze/g/c/latest/box-1/folder-3/photo-b.tiff", multi_image=True)
+
+    assert a == "cask:/silver/g/c/latest/box-1/folder-3/ocr/photo-a-prep.jpg"
+    assert b == "cask:/silver/g/c/latest/box-1/folder-3/ocr/photo-b-prep-deskew.jpg"
+
+
+def test_image_ocr_prep_image_raises_if_derivatives_not_published(monkeypatch):
+    def fake_read(path):
+        raise FileNotFoundError(path)
+    monkeypatch.setattr(pipeline.fs, "read", fake_read)
+
+    with pytest.raises(FileNotFoundError):
+        pipeline.image_ocr_prep_image(ITEM, "cask:/bronze/g/c/latest/item/photo.tiff", multi_image=False)
+
 # generate_thumbnail_set(), select_orientation(), and update_associated_media() are
 # already exercised end-to-end via test_models_digital_website_image.py's dw.generate() tests
 # (same code, invoked through the still-image-specific orchestrator on top) — this file
@@ -71,6 +210,16 @@ def test_parse_widths_passes_through_a_list():
 def test_output_name_prefixes_only_when_multi():
     assert pipeline.output_name("photo-a", "thumb-256.jpg", multi=True) == "photo-a-thumb-256.jpg"
     assert pipeline.output_name("photo", "thumb-256.jpg", multi=False) == "thumb-256.jpg"
+
+
+def test_page_tag_pads_to_at_least_three_digits():
+    assert pipeline.page_tag(0, 5) == "page-000"
+    assert pipeline.page_tag(4, 5) == "page-004"
+
+
+def test_page_tag_widens_padding_for_large_counts():
+    assert pipeline.page_tag(0, 1500) == "page-0000"
+    assert pipeline.page_tag(1499, 1500) == "page-1499"
 
 
 # --- build_ocr_products() ---------------------------------------------------
@@ -289,16 +438,17 @@ def test_publish_records_manifest_and_source_files(fake_derivative, tmp_path):
 
 def test_update_associated_media_creates_new_sidecar(fake_derivative, monkeypatch):
     monkeypatch.setattr(pipeline.fs, "exists", lambda path: False)
-    media = [{"@type": "ImageObject", "contentUrl": "cask://gold/digital-dev/c/item/derivatives/thumb-256.jpg"}]
+    media = [{"@type": "ImageObject", "contentUrl": "cask://silver/g/c/latest/item/derivatives/thumb-256.jpg"}]
 
     doc = pipeline.update_associated_media(
-        ITEM, media, ["cask:/bronze/g/c/latest/item/photo.tiff"], "image", app="digital-dev",
+        ITEM, media, ["cask:/bronze/g/c/latest/item/photo.tiff"], "image",
     )
     assert doc["@id"] == ARK
     assert doc["associatedMedia"] == media
     assert doc["associatedMedia"][0]["argonath:sourceGroup"] == "image"
-    assert fake_derivative[0]["type"] == "gold"
-    assert fake_derivative[0]["opts"]["app"] == "digital-dev"
+    assert fake_derivative[0]["type"] == "silver"
+    assert fake_derivative[0]["opts"]["group"] == "g"
+    assert fake_derivative[0]["opts"]["time"] == "latest"
 
 
 def test_update_associated_media_preserves_other_source_groups(fake_derivative, monkeypatch):
@@ -313,7 +463,7 @@ def test_update_associated_media_preserves_other_source_groups(fake_derivative, 
 
     pdf_media = [{"@type": "ImageObject", "contentUrl": "cask://.../page-000/thumb-256.jpg"}]
     doc = pipeline.update_associated_media(
-        ITEM, pdf_media, ["cask:/bronze/g/c/latest/item/document.pdf"], "pdf", app="digital-dev",
+        ITEM, pdf_media, ["cask:/bronze/g/c/latest/item/document.pdf"], "pdf",
     )
 
     groups = {e["argonath:sourceGroup"] for e in doc["associatedMedia"]}
@@ -334,17 +484,12 @@ def test_update_associated_media_replaces_only_matching_source_group(fake_deriva
 
     new_image_media = [{"@type": "ImageObject", "contentUrl": "cask://.../new-thumb-256.jpg"}]
     doc = pipeline.update_associated_media(
-        ITEM, new_image_media, ["cask:/bronze/g/c/latest/item/photo.tiff"], "image", app="digital-dev",
+        ITEM, new_image_media, ["cask:/bronze/g/c/latest/item/photo.tiff"], "image",
     )
 
     by_group = {e["argonath:sourceGroup"]: e for e in doc["associatedMedia"]}
     assert by_group["image"]["contentUrl"] == "cask://.../new-thumb-256.jpg"
     assert by_group["pdf"]["contentUrl"] == "cask://.../page-000/thumb-256.jpg"
-
-
-def test_update_associated_media_requires_app():
-    with pytest.raises(TypeError):
-        pipeline.update_associated_media(ITEM, [], ["cask:/bronze/g/c/latest/item/photo.tiff"], "image")
 
 
 # --- merge_dc_metadata() -----------------------------------------------------
@@ -358,12 +503,13 @@ def test_merge_dc_metadata_writes_new_sidecar(fake_derivative, monkeypatch):
     item_metadata = ItemMetadata(
         id=ARK, ark=ARK, name="Old Vines", field_sources={"name": "human"},
     )
-    doc = pipeline.merge_dc_metadata(item_metadata, app="digital-dev")
+    doc = pipeline.merge_dc_metadata(item_metadata)
 
     assert doc["name"] == "Old Vines"
     assert doc["argonath:fieldSources"] == {"name": "human"}
-    assert fake_derivative[0]["type"] == "gold"
-    assert fake_derivative[0]["opts"]["app"] == "digital-dev"
+    assert fake_derivative[0]["type"] == "silver"
+    assert fake_derivative[0]["opts"]["group"] == "g"
+    assert fake_derivative[0]["opts"]["time"] == "latest"
 
 
 def test_merge_dc_metadata_does_not_clobber_associated_media(fake_derivative, monkeypatch):
@@ -378,7 +524,7 @@ def test_merge_dc_metadata_does_not_clobber_associated_media(fake_derivative, mo
     monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps(existing_doc).encode())
 
     item_metadata = ItemMetadata(id=ARK, ark=ARK, name="Old Vines", field_sources={"name": "human"})
-    doc = pipeline.merge_dc_metadata(item_metadata, app="digital-dev")
+    doc = pipeline.merge_dc_metadata(item_metadata)
 
     assert doc["name"] == "Old Vines"
     assert doc["associatedMedia"] == existing_doc["associatedMedia"]
@@ -393,6 +539,6 @@ def test_merge_dc_metadata_merges_field_sources_rather_than_replacing(fake_deriv
     monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps(existing_doc).encode())
 
     item_metadata = ItemMetadata(id=ARK, ark=ARK, name="Old Vines", field_sources={"name": "human"})
-    doc = pipeline.merge_dc_metadata(item_metadata, app="digital-dev")
+    doc = pipeline.merge_dc_metadata(item_metadata)
 
     assert doc["argonath:fieldSources"] == {"caption": "ai", "name": "human"}
