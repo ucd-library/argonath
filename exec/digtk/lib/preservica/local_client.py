@@ -20,29 +20,36 @@ Source directory layout (one directory per entity ref):
                             for an IO to be resolvable later by digtk.lib.items;
                             omitted or missing is a warning, not an error, same
                             as the live import path.
-        metadata/
-            0.xml, 1.xml, ...   raw XML fragments (Dublin Core or otherwise),
-                                verbatim -- same one-file-per-fragment
-                                convention preservica_import() itself writes.
+        metadata.json        [{"schemaUri": str, "rawXml": str}, ...] -- one
+                            entry per descriptive metadata fragment, raw XML
+                            verbatim in "rawXml" (any other keys, e.g. a
+                            pre-parsed "parsed" field, are ignored here --
+                            preservica_import() re-derives its own tree/
+                            metadata.json from rawXml regardless).
         children.json       [{"ref": str, "type": "SO"|"IO"}, ...] -- SO only.
         media/
             <RepresentationType>/<filename>   -- IO only, e.g. media/Preservation/
                                 page_001.tif, media/Access/page_001.jpg. The
                                 immediate subdirectory name under media/ *is*
                                 the representationType (no representations.json
-                                needed) -- for both "Preservation" and "Access"
-                                are imported and treated identically downstream
+                                needed) -- both "Preservation" and "Access" are
+                                imported and treated identically downstream
                                 (see dagster/lib/pipeline_fanout.py and
                                 digital_website.pipeline.partition_by_format()).
+                                A same-named "<filename>.fixity.json" sibling
+                                is ignored, not treated as its own file -- see
+                                resolve_all_content().
 
-This is deliberately the same shape by-ref/ itself ends up in (collection.py's
+This is deliberately close to the shape by-ref/ itself ends up in (collection.py's
 own module docstring: by-ref/ is "a near-verbatim relocation of Preservica's
 own Entity API responses") minus the raw-API wrapper noise (StructuralObject/
 InformationObject envelopes, metadataFragmentRefs URLs) that only exists to
-round-trip through the real API -- so a directory copied out of an existing
-by-ref/ tree (its entity.json/identifiers.json/children.json/metadata/ as-is,
-media/ re-nested one level under a RepresentationType folder) is already a
-valid source directory here.
+round-trip through the real API -- matching the shape an earlier Preservica
+export/cache tool actually produced (entity.json/identifiers.json/
+children.json/media/ as-is; metadata.json is that tool's own one-file-per-
+entity fragment list rather than by-ref/'s current one-file-per-fragment
+metadata/N.xml convention), so a directory from an export made that way is
+already a valid source directory here.
 """
 import json
 import os
@@ -90,26 +97,23 @@ class LocalPreservicaClient:
         }
 
     def list_metadata_fragments(self, entity_detail):
-        """:returns: [{'url': <local metadata fragment path>}, ...], sorted --
-        'url' is a plain local path here, not an HTTP URL; get_metadata_fragment()
-        below reads it back directly.
+        """:returns: [{'url': <ref>::<index into metadata.json>}, ...] -- 'url'
+        is a synthetic local key here, not an HTTP URL; get_metadata_fragment()
+        below decodes it back into a metadata.json entry.
         """
         ref = entity_detail.get("_local_ref")
-        metadata_dir = os.path.join(self._entity_dir(ref), "metadata")
-        if not os.path.isdir(metadata_dir):
-            return []
-        return [
-            {"url": os.path.join(metadata_dir, name)}
-            for name in sorted(os.listdir(metadata_dir))
-        ]
+        fragments = self._read_json(ref, "metadata.json", [])
+        return [{"url": f"{ref}::{index}"} for index in range(len(fragments))]
 
     def get_metadata_fragment(self, fragment_url):
-        """:param str fragment_url: A local path, as returned by list_metadata_fragments().
-        :returns: The fragment's raw XML text.
+        """:param str fragment_url: A "<ref>::<index>" key, as returned by
+            list_metadata_fragments().
+        :returns: That metadata.json entry's raw XML text.
         :rtype: str
         """
-        with open(fragment_url, encoding="utf-8") as f:
-            return f.read()
+        ref, index = fragment_url.rsplit("::", 1)
+        fragments = self._read_json(ref, "metadata.json", [])
+        return fragments[int(index)]["rawXml"]
 
     def get_identifiers(self, data_type, ref):
         """:returns: [{'type', 'value'}, ...] from this ref's identifiers.json, or []."""
@@ -122,9 +126,12 @@ class LocalPreservicaClient:
     def resolve_all_content(self, io_ref, entity_detail=None):
         """Derive this item's representations directly from its media/
         directory -- one representationType per immediate subdirectory, one
-        entry per file in it. No fixity (nothing to compare a checksum
-        against locally), so --skip-unchanged has no effect on a local import;
-        every file is (re)written every run.
+        entry per file in it (a "<name>.fixity.json" sidecar next to a media
+        file, e.g. from a prior real Preservica export, is skipped -- it
+        describes the file next to it, it isn't a representation of its own).
+        No fixity comparison against a local copy (there's nothing to fetch
+        fixity from independently), so --skip-unchanged has no effect on a
+        local import; every file is (re)written every run.
 
         :returns: [{'representationType', 'filename', 'downloadUrl', 'fixity': None}, ...].
         :rtype: list[dict]
@@ -138,6 +145,8 @@ class LocalPreservicaClient:
             if not os.path.isdir(rep_dir):
                 continue
             for filename in sorted(os.listdir(rep_dir)):
+                if filename.endswith(".fixity.json"):
+                    continue
                 representations.append({
                     "representationType": rep_type,
                     "filename": filename,

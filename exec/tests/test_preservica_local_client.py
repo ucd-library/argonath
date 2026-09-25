@@ -30,15 +30,21 @@ def _make_item(base, ref, title, description=None, identifiers=None, media=None,
     entity_dir = base / ref
     _write_json(entity_dir / "entity.json", {"title": title, "description": description, "type": "IO"})
     _write_json(entity_dir / "identifiers.json", identifiers or [])
-    for index, xml in enumerate(fragments or []):
-        frag_path = entity_dir / "metadata" / f"{index}.xml"
-        frag_path.parent.mkdir(parents=True, exist_ok=True)
-        frag_path.write_text(xml)
+    if fragments is not None:
+        _write_json(entity_dir / "metadata.json", [
+            {"schemaUri": "http://www.openarchives.org/OAI/2.0/oai_dc/", "rawXml": xml}
+            for xml in fragments
+        ])
     for rep_type, filename, data in (media or []):
         media_path = entity_dir / "media" / rep_type / filename
         media_path.parent.mkdir(parents=True, exist_ok=True)
         media_path.write_bytes(data)
     return entity_dir
+
+
+def _write_fixity_sidecar(base, ref, rep_type, filename):
+    path = base / ref / "media" / rep_type / f"{filename}.fixity.json"
+    _write_json(path, {"algorithm": "SHA1", "value": "deadbeef"})
 
 
 def _make_folder(base, ref, title, children):
@@ -88,7 +94,7 @@ def test_list_and_read_metadata_fragments_round_trip(tmp_path):
     assert client.get_metadata_fragment(fragments[1]["url"]) == "<dc><title>B</title></dc>"
 
 
-def test_list_metadata_fragments_empty_when_no_metadata_dir(tmp_path):
+def test_list_metadata_fragments_empty_when_no_metadata_json(tmp_path):
     _make_item(tmp_path, "io-1", "Item One")
     client = LocalPreservicaClient(str(tmp_path))
     detail = client.get_entity("information-objects", "io-1")
@@ -126,6 +132,17 @@ def test_resolve_all_content_derives_representations_from_media_dirs(tmp_path):
     for rep in representations:
         assert rep["fixity"] is None
         assert rep["downloadUrl"].endswith(f"media/{rep['representationType']}/{rep['filename']}")
+
+
+def test_resolve_all_content_ignores_fixity_json_sidecars(tmp_path):
+    _make_item(tmp_path, "io-1", "Item One", media=[("Preservation", "page_001.tif", b"tiffbytes")])
+    _write_fixity_sidecar(tmp_path, "io-1", "Preservation", "page_001.tif")
+    client = LocalPreservicaClient(str(tmp_path))
+
+    representations = client.resolve_all_content("io-1")
+
+    assert len(representations) == 1
+    assert representations[0]["filename"] == "page_001.tif"
 
 
 def test_resolve_all_content_empty_when_no_media_dir(tmp_path):
@@ -173,6 +190,9 @@ def test_preservica_import_with_local_client_writes_by_ref_layout(tmp_path, fake
 
     assert (root / "by-ref" / "io-1" / "media" / "Preservation" / "page1.tif").read_bytes() == b"tiffbytes"
     assert (root / "by-ref" / "io-1" / "metadata" / "0.xml").read_text() == "<dc><title>Item One</title></dc>"
+    # preservica_import() re-derives its own by-ref/metadata/0.xml (numbered
+    # raw-fragment convention) regardless of the source's own metadata.json
+    # array shape -- this proves the two conventions don't need to match.
 
     assert manifest["errors"] == []
     assert {"ref": "io-1", "type": "IO", "title": "Item One"} in manifest["items"]

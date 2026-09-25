@@ -54,6 +54,18 @@ def test_filter_binaries_by_format_raises_on_unrecognized_extension():
         pipeline.filter_binaries_by_format(["cask:/bronze/g/c/latest/item/mystery.xyz"], "image")
 
 
+def test_filter_binaries_by_format_ignores_recognized_but_unclaimed_extension():
+    # Preservica's "Access" representation bundle includes a plain-text OCR
+    # transcript alongside page images/a combined PDF for the same item -- a
+    # recognized-but-unclaimed extension (like .txt) must not trip the
+    # unrecognized-extension safety net, nor match any real format filter.
+    paths = MIXED_FORMAT_PATHS + ["cask:/bronze/g/c/latest/item/document.txt"]
+    assert pipeline.filter_binaries_by_format(paths, "pdf") == ["cask:/bronze/g/c/latest/item/document.pdf"]
+    assert pipeline.filter_binaries_by_format(paths, "image") == [
+        "cask:/bronze/g/c/latest/item/page-001.tif", "cask:/bronze/g/c/latest/item/page-002.tif",
+    ]
+
+
 def test_partition_by_format_splits_images_and_pdfs():
     assert pipeline.partition_by_format(MIXED_FORMAT_PATHS) == (
         ["cask:/bronze/g/c/latest/item/page-001.tif", "cask:/bronze/g/c/latest/item/page-002.tif"],

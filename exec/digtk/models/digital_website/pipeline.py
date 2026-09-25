@@ -50,6 +50,13 @@ FORMAT_BY_EXTENSION = {
     ".pdf": "pdf",
     ".mp4": "video", ".mov": "video", ".avi": "video", ".mkv": "video", ".webm": "video",
     ".mp3": "audio", ".wav": "audio", ".flac": "audio", ".m4a": "audio", ".ogg": "audio",
+    # Recognized-but-unclaimed: no showcase pipeline processes these, but an
+    # item legitimately having one shouldn't fail filter_binaries_by_format()'s
+    # unrecognized-extension safety net the way a truly unhandled binary type
+    # should -- e.g. Preservica's "Access" representation bundle includes a
+    # plain-text OCR transcript (its own, not digtk.models.ocr's) alongside
+    # page images/a combined PDF for the same item.
+    ".txt": "text",
 }
 
 

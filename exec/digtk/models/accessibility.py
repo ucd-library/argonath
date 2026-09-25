@@ -119,7 +119,7 @@ def generate_alt_text(ark, opts={}):
         )
     multi_image = len(image_paths) > 1
 
-    sidecar_path = item.bronze_binary_paths[0] + ".jsonld.json"
+    sidecar_path = item.sidecar_path
     metadata = items.metadata(ark)
 
     result = {"status": "success", "ark": ark}
@@ -222,7 +222,7 @@ def tag_pdf(ark, opts={}):
     # has non-PDF binaries) needs this alongside "more than one PDF".
     namespace_ocr = len(pdf_paths) > 1 or len(pdf_paths) < len(item.bronze_binary_paths)
 
-    sidecar_path = item.bronze_binary_paths[0] + ".jsonld.json"
+    sidecar_path = item.sidecar_path
     metadata = items.metadata(ark)
     title = metadata.get("title") or ark
 

@@ -11,6 +11,7 @@ ARK = "ark:/87287/d7abc1234"
 ITEM = ItemLocation(
     ark=ARK, group="g", collection="c", time="latest", item_path="item",
     bronze_binary_paths=["cask:/bronze/g/c/latest/item/photo.tiff"],
+    sidecar_path="cask:/bronze/g/c/latest/item/photo.tiff.jsonld.json",
 )
 
 MULTI_ITEM = ItemLocation(
@@ -19,11 +20,13 @@ MULTI_ITEM = ItemLocation(
         "cask:/bronze/g/c/latest/box-1/folder-3/photo-a.tiff",
         "cask:/bronze/g/c/latest/box-1/folder-3/photo-b.tiff",
     ],
+    sidecar_path="cask:/bronze/g/c/latest/box-1/folder-3/photo-a.tiff.jsonld.json",
 )
 
 PDF_ITEM = ItemLocation(
     ark=ARK, group="g", collection="c", time="latest", item_path="item",
     bronze_binary_paths=["cask:/bronze/g/c/latest/item/document.pdf"],
+    sidecar_path="cask:/bronze/g/c/latest/item/document.pdf.jsonld.json",
 )
 
 MIXED_ITEM = ItemLocation(
@@ -32,11 +35,13 @@ MIXED_ITEM = ItemLocation(
         "cask:/bronze/g/c/latest/item/photo.tiff",
         "cask:/bronze/g/c/latest/item/document.pdf",
     ],
+    sidecar_path="cask:/bronze/g/c/latest/item/photo.tiff.jsonld.json",
 )
 
 VIDEO_ONLY_ITEM = ItemLocation(
     ark=ARK, group="g", collection="c", time="latest", item_path="item",
     bronze_binary_paths=["cask:/bronze/g/c/latest/item/reel.mp4"],
+    sidecar_path="cask:/bronze/g/c/latest/item/reel.mp4.jsonld.json",
 )
 
 METADATA = {"title": "Wine menu", "description": None, "date": "1973", "creator": "Society"}

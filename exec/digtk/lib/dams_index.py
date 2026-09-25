@@ -46,16 +46,16 @@ ES_INDEX = os.environ.get(ES_INDEX_ENV, "item-write")
 IMAGE_LIST_TYPE = "http://digital.ucdavis.edu/schema#ImageList"
 
 
-def _load_bronze_sidecar(binary_path):
-    """Reads and parses one bronze binary's JSON-LD sidecar - the original
+def _load_bronze_sidecar(sidecar_path):
+    """Reads and parses the item's bronze JSON-LD sidecar - the original
     ingested metadata (name, description, creator, etc.), immutable/append-only.
 
-    :param str binary_path: A 'cask:/...' binary path, as returned in
-        ItemLocation.bronze_binary_paths (no '.jsonld.json' suffix).
+    :param str sidecar_path: A 'cask:/....jsonld.json' path, as returned in
+        ItemLocation.sidecar_path.
     :returns: Parsed JSON-LD.
     :rtype: dict
     """
-    raw = fs.read(binary_path + ".jsonld.json")
+    raw = fs.read(sidecar_path)
     return json.loads(raw)
 
 
@@ -197,7 +197,7 @@ def build_document(ark):
     :rtype: dict
     """
     location = items.resolve(ark)
-    bronze_sidecar = _load_bronze_sidecar(location.bronze_binary_paths[0])
+    bronze_sidecar = _load_bronze_sidecar(location.sidecar_path)
     derivative_sidecar = _load_derivative_sidecar(location)
 
     associated_media = derivative_sidecar.get("associatedMedia") or []
