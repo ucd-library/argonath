@@ -21,6 +21,8 @@ Subcommands mirror the pipeline phases:
   digtk collection    — manage CaskFS collections (add/sync/add-tree)
   digtk search        — LlamaIndex RAG indexing and querying
   digtk preservica  — pull a collection out of Preservica into bronze (import/tree)
+  digtk reporting     — admin commands for the reporting Postgres schema
+                          (see digtk.lib.reporting)
 
 Every command finishes with a result — --output controls whether that also
 includes a structured JSON line (see digtk.lib.utils's module docstring):
@@ -33,7 +35,7 @@ from typing import Annotated
 import typer
 
 from digtk.commands import (
-    accessibility, ai, auth, collection, config, ocr, metadata, ingest, preservica, showcase, search, split,
+    accessibility, ai, auth, collection, config, ocr, metadata, ingest, preservica, reporting, showcase, search, split,
 )
 from digtk.lib import utils
 from digtk.lib.banner import print_banner
@@ -57,6 +59,7 @@ app.add_typer(split.app,         name="split-spreads")
 app.add_typer(ingest.app,        name="ingest")
 app.add_typer(collection.app,    name="collection")
 app.add_typer(search.app,        name="search")
+app.add_typer(reporting.app,     name="reporting")
 
 class OutputMode(str, Enum):
     """CLI-wide --output mode, applying to every command's final result line."""

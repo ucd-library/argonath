@@ -14,8 +14,15 @@ from typing import Annotated
 
 import typer
 
-from digtk.lib import utils
-from digtk.lib.config import CONFIG, OcrLangOption, OcrOemOption, OcrPsmOption
+from digtk.lib import reporting, utils
+from digtk.lib.config import (
+    CONFIG,
+    OcrLangOption,
+    OcrOemOption,
+    OcrPsmOption,
+    ReportingCollectionOption,
+    ReportingJobIdOption,
+)
 from digtk.models import ocr as ocr_model
 
 app = typer.Typer(help="OCR commands.", no_args_is_help=True)
@@ -35,6 +42,8 @@ def tesseract(
              "the transcript; turn this off only for fast local dev without "
              "SAMWISE_API_KEY, or deliberate cost control on a large batch.",
     )] = True,
+    reporting_job_id: ReportingJobIdOption = None,
+    reporting_collection: ReportingCollectionOption = None,
 ):
     """Run Tesseract (word geometry) and Qwen vision OCR (transcript) for
     every image binary, and every page of every PDF binary, in an item.
@@ -44,12 +53,20 @@ def tesseract(
     and display images rather than rasterizing anything itself. Writes
     silver/.../ocr/ocr.hocr + transcript.txt (+ ocr-result.json with
     Tesseract's confidence) per image, or the same per PDF page, with CaskFS
-    lineage to the images read.
+    lineage to the images read. This is the command both ocr_job (per-item
+    Dagster partition) and the collection-level fan-out job
+    (dagster/lib/pipeline_fanout.py) call — the latter passing its own run id
+    as --reporting-job-id.
     """
     try:
         utils.log(f"Running OCR for {ark}")
-        utils.result(ocr_model.run_ocr(ark, opts={
-            "lang": lang, "psm": psm, "oem": oem, "vision": vision,
-        }))
+        with reporting.track(
+            reporting_job_id, stage="ocr", item_id=ark, collection=reporting_collection,
+            options={"lang": lang, "psm": psm, "oem": oem, "vision": vision},
+        ):
+            result = ocr_model.run_ocr(ark, opts={
+                "lang": lang, "psm": psm, "oem": oem, "vision": vision,
+            })
+        utils.result(result)
     except _ERRORS as e:
         utils.error(str(e))

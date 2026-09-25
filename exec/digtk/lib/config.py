@@ -181,6 +181,19 @@ CAPTIONS_TIMEOUT_S_ENV = "DIGTK_CAPTIONS_TIMEOUT_S"
 
 GCS_BUCKET_ENV = "DIGTK_GCS_BUCKET"
 
+# The shared postgres instance's default 'postgres' database — same one
+# cask/anduin-gateway connect to (distinct from CONFIG["postgres"]'s own
+# dedicated 'argonath' database above, and from Dagster's own run/event
+# storage — see dagster/lib/utils.py's DAGSTER_POSTGRES_* connection),
+# scoped to its own 'reporting' schema. See digtk.lib.reporting's module
+# docstring for why job-tracking rows live here instead of either of those.
+REPORTING_PG_HOST_ENV = "DIGTK_REPORTING_PG_HOST"
+REPORTING_PG_PORT_ENV = "DIGTK_REPORTING_PG_PORT"
+REPORTING_PG_DATABASE_ENV = "DIGTK_REPORTING_PG_DATABASE"
+REPORTING_PG_USER_ENV = "DIGTK_REPORTING_PG_USER"
+REPORTING_PG_PASSWORD_ENV = "DIGTK_REPORTING_PG_PASSWORD"
+REPORTING_JOB_ID_ENV = "DIGTK_REPORTING_JOB_ID"
+
 # Gold app target for digital_website derivative/metadata writes — mirrors
 # dagster/lib/configs.py's GOLD_APPS Literal (["arda", "digital-dev",
 # "digital-prod"]); duplicated here rather than imported since digtk has no
@@ -635,6 +648,17 @@ CONFIG = {
         "max_retries": _env(PRESERVICA_MAX_RETRIES_ENV, 4, int),
         "retry_backoff_s": _env(PRESERVICA_RETRY_BACKOFF_S_ENV, 1.0, float),
     },
+    "reporting": {
+        # host/port default to a local-dev port-forward target (e.g.
+        # `kubectl port-forward svc/postgres 5432:5432 -n argonath`), not a
+        # real network path -- see digtk.lib.reporting's module docstring.
+        # Compose/k8s override these to the in-cluster 'postgres' service.
+        "host": _env(REPORTING_PG_HOST_ENV, "localhost"),
+        "port": _env(REPORTING_PG_PORT_ENV, 5432, int),
+        "database": _env(REPORTING_PG_DATABASE_ENV, "postgres"),
+        "user": _env(REPORTING_PG_USER_ENV, "postgres"),
+        "password_env": REPORTING_PG_PASSWORD_ENV,
+    },
 }
 
 
@@ -775,4 +799,23 @@ GoldAppOption = Annotated[str, typer.Option(
     "--app", envvar=GOLD_APP_ENV,
     help=f"Target gold app ('arda', 'digital-dev', or 'digital-prod' — see "
          f"dagster/lib/configs.py's GOLD_APPS). Env: {GOLD_APP_ENV}.",
+)]
+
+# Shared by every command digtk.lib.reporting.track() instruments. No CONFIG
+# default (unlike the options above) -- reporting is opt-in per invocation:
+# omitting --reporting-job-id means "don't record this command at all" (see
+# digtk.lib.reporting's module docstring), so there's no sensible default
+# other than None.
+ReportingJobIdOption = Annotated[str | None, typer.Option(
+    "--reporting-job-id", envvar=REPORTING_JOB_ID_ENV,
+    help="Job identifier (e.g. a Dagster run ID) to record this command's "
+         "outcome under in reporting.command. Omit to skip reporting entirely. "
+         f"Env: {REPORTING_JOB_ID_ENV}.",
+)]
+
+ReportingCollectionOption = Annotated[str | None, typer.Option(
+    "--reporting-collection",
+    help="Collection key to record alongside this command, if known (e.g. "
+         "Dagster's collection partition key). Purely descriptive -- has no "
+         "effect unless --reporting-job-id is also set.",
 )]

@@ -13,6 +13,9 @@ Subcommands:
   list       — list registered collections (see digtk.models.collection.register_collection) —
                used by Dagster's collection_partition_sync_sensor to keep its
                'collections' dynamic partition in sync with the registry.
+  items      — list a collection's current item ARKs (see
+               digtk.models.collection.list_item_arks) — used by Dagster's
+               collection-level fan-out (dagster/lib/pipeline_fanout.py).
   init-pg    — apply the collection registry's Postgres schema (see
                digtk.models.collection.init_pg / collection_registry.sql). Safe
                to run repeatedly.
@@ -139,6 +142,24 @@ def list_registered(
         utils.log("(no registered collections)")
 
     utils.result({"status": "success", "collections": collections})
+
+
+@app.command("items")
+def items(
+    collection: Annotated[str, typer.Option(help="Collection name.")],
+):
+    """List every item ARK currently in a collection's tree/ layout — see
+    digtk.models.collection.list_item_arks(). Used by Dagster's collection-
+    level fan-out (dagster/lib/pipeline_fanout.py) to enumerate a partition's
+    items without a per-item Dagster partition."""
+    arks = collection_model.list_item_arks(collection)
+
+    for ark in arks:
+        utils.log(ark)
+    if not arks:
+        utils.log("(no items)")
+
+    utils.result({"status": "success", "collection": collection, "arks": arks})
 
 
 @app.command("init-pg")

@@ -14,6 +14,7 @@ import atexit
 
 import dagster as dg
 import psycopg2
+import yaml
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +100,28 @@ def exec(cmd, opts={}):
         atexit.unregister(_terminate)
         if process.stdout:
             process.stdout.close()
+
+
+# ---------------------------------------------------------------------------
+# Celery run config
+# ---------------------------------------------------------------------------
+
+def load_celery_run_config():
+    """Load celery_config.yaml as a job's default run config.
+
+    Without this, a run launched from Dagit with no run config falls back to
+    celery_executor's built-in default broker (pyamqp://guest@localhost//)
+    instead of this deployment's actual broker -- connection refused, since
+    nothing is listening on localhost:5672 wherever the run worker executes.
+    Every op-based (non-asset) job using celery_executor needs this passed as
+    its own `config=` -- see lib/pipeline_fanout.py's process_collection_job.
+
+    :returns: Parsed run config dict (the `execution:` block).
+    :rtype: dict
+    """
+    path = os.path.join(os.path.dirname(__file__), "..", "celery_config.yaml")
+    with open(path) as f:
+        return yaml.safe_load(f)
 
 
 # ---------------------------------------------------------------------------

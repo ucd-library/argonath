@@ -12,7 +12,11 @@ Subcommands:
             directly — no bronze/collection business logic involved)
   import  — walk a Preservica collection into bronze's by-ref/ layout, always
             registering the collection along the way (see
-            digtk.models.collection.preservica_import/register_collection)
+            digtk.models.collection.preservica_import/register_collection).
+            --source-dir reads a local directory instead of the live API (see
+            digtk.lib.preservica.LocalPreservicaClient) for offline staging/
+            testing before a collection exists in Preservica, or replaying an
+            already-fetched export.
   sync    — sync only specific changed entities (folders/items) for an
             already-registered collection, never a full re-walk (see
             digtk.models.collection.preservica_sync_entities) — used by
@@ -120,7 +124,10 @@ def list_children(
 
 @app.command("import")
 def import_(
-    ref: Annotated[str, typer.Argument(help="Root Preservica structural object ref to walk.")],
+    ref: Annotated[str, typer.Argument(
+        help="Root Preservica structural object ref to walk. With --source-dir, this is "
+        "just the root entry's directory name under it, not a real Preservica ref.",
+    )],
     collection: Annotated[str | None, typer.Option(
         help="Collection name. Defaults to a slugified version of the root entity's own "
         "title, fetched from Preservica (mirrors preservica-etl's behavior).",
@@ -136,11 +143,18 @@ def import_(
         "--dest-root", help="Override the bronze root (e.g. a local directory for dev/"
         "testing instead of real CaskFS). Defaults to cask:/bronze/<group>/<collection>.",
     )] = None,
+    source_dir: Annotated[str | None, typer.Option(
+        "--source-dir", help="Read from a local directory laid out like Preservica's own "
+        "Entity API responses (see digtk.lib.preservica.LocalPreservicaClient) instead of "
+        "the live API — no Preservica credentials needed. For offline staging/testing "
+        "before a collection exists in Preservica, or replaying an already-fetched export.",
+    )] = None,
     skip_unchanged: Annotated[bool, typer.Option(
         "--skip-unchanged", help="Opt-in: skip re-downloading a file whose Preservica-"
         "reported fixity already matches the local copy from a prior import. Off by "
         "default, since this version always does a full re-walk otherwise (entity/"
-        "identifiers/metadata/children JSON is still always re-fetched).",
+        "identifiers/metadata/children JSON is still always re-fetched). No effect with "
+        "--source-dir — a local import has no fixity to compare against.",
     )] = False,
 ):
     """Walk a Preservica collection into bronze's by-ref/ layout."""
@@ -150,6 +164,8 @@ def import_(
         "on_progress": utils.log,
         "skip_unchanged": skip_unchanged,
     }
+    if source_dir:
+        opts["client"] = preservica.LocalPreservicaClient(source_dir)
     try:
         manifest = collection_model.preservica_import(ref, collection, group, opts)
     except ValueError as e:

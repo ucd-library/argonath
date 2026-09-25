@@ -17,7 +17,7 @@ from typing import Annotated
 
 import typer
 
-from digtk.lib import utils
+from digtk.lib import reporting, utils
 from digtk.lib.config import (
     CONFIG,
     GoldAppOption,
@@ -27,6 +27,8 @@ from digtk.lib.config import (
     ImageFuzzThresholdOption,
     ImageThumbnailQualityOption,
     ImageThumbnailWidthsOption,
+    ReportingCollectionOption,
+    ReportingJobIdOption,
 )
 from digtk.models.digital_website import image
 
@@ -101,22 +103,30 @@ def derivatives(
     deskew_threshold: ImageDeskewThresholdOption = CONFIG["image"]["deskew_threshold"],
     fuzz_threshold: ImageFuzzThresholdOption = CONFIG["image"]["fuzz_threshold"],
     app: GoldAppOption = CONFIG["gold"]["app"],
+    reporting_job_id: ReportingJobIdOption = None,
+    reporting_collection: ReportingCollectionOption = None,
 ):
     """Generate the full derivative set, auto-detecting scan orientation via OCR.
 
     Runs a real Tesseract comparison between a deskewed and non-deskewed
     candidate to decide the correct orientation once, then applies that
     decision to every thumbnail width and the published OCR-prep image. This
-    is the command Dagster's derivatives_job calls.
+    is the command both derivatives_job (per-item Dagster partition) and the
+    collection-level fan-out job (dagster/lib/pipeline_fanout.py) call — the
+    latter passing its own run id as --reporting-job-id.
     """
     try:
         utils.log(f"Generating derivatives for {ark} at widths {widths}")
-        result = image.generate(ark, opts={
-            "widths": widths,
-            "threshold": deskew_threshold,
-            "fuzz": fuzz_threshold,
-            "app": app,
-        })
+        with reporting.track(
+            reporting_job_id, stage="derivatives", item_id=ark, collection=reporting_collection,
+            options={"widths": widths, "deskew_threshold": deskew_threshold, "fuzz_threshold": fuzz_threshold, "app": app},
+        ):
+            result = image.generate(ark, opts={
+                "widths": widths,
+                "threshold": deskew_threshold,
+                "fuzz": fuzz_threshold,
+                "app": app,
+            })
         for stem, orientation in result["orientation"].items():
             utils.log(f"  {stem}: {'deskewed' if orientation['deskew'] else 'original'}")
         utils.result(result)
