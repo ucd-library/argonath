@@ -86,6 +86,23 @@ def test_partition_by_format_empty_when_no_binaries_match():
     assert pipeline.partition_by_format([]) == ([], [])
 
 
+def test_detect_formats_returns_every_format_present():
+    paths = MIXED_FORMAT_PATHS + ["cask:/bronze/g/c/latest/item/reel.mp4", "cask:/bronze/g/c/latest/item/interview.wav"]
+    assert pipeline.detect_formats(paths) == {"pdf", "image", "video", "audio"}
+
+
+def test_detect_formats_ignores_unrecognized_and_unclaimed_extensions():
+    paths = [
+        "cask:/bronze/g/c/latest/item/document.txt",
+        "cask:/bronze/g/c/latest/item/mystery.xyz",
+    ]
+    assert pipeline.detect_formats(paths) == set()
+
+
+def test_detect_formats_never_raises_for_a_single_format_item():
+    assert pipeline.detect_formats(["cask:/bronze/g/c/latest/item/photo.tiff"]) == {"image"}
+
+
 # --- pdf_ocr_prep_images() -------------------------------------------------------
 
 PDF_ITEM = ItemLocation(

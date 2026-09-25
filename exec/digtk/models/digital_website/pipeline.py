@@ -87,6 +87,29 @@ def filter_binaries_by_format(bronze_binary_paths, media_types):
     return matches
 
 
+def detect_formats(bronze_binary_paths):
+    """Detect which media-type formats are present among an item's bronze binaries.
+
+    Unlike filter_binaries_by_format(), never raises — a format simply absent
+    from bronze_binary_paths is a normal, expected case here, and an
+    unrecognized/unclaimed extension (e.g. ".txt") is silently ignored rather
+    than treated as an error. Used by dagster/lib/pipeline_fanout.py's
+    process_derivatives to decide which `digtk showcase <format> derivatives`
+    commands apply to a given (possibly mixed-format) item.
+
+    :param list[str] bronze_binary_paths: CaskFS paths ('cask:/'-prefixed).
+    :returns: Formats present, a subset of {"image", "pdf", "video", "audio"}.
+    :rtype: set[str]
+    """
+    formats = set()
+    for path in bronze_binary_paths:
+        ext = os.path.splitext(path)[1].lower()
+        fmt = FORMAT_BY_EXTENSION.get(ext)
+        if fmt in ("image", "pdf", "video", "audio"):
+            formats.add(fmt)
+    return formats
+
+
 def partition_by_format(bronze_binary_paths):
     """Split an item's bronze binaries into image and PDF subsets.
 

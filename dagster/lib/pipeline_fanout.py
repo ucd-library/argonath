@@ -116,18 +116,34 @@ def _emit(context, stage, ark, result, status="success", **extra):
     ))
 
 
+# Fixed run order for a (possibly mixed-format) item's applicable `digtk
+# showcase <format> derivatives` commands -- matches commands/showcase.py's
+# own image/pdf/video/audio mount order. All four accept
+# --reporting-job-id/--reporting-collection (see commands/{image,pdf,audio,video}.py),
+# so every format's run gets its own reporting.command row.
+_DERIVATIVE_FORMAT_ORDER = ["image", "pdf", "video", "audio"]
+
+
 @op(ins={"ark": In(str)}, out=Out(str))
 def process_derivatives(context: OpExecutionContext, config: DerivativesConfig, ark: str) -> str:
-    """Generate the full image-derivative set for one fanned-out item.
+    """Generate the full derivative set for one fanned-out item, across every
+    media format its bronze binaries actually span.
 
-    Same command lib.assets.generate_derivatives calls (`digtk showcase image
-    derivatives`) -- invoked per mapped item within this job's single
-    collection-scoped run instead of as a separately-partitioned asset. Passes
-    this run's own id as --reporting-job-id so the resulting reporting.command
-    row (see digtk.lib.reporting) traces back to this exact Dagster run.
-    Shares lib.configs.DerivativesConfig with generate_derivatives rather than
-    a separate config class, so a config change (a new width, a new tuning
-    knob) doesn't need to be kept in sync by hand across both designs.
+    An item's bronze binaries can legitimately mix formats (e.g. an archival
+    transfer supplying both a compiled PDF and per-page TIFF/JPEG masters for
+    the same physical document -- see docs/cask-conventions.md) -- so this
+    first asks `digtk showcase formats` which of image/pdf/video/audio are
+    present, then runs each applicable `digtk showcase <format> derivatives`
+    command in turn (see _DERIVATIVE_FORMAT_ORDER), instead of assuming every
+    item is image-only the way this op used to. Downstream steps like
+    process_ocr need every applicable format's derivatives already published
+    (e.g. a mixed item's PDF-side OCR-prep manifest), so all of them must
+    finish here first.
+
+    Shares lib.configs.DerivativesConfig with lib.assets.generate_derivatives
+    rather than a separate config class, so a config change (a new width, a
+    new tuning knob) doesn't need to be kept in sync by hand across both
+    designs.
 
     :param context: Dagster op execution context; partitioned by collection.
     :param config: DerivativesConfig with thumbnail widths.
@@ -136,13 +152,16 @@ def process_derivatives(context: OpExecutionContext, config: DerivativesConfig, 
     """
     collection_key = context.partition_key
     try:
-        result = exec([
-            "digtk", "showcase", "image", "derivatives", ark,
-            "--widths", config.widths,
-            "--reporting-job-id", context.run_id,
-            "--reporting-collection", collection_key,
-        ])
-        _emit(context, "derivatives", ark, result)
+        formats = set(exec(["digtk", "showcase", "formats", ark])["formats"])
+        for fmt in _DERIVATIVE_FORMAT_ORDER:
+            if fmt not in formats:
+                continue
+            cmd = ["digtk", "showcase", fmt, "derivatives", ark]
+            if fmt == "image":
+                cmd += ["--widths", config.widths]
+            cmd += ["--reporting-job-id", context.run_id, "--reporting-collection", collection_key]
+            result = exec(cmd)
+            _emit(context, "derivatives", ark, result, format=fmt)
         return ark
     except Exception as e:
         _emit(context, "derivatives", ark, None, status="failed", error=str(e))
