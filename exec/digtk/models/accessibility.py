@@ -94,10 +94,10 @@ def generate_alt_text(ark, opts={}):
     every PDF binary, in an item.
 
     :param str ark: Item ARK identifier.
-    :param dict opts: alt_utils.build_alt_prompt() opts (collection_context,
-        name_people, transcribe_text, tone, language, max_alt_chars,
-        extra_instructions, want_description), plus 'model' forwarded to the
-        Samwise chat call — see alt_utils.generate_alt().
+    :param dict opts: alt_utils.build_alt_prompt() opts (collection_context, name_people,
+        transcribe_text, tone, language, max_alt_chars, extra_instructions,
+        want_description), plus 'model' forwarded to the Samwise chat call —
+        see alt_utils.generate_alt().
     :returns: {"status": "success", "ark": str,
         "images": {filename: {"alt": str, "description": str|None, "flags":
             [str], "path": "cask:/..."}},
@@ -129,7 +129,9 @@ def generate_alt_text(ark, opts={}):
         for bronze_path in image_paths:
             filename = bronze_path.rsplit("/", 1)[-1]
             stem = filename.rsplit(".", 1)[0]
-            images_dir = pipeline.derivative_dir(item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images")
+            images_dir = pipeline.derivative_dir(
+                item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images",
+            )
             display_image = f"{images_dir}/large.jpg"
 
             out_filename = pipeline.output_name(stem, "alt-text.json", multi_image)

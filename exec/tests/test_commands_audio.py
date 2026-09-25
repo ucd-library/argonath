@@ -31,7 +31,7 @@ def test_transcode_calls_audio_with_format_and_bitrate(monkeypatch):
     result = runner.invoke(audio.app, ["transcode", ARK, "--format", "aac", "--bitrate", "128k"])
 
     assert result.exit_code == 0
-    assert seen["opts"] == {"format": "aac", "bitrate": "128k", "app": "digital-dev"}
+    assert seen["opts"] == {"format": "aac", "bitrate": "128k"}
 
 
 def test_transcode_routes_exception_through_utils_error(monkeypatch):
@@ -52,7 +52,7 @@ def test_waveform_calls_audio_with_dimensions(monkeypatch):
     result = runner.invoke(audio.app, ["waveform", ARK, "--width", "200", "--height", "80"])
 
     assert result.exit_code == 0
-    assert seen["opts"] == {"width": 200, "height": 80, "app": "digital-dev"}
+    assert seen["opts"] == {"width": 200, "height": 80}
 
 
 def test_derivatives_calls_audio(monkeypatch):

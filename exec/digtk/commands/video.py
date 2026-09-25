@@ -19,7 +19,6 @@ from digtk.lib.config import (
     CONFIG,
     CaptionsLanguageOption,
     CaptionsModelOption,
-    GoldAppOption,
     VideoResolutionsOption,
 )
 from digtk.models.digital_website import video
@@ -42,12 +41,11 @@ def probe(ark: Annotated[str, typer.Argument(help="Item ARK identifier.")]):
 def hls(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
     resolutions: VideoResolutionsOption = CONFIG["video"]["resolutions"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Generate the HLS adaptive-bitrate stream."""
     try:
         utils.log(f"Generating HLS stream for {ark} at resolutions {resolutions}")
-        utils.result(video.hls(ark, opts={"resolutions": resolutions, "app": app}))
+        utils.result(video.hls(ark, opts={"resolutions": resolutions}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -58,14 +56,13 @@ def derivatives(
     resolutions: VideoResolutionsOption = CONFIG["video"]["resolutions"],
     language: CaptionsLanguageOption = CONFIG["captions"]["language"],
     model: CaptionsModelOption = CONFIG["captions"]["model"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Generate the full derivative set: HLS stream + WebVTT caption (local Whisper
     ASR — machine-generated and unreviewed)."""
     try:
         utils.log(f"Generating derivatives for {ark} at resolutions {resolutions}")
         result = video.derivatives(ark, opts={
-            "resolutions": resolutions, "language": language, "model": model, "app": app,
+            "resolutions": resolutions, "language": language, "model": model,
         })
         utils.result(result)
     except _ERRORS as e:

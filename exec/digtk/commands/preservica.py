@@ -32,7 +32,6 @@ from typing import Annotated
 import typer
 
 from digtk.lib import preservica, utils
-from digtk.lib.config import CONFIG, GoldAppOption
 from digtk.lib.preservica import PreservicaAuthError, PreservicaRequestError
 from digtk.models import collection as collection_model
 from digtk.models.digital_website import pipeline
@@ -244,7 +243,7 @@ def sync(
     })
 
 
-def _merge_dc_metadata(item_metadata_list, app):
+def _merge_dc_metadata(item_metadata_list):
     """Merge each newly tree-built item's Dublin-Core-derived metadata into its
     gold item.jsonld.json — tolerant of per-item failure (e.g. an item whose
     ARK hasn't been minted into bronze's by-ref/ sidecar yet, see
@@ -252,11 +251,10 @@ def _merge_dc_metadata(item_metadata_list, app):
     fails the whole tree rebuild/patch.
 
     :param list[digtk.lib.schema.ItemMetadata] item_metadata_list: Items to merge.
-    :param str app: Target gold app.
     """
     for item_metadata in item_metadata_list:
         try:
-            pipeline.merge_dc_metadata(item_metadata, app=app)
+            pipeline.merge_dc_metadata(item_metadata)
         except (LookupError, OSError, RuntimeError, ValueError) as e:
             utils.log(f"Warning: could not merge gold metadata for {item_metadata.ark}: {e}")
 
@@ -277,7 +275,6 @@ def tree(
         "--dest-root", help="Override the bronze root — must match whatever --dest-root "
         "(or its cask:/ default) the matching `import` run used.",
     )] = None,
-    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Rebuild bronze's tree/ layout from an already-imported by-ref/, and merge
     any Dublin-Core-derived schema.org metadata discovered along the way into
@@ -306,7 +303,7 @@ def tree(
             f"-{len(result['removed'])} removed, ~{len(result['moved'])} moved"
             + (f", {len(result['unresolved'])} unresolved" if result["unresolved"] else "")
         )
-        _merge_dc_metadata(result["item_metadata"], app)
+        _merge_dc_metadata(result["item_metadata"])
         utils.result({
             "status": "success", "collection": collection,
             **{k: v for k, v in result.items() if k != "item_metadata"},
@@ -318,7 +315,7 @@ def tree(
     except FileNotFoundError as e:
         utils.error(str(e))
 
-    _merge_dc_metadata(item_metadata, app)
+    _merge_dc_metadata(item_metadata)
     utils.result({"status": "success", "collection": collection, "items": count})
 
 

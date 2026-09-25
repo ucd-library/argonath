@@ -157,15 +157,8 @@ class DerivativesConfig(Config):
     """Config for the generate_derivatives asset.
 
     :param str widths: Comma-separated thumbnail widths.
-    :param str app: Target gold app for the published derivative set — required,
-        with no built-in default (unlike digtk's own CLI, which defaults to
-        'digital-dev' for local-dev convenience): an unset app silently
-        defaulting in an orchestrated production run would be a dangerous
-        silent misconfiguration, so every job/schedule config must state it
-        explicitly.
     """
     widths: str = Field("256,512,1024", description="Thumbnail widths in pixels.")
-    app: GOLD_APPS = Field(..., description="Target gold app for published derivatives.")
 
 
 class OcrConfig(Config):

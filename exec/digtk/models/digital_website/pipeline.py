@@ -387,12 +387,12 @@ def cask_public_ref(internal_path):
     return "cask:/" + internal_path[len("cask:"):]
 
 
-def update_associated_media(item, media_objects, source_files, source_group, *, app):
-    """Merge schema:associatedMedia refs into the item's gold sidecar, creating
+def update_associated_media(item, media_objects, source_files, source_group):
+    """Merge schema:associatedMedia refs into the item's silver sidecar, creating
     it if absent. Never touches the bronze sidecar — bronze is immutable/append-only,
-    so derivative metadata lives in a new gold/[app]/.../[item]/item.jsonld.json
-    instead (see docs/cask-conventions.md) — these are final public-facing
-    products with no silver group/time staging dimension.
+    so derivative metadata lives in the item's silver sidecar instead (see
+    docs/cask-conventions.md), at
+    silver/{group}/{collection}/{time}/{item_path}/item.jsonld.json.
 
     Merges by `source_group` rather than replacing the whole associatedMedia array:
     an item's bronze binaries can legitimately span more than one media format (e.g.
@@ -426,13 +426,12 @@ def update_associated_media(item, media_objects, source_files, source_group, *, 
     :param str source_group: Which pipeline produced media_objects — "image", "pdf",
         "video", or "audio". Existing entries carrying this same group are replaced;
         entries from other groups are preserved.
-    :param str app: Target gold app.
     :returns: The full sidecar dict that was written.
     :rtype: dict
     """
     rel_path = f"{item.item_path}/item.jsonld.json" if item.item_path else "item.jsonld.json"
-    write_opts = {"app": app, "replace": True}
-    dest = derivative.dest_path(type="gold", collection=item.collection, rel_path=rel_path, opts=write_opts)
+    write_opts = {"group": item.group, "time": item.time, "replace": True}
+    dest = derivative.dest_path(type="silver", collection=item.collection, rel_path=rel_path, opts=write_opts)
     sidecar_path = f"cask:{dest}"
 
     if fs.exists(sidecar_path):
@@ -446,7 +445,7 @@ def update_associated_media(item, media_objects, source_files, source_group, *, 
     doc["associatedMedia"] = [e for e in existing if e.get("argonath:sourceGroup") != source_group] + media_objects
 
     derivative.write(
-        type="gold", collection=item.collection, rel_path=rel_path,
+        type="silver", collection=item.collection, rel_path=rel_path,
         data=json.dumps(doc, indent=2).encode(), source_files=source_files, opts=write_opts,
     )
     return doc
@@ -458,26 +457,25 @@ def update_associated_media(item, media_objects, source_files, source_group, *, 
 _DC_METADATA_KEYS = ("name", "description", "creator", "dateCreated", "license", "publisher", "about", "identifier")
 
 
-def merge_dc_metadata(item_metadata, *, app):
-    """Merge Dublin-Core-derived schema.org fields into an item's gold
+def merge_dc_metadata(item_metadata):
+    """Merge Dublin-Core-derived schema.org fields into an item's silver
     item.jsonld.json sidecar, read-modify-write — same non-destructive
     convention as update_associated_media() above, just scoped to a disjoint
     set of top-level keys (_DC_METADATA_KEYS) instead of associatedMedia, so a
     DC-metadata run (see digtk.models.collection's Preservica tree-building)
-    and a derivative-generation run can update the same gold sidecar
+    and a derivative-generation run can update the same silver sidecar
     independently, in either order, without clobbering each other.
 
     :param digtk.lib.schema.ItemMetadata item_metadata: DC-mapped fields for one
         item, built from bronze's raw Preservica Dublin Core metadata (see
         digtk.lib.dc_mapping).
-    :param str app: Target gold app.
     :returns: The full sidecar dict that was written.
     :rtype: dict
     """
     item = items.resolve(item_metadata.ark)
     rel_path = f"{item.item_path}/item.jsonld.json" if item.item_path else "item.jsonld.json"
-    write_opts = {"app": app, "replace": True}
-    dest = derivative.dest_path(type="gold", collection=item.collection, rel_path=rel_path, opts=write_opts)
+    write_opts = {"group": item.group, "time": item.time, "replace": True}
+    dest = derivative.dest_path(type="silver", collection=item.collection, rel_path=rel_path, opts=write_opts)
     sidecar_path = f"cask:{dest}"
 
     if fs.exists(sidecar_path):
@@ -493,7 +491,7 @@ def merge_dc_metadata(item_metadata, *, app):
     doc["argonath:fieldSources"].update(item_metadata.field_sources)
 
     derivative.write(
-        type="gold", collection=item.collection, rel_path=rel_path,
+        type="silver", collection=item.collection, rel_path=rel_path,
         data=json.dumps(doc, indent=2).encode(), source_files=item.bronze_binary_paths, opts=write_opts,
     )
     return doc

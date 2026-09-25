@@ -130,7 +130,7 @@ def process_derivatives(context: OpExecutionContext, config: DerivativesConfig, 
     knob) doesn't need to be kept in sync by hand across both designs.
 
     :param context: Dagster op execution context; partitioned by collection.
-    :param config: DerivativesConfig with thumbnail widths and target gold app.
+    :param config: DerivativesConfig with thumbnail widths.
     :param str ark: Item ARK (this op's mapping key).
     :returns: The same ark, threaded to process_ocr.
     """
@@ -139,7 +139,6 @@ def process_derivatives(context: OpExecutionContext, config: DerivativesConfig, 
         result = exec([
             "digtk", "showcase", "image", "derivatives", ark,
             "--widths", config.widths,
-            "--app", config.app,
             "--reporting-job-id", context.run_id,
             "--reporting-collection", collection_key,
         ])

@@ -50,13 +50,13 @@ def tesseract(
 
     Requires `digtk showcase image derivatives`/`digtk showcase pdf
     derivatives` to have already run — reads back their published OCR-prep
-    and display images rather than rasterizing anything itself. Writes
-    silver/.../ocr/ocr.hocr + transcript.txt (+ ocr-result.json with
-    Tesseract's confidence) per image, or the same per PDF page, with CaskFS
-    lineage to the images read. This is the command both ocr_job (per-item
-    Dagster partition) and the collection-level fan-out job
-    (dagster/lib/pipeline_fanout.py) call — the latter passing its own run id
-    as --reporting-job-id.
+    image and display image rather than rasterizing anything itself. Writes
+    silver/.../ocr/ocr.hocr + transcript.txt (+
+    ocr-result.json with Tesseract's confidence) per image, or the same per
+    PDF page, with CaskFS lineage to the images read. This is the command
+    both ocr_job (per-item Dagster partition) and the collection-level
+    fan-out job (dagster/lib/pipeline_fanout.py) call — the latter passing
+    its own run id as --reporting-job-id.
     """
     try:
         utils.log(f"Running OCR for {ark}")

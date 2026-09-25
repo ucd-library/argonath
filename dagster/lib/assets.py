@@ -224,10 +224,10 @@ def generate_derivatives(context: dg.AssetExecutionContext, config: DerivativesC
     separate, not-yet-scoped piece of work.
 
     :param context: Dagster asset execution context.
-    :param config: DerivativesConfig with thumbnail widths and target gold app.
+    :param config: DerivativesConfig with thumbnail widths.
     """
     ark = context.partition_key.keys_by_dimension["item"]
-    result = exec(["digtk", "showcase", "image", "derivatives", ark, "--widths", config.widths, "--app", config.app])
+    result = exec(["digtk", "showcase", "image", "derivatives", ark, "--widths", config.widths])
     context.log.info(f"Derivatives result: {result}")
     return dg.Output(result)
 

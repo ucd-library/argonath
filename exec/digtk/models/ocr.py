@@ -144,7 +144,7 @@ def run_ocr(ark, opts={}):
     :raises ValueError: If the item has no image or PDF binaries.
     :raises FileNotFoundError: If `digtk showcase image derivatives` or
         `digtk showcase pdf derivatives` hasn't published this item's
-        OCR-prep images yet.
+        OCR-prep/display images yet.
     """
     item = items.resolve(ark)
     image_paths, pdf_paths = pipeline.partition_by_format(item.bronze_binary_paths)
@@ -168,7 +168,9 @@ def run_ocr(ark, opts={}):
             filename = bronze_path.rsplit("/", 1)[-1]
             stem = filename.rsplit(".", 1)[0]
             ocr_image = pipeline.image_ocr_prep_image(item, bronze_path, multi_image)
-            images_dir = pipeline.derivative_dir(item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images")
+            images_dir = pipeline.derivative_dir(
+                item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images",
+            )
             display_image = f"{images_dir}/large.jpg"
             images[filename] = _run_both_engines(
                 item, ("ocr",), stem, multi_image, ocr_image, display_image,

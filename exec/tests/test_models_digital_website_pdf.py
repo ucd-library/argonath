@@ -218,24 +218,24 @@ def test_derivatives_raises_when_item_has_no_pdf_binaries(fake_fs, fake_pdf_rend
 # --- ad hoc single-page commands -----------------------------------------------
 
 def test_thumbnail_publishes_under_pdf_page_subdir(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick):
-    result = pd.thumbnail(ARK, opts={"page": 1, "widths": WIDTHS, "app": "digital-dev"})
+    result = pd.thumbnail(ARK, opts={"page": 1, "widths": WIDTHS})
     pdf_result = result["pdfs"]["document.pdf"]
-    assert pdf_result["dir"] == "cask:/gold/digital-dev/c/item/public-frontend-derivatives/document.pdf/images/2"
+    assert pdf_result["dir"] == "cask:/silver/g/c/latest/item/public-frontend-derivatives/document.pdf/images/2"
     assert sorted(pdf_result["outputs"]) == ["large.jpg", "medium.jpg", "small.jpg"]
     write_call = fake_derivative[0]
     assert write_call["opts"]["link_relation"] == "https://lib.ucdavis.edu/argonath/ns#derivativeOf"
 
 
 def test_convert_writes_converted_output(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick):
-    result = pd.convert(ARK, opts={"page": 0, "format": "png", "app": "digital-dev"})
+    result = pd.convert(ARK, opts={"page": 0, "format": "png"})
     assert result["outputs"] == ["converted.png"]
-    assert result["dir"] == "cask:/gold/digital-dev/c/item/public-frontend-derivatives/page-000"
+    assert result["dir"] == "cask:/silver/g/c/latest/item/public-frontend-derivatives/page-000"
 
 
 def test_deskew_standalone(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick):
-    result = pd.deskew(ARK, opts={"page": 0, "threshold": 25, "app": "digital-dev"})
+    result = pd.deskew(ARK, opts={"page": 0, "threshold": 25})
     assert result["outputs"] == ["deskewed.jpg"]
-    assert result["dir"] == "cask:/gold/digital-dev/c/item/public-frontend-derivatives/page-000"
+    assert result["dir"] == "cask:/silver/g/c/latest/item/public-frontend-derivatives/page-000"
     assert fake_image_magick["deskew"][0]["opts"]["threshold"] == 25
 
 
@@ -249,14 +249,14 @@ def test_prep_ocr_standalone_publishes_to_ocr_subdir(fake_fs, fake_pdf_render, f
 
 def test_derivatives_processes_every_page(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
-    result = pd.derivatives(ARK, opts={"widths": WIDTHS, "app": "digital-dev"})
+    result = pd.derivatives(ARK, opts={"widths": WIDTHS})
 
     doc = result["pdfs"]["document.pdf"]
     assert doc["pages"] == 2
     assert sorted(doc["orientation"].keys()) == ["1", "2"]
     assert [doc["derivatives"]["pages"][k]["dir"] for k in ("1", "2")] == [
-        "cask:/gold/digital-dev/c/item/public-frontend-derivatives/document.pdf/images/1",
-        "cask:/gold/digital-dev/c/item/public-frontend-derivatives/document.pdf/images/2",
+        "cask:/silver/g/c/latest/item/public-frontend-derivatives/document.pdf/images/1",
+        "cask:/silver/g/c/latest/item/public-frontend-derivatives/document.pdf/images/2",
     ]
     assert [p["dir"] for p in doc["ocr"]["pages"]] == [
         "cask:/silver/g/c/latest/item/ocr/page-000",
@@ -266,7 +266,7 @@ def test_derivatives_processes_every_page(fake_fs, fake_pdf_render, fake_derivat
 
 def test_derivatives_writes_aggregate_manifest(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("deskewed"))
-    pd.derivatives(ARK, opts={"widths": WIDTHS, "app": "digital-dev"})
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
 
     manifest_call = next(
         c for c in fake_derivative
@@ -279,7 +279,7 @@ def test_derivatives_writes_aggregate_manifest(fake_fs, fake_pdf_render, fake_de
 
 def test_derivatives_writes_per_page_manifest(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
-    pd.derivatives(ARK, opts={"widths": WIDTHS, "app": "digital-dev"})
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
 
     page_manifest_call = next(
         c for c in fake_derivative
@@ -291,7 +291,7 @@ def test_derivatives_writes_per_page_manifest(fake_fs, fake_pdf_render, fake_der
 
 def test_derivatives_records_rich_manifest_content_per_page(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
-    pd.derivatives(ARK, opts={"widths": WIDTHS, "app": "digital-dev"})
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
 
     page_manifest_call = next(
         c for c in fake_derivative
@@ -305,11 +305,11 @@ def test_derivatives_records_rich_manifest_content_per_page(fake_fs, fake_pdf_re
     for label in ("small", "medium", "large"):
         assert manifest[label] == {
             "size": {"width": "100", "height": "200"},
-            "url": f"cask://gold/digital-dev/c/item/public-frontend-derivatives/document.pdf/images/1/{label}.jpg",
+            "url": f"cask://silver/g/c/latest/item/public-frontend-derivatives/document.pdf/images/1/{label}.jpg",
         }
     assert manifest["tiled"] == {
         "size": [{"width": "3072", "height": "3976"}, {"width": "1536", "height": "1988"}],
-        "url": "cask://gold/digital-dev/c/item/public-frontend-derivatives/document.pdf/images/1/tiled.tif",
+        "url": "cask://silver/g/c/latest/item/public-frontend-derivatives/document.pdf/images/1/tiled.tif",
     }
     assert manifest["ocr"] == {
         "size": {"width": "100", "height": "200"},
@@ -320,7 +320,7 @@ def test_derivatives_records_rich_manifest_content_per_page(fake_fs, fake_pdf_re
 
 def test_derivatives_writes_pages_array_on_aggregate_manifest(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
-    pd.derivatives(ARK, opts={"widths": WIDTHS, "app": "digital-dev"})
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
 
     agg_manifest_call = next(
         c for c in fake_derivative
@@ -348,7 +348,7 @@ def test_derivatives_decides_orientation_independently_per_page(fake_fs, fake_pd
         }
 
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", selective_compare)
-    result = pd.derivatives(ARK, opts={"widths": WIDTHS, "app": "digital-dev"})
+    result = pd.derivatives(ARK, opts={"widths": WIDTHS})
 
     assert len(calls) == 2
     orientation = result["pdfs"]["document.pdf"]["orientation"]
@@ -358,7 +358,7 @@ def test_derivatives_decides_orientation_independently_per_page(fake_fs, fake_pd
 
 def test_derivatives_associated_media_covers_every_page_with_position(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
-    pd.derivatives(ARK, opts={"widths": WIDTHS, "app": "digital-dev"})
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
 
     sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
     doc = json.loads(sidecar_write["data"])
@@ -372,9 +372,9 @@ def test_derivatives_multi_pdf_item_nests_by_filename(fake_fs, fake_pdf_render, 
     use_multi_item(monkeypatch)
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
 
-    result = pd.derivatives(ARK, opts={"widths": WIDTHS, "app": "digital-dev"})
+    result = pd.derivatives(ARK, opts={"widths": WIDTHS})
 
     assert set(result["pdfs"].keys()) == {"doc-a.pdf", "doc-b.pdf"}
     assert result["pdfs"]["doc-a.pdf"]["derivatives"]["pages"]["1"]["dir"] == (
-        "cask:/gold/digital-dev/c/box-1/folder-3/public-frontend-derivatives/doc-a.pdf/images/1"
+        "cask:/silver/g/c/latest/box-1/folder-3/public-frontend-derivatives/doc-a.pdf/images/1"
     )

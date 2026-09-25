@@ -194,13 +194,6 @@ REPORTING_PG_USER_ENV = "DIGTK_REPORTING_PG_USER"
 REPORTING_PG_PASSWORD_ENV = "DIGTK_REPORTING_PG_PASSWORD"
 REPORTING_JOB_ID_ENV = "DIGTK_REPORTING_JOB_ID"
 
-# Gold app target for digital_website derivative/metadata writes — mirrors
-# dagster/lib/configs.py's GOLD_APPS Literal (["arda", "digital-dev",
-# "digital-prod"]); duplicated here rather than imported since digtk has no
-# dependency on the separate dagster package (dagster shells out to digtk, not
-# the reverse) — keep the two lists in sync by hand.
-GOLD_APP_ENV = "DIGTK_GOLD_APP"
-
 # argonath's own app-level Postgres schema (collection registry, etc.) — a
 # distinct database/credentials from Dagster's own run/event-log storage (see
 # dagster/lib/utils.py's `conn`, configured via dagster/dagster.yaml's
@@ -296,7 +289,6 @@ SETTINGS = [
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_angle_threshold", "env": OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "gcs.bucket", "env": GCS_BUCKET_ENV, "cast": str, "secret": False},
-    {"dotpath": "gold.app", "env": GOLD_APP_ENV, "cast": str, "secret": False},
     {"dotpath": "postgres.host", "env": POSTGRES_HOST_ENV, "cast": str, "secret": False},
     {"dotpath": "postgres.port", "env": POSTGRES_PORT_ENV, "cast": int, "secret": False},
     {"dotpath": "postgres.database", "env": POSTGRES_DATABASE_ENV, "cast": str, "secret": False},
@@ -594,13 +586,6 @@ CONFIG = {
         # digtk.lib.gcs_sync's module docstring.
         "bucket": _env(GCS_BUCKET_ENV, "dams-client-media-argonath"),
     },
-    "gold": {
-        # Local-dev-friendly default ("digital-dev" — see dagster/lib/configs.py's
-        # GOLD_APPS) — a production Dagster run should set this explicitly rather
-        # than rely on it (see dagster/lib/configs.py's DerivativesConfig.app,
-        # which has no default of its own for exactly this reason).
-        "app": _env(GOLD_APP_ENV, "digital-dev"),
-    },
     "postgres": {
         # argonath's own app-level schema (collection registry, etc.) — the shared
         # Postgres/pgvector instance project-anduin provisions, not Dagster's own
@@ -793,12 +778,6 @@ SearchEmbedModelOption = Annotated[str | None, typer.Option(
 GcsBucketOption = Annotated[str, typer.Option(
     "--bucket", envvar=GCS_BUCKET_ENV,
     help=f"Target GCS bucket for the derivative sync. Env: {GCS_BUCKET_ENV}.",
-)]
-
-GoldAppOption = Annotated[str, typer.Option(
-    "--app", envvar=GOLD_APP_ENV,
-    help=f"Target gold app ('arda', 'digital-dev', or 'digital-prod' — see "
-         f"dagster/lib/configs.py's GOLD_APPS). Env: {GOLD_APP_ENV}.",
 )]
 
 # Shared by every command digtk.lib.reporting.track() instruments. No CONFIG

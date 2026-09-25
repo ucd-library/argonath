@@ -20,7 +20,6 @@ import typer
 from digtk.lib import utils
 from digtk.lib.config import (
     CONFIG,
-    GoldAppOption,
     ImageConvertFormatOption,
     ImageDeskewThresholdOption,
     ImageDpiOption,
@@ -52,12 +51,11 @@ def thumbnail(
     page: PageOption = 0,
     widths: ImageThumbnailWidthsOption = CONFIG["image"]["thumbnail_widths"],
     quality: ImageThumbnailQualityOption = CONFIG["image"]["thumbnail_quality"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Generate thumbnail JPEGs at each requested width, for one page."""
     try:
         utils.log(f"Generating thumbnails for {ark} page {page} at widths {widths}")
-        utils.result(pdf.thumbnail(ark, opts={"page": page, "widths": widths, "quality": quality, "app": app}))
+        utils.result(pdf.thumbnail(ark, opts={"page": page, "widths": widths, "quality": quality}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -67,12 +65,11 @@ def convert(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
     page: PageOption = 0,
     format: ImageConvertFormatOption = CONFIG["image"]["convert_format"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Convert one page's rasterized image to the specified format."""
     try:
         utils.log(f"Converting {ark} page {page} to {format}")
-        utils.result(pdf.convert(ark, opts={"page": page, "format": format, "app": app}))
+        utils.result(pdf.convert(ark, opts={"page": page, "format": format}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -83,12 +80,11 @@ def deskew(
     page: PageOption = 0,
     threshold: ImageDeskewThresholdOption = CONFIG["image"]["deskew_threshold"],
     quality: ImageThumbnailQualityOption = CONFIG["image"]["thumbnail_quality"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Correct skew in one rasterized page."""
     try:
         utils.log(f"Deskewing {ark} page {page} (threshold {threshold}%)")
-        utils.result(pdf.deskew(ark, opts={"page": page, "threshold": threshold, "quality": quality, "app": app}))
+        utils.result(pdf.deskew(ark, opts={"page": page, "threshold": threshold, "quality": quality}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -115,7 +111,6 @@ def derivatives(
     widths: ImageThumbnailWidthsOption = CONFIG["image"]["thumbnail_widths"],
     deskew_threshold: ImageDeskewThresholdOption = CONFIG["image"]["deskew_threshold"],
     fuzz_threshold: ImageFuzzThresholdOption = CONFIG["image"]["fuzz_threshold"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Generate the full derivative set for every page of every source PDF, auto-detecting
     scan orientation via OCR independently per page.
@@ -130,7 +125,6 @@ def derivatives(
             "widths": widths,
             "threshold": deskew_threshold,
             "fuzz": fuzz_threshold,
-            "app": app,
         })
         for stem, doc in result["pdfs"].items():
             for page_tag, orientation in doc["orientation"].items():

@@ -20,7 +20,6 @@ import typer
 from digtk.lib import reporting, utils
 from digtk.lib.config import (
     CONFIG,
-    GoldAppOption,
     ImageConvertFormatOption,
     ImageDeskewThresholdOption,
     ImageDpiOption,
@@ -42,12 +41,11 @@ def thumbnail(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
     widths: ImageThumbnailWidthsOption = CONFIG["image"]["thumbnail_widths"],
     quality: ImageThumbnailQualityOption = CONFIG["image"]["thumbnail_quality"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Generate thumbnail JPEGs at each requested width."""
     try:
         utils.log(f"Generating thumbnails for {ark} at widths {widths}")
-        utils.result(image.thumbnails(ark, opts={"widths": widths, "quality": quality, "app": app}))
+        utils.result(image.thumbnails(ark, opts={"widths": widths, "quality": quality}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -56,12 +54,11 @@ def thumbnail(
 def convert(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
     format: ImageConvertFormatOption = CONFIG["image"]["convert_format"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Convert source binary to the specified format."""
     try:
         utils.log(f"Converting {ark} to {format}")
-        utils.result(image.convert(ark, opts={"format": format, "app": app}))
+        utils.result(image.convert(ark, opts={"format": format}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -71,12 +68,11 @@ def deskew(
     ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
     threshold: ImageDeskewThresholdOption = CONFIG["image"]["deskew_threshold"],
     quality: ImageThumbnailQualityOption = CONFIG["image"]["thumbnail_quality"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
 ):
     """Correct skew in a scanned image."""
     try:
         utils.log(f"Deskewing {ark} (threshold {threshold}%)")
-        utils.result(image.deskew(ark, opts={"threshold": threshold, "quality": quality, "app": app}))
+        utils.result(image.deskew(ark, opts={"threshold": threshold, "quality": quality}))
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -102,7 +98,6 @@ def derivatives(
     widths: ImageThumbnailWidthsOption = CONFIG["image"]["thumbnail_widths"],
     deskew_threshold: ImageDeskewThresholdOption = CONFIG["image"]["deskew_threshold"],
     fuzz_threshold: ImageFuzzThresholdOption = CONFIG["image"]["fuzz_threshold"],
-    app: GoldAppOption = CONFIG["gold"]["app"],
     reporting_job_id: ReportingJobIdOption = None,
     reporting_collection: ReportingCollectionOption = None,
 ):
@@ -119,13 +114,12 @@ def derivatives(
         utils.log(f"Generating derivatives for {ark} at widths {widths}")
         with reporting.track(
             reporting_job_id, stage="derivatives", item_id=ark, collection=reporting_collection,
-            options={"widths": widths, "deskew_threshold": deskew_threshold, "fuzz_threshold": fuzz_threshold, "app": app},
+            options={"widths": widths, "deskew_threshold": deskew_threshold, "fuzz_threshold": fuzz_threshold},
         ):
             result = image.generate(ark, opts={
                 "widths": widths,
                 "threshold": deskew_threshold,
                 "fuzz": fuzz_threshold,
-                "app": app,
             })
         for stem, orientation in result["orientation"].items():
             utils.log(f"  {stem}: {'deskewed' if orientation['deskew'] else 'original'}")
