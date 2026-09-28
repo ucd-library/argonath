@@ -54,9 +54,7 @@ def tesseract(
     silver/.../ocr/ocr.hocr + transcript.txt (+
     ocr-result.json with Tesseract's confidence) per image, or the same per
     PDF page, with CaskFS lineage to the images read. This is the command
-    both ocr_job (per-item Dagster partition) and the collection-level
-    fan-out job (dagster/lib/pipeline_fanout.py) call — the latter passing
-    its own run id as --reporting-job-id.
+    ocr_job (per-item Dagster partition) calls.
     """
     try:
         utils.log(f"Running OCR for {ark}")
