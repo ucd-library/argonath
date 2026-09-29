@@ -9,9 +9,9 @@ Submodule layout (all files live alongside this one in dagster/):
   lib/sensors.py         — All @dg.sensor definitions
   lib/schedules.py       — All dg.ScheduleDefinition instances
   lib/pipeline_fanout.py — process_collection_job, the op-based collection-
-                            level fan-out alternative to derivatives_job/
-                            ocr_job's per-item partitions (see its own
-                            docstring)
+                            level fan-out alternative to derivatives_job's
+                            per-item partitions (derivatives only; see its
+                            own docstring)
 
 Note: Dagster inserts this file's parent directory into sys.path when loading
 via python_file in workspace.yaml, so sibling-module imports work without

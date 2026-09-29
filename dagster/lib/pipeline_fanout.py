@@ -1,6 +1,6 @@
 """
-Collection -> item fan-out pipeline for real pipeline work (image
-derivatives, then OCR), using the op-based DynamicOut pattern demonstrated in
+Collection -> item fan-out pipeline for real pipeline work (per-format
+showcase derivatives), using the op-based DynamicOut pattern demonstrated in
 lib/demo_fanout.py: one partition per COLLECTION (lib.configs.collections_partitions
 -- the same dynamic partition set reconcile_collection_items registers into),
 fanning out to every item inside that single run via .map(), instead of
@@ -15,8 +15,8 @@ progress tracked instead via AssetMaterialization events (see _emit() below)
 and digtk.lib.reporting rows (see each op's exec() call, which passes this
 run's own id as --reporting-job-id) -- not via Dagster partition status. Which
 design a given phase should use is a per-phase choice, not an all-or-nothing
-migration; this module only covers derivatives + OCR, matching what was
-actually asked for.
+migration; this module only covers derivatives (the `digtk showcase`
+commands the webapp relies on). OCR runs separately via lib.jobs.ocr_job.
 
 Each per-item op shells out to a digtk command via lib.utils.exec(), the same
 bridge lib/assets.py's per-item assets use.
@@ -34,7 +34,7 @@ from dagster import (
 )
 from dagster_celery import celery_executor
 
-from lib.configs import collections_partitions, DerivativesConfig, OcrConfig
+from lib.configs import collections_partitions, DerivativesConfig
 from lib.utils import exec, load_celery_run_config
 
 
@@ -93,7 +93,7 @@ def _emit(context, stage, ark, result, status="success", **extra):
     the digtk command itself; this is a Dagster-UI-visible complement to it.
 
     :param context: Dagster op execution context.
-    :param str stage: Pipeline stage name ("derivatives", "ocr").
+    :param str stage: Pipeline stage name (e.g. "derivatives").
     :param str ark: Item ARK.
     :param result: digtk's parsed JSON result, or None on failure.
     :param str status: "success" or "failed".
@@ -135,10 +135,7 @@ def process_derivatives(context: OpExecutionContext, config: DerivativesConfig, 
     first asks `digtk showcase formats` which of image/pdf/video/audio are
     present, then runs each applicable `digtk showcase <format> derivatives`
     command in turn (see _DERIVATIVE_FORMAT_ORDER), instead of assuming every
-    item is image-only the way this op used to. Downstream steps like
-    process_ocr need every applicable format's derivatives already published
-    (e.g. a mixed item's PDF-side OCR-prep manifest), so all of them must
-    finish here first.
+    item is image-only the way this op used to.
 
     Shares lib.configs.DerivativesConfig with lib.assets.generate_derivatives
     rather than a separate config class, so a config change (a new width, a
@@ -148,7 +145,7 @@ def process_derivatives(context: OpExecutionContext, config: DerivativesConfig, 
     :param context: Dagster op execution context; partitioned by collection.
     :param config: DerivativesConfig with thumbnail widths.
     :param str ark: Item ARK (this op's mapping key).
-    :returns: The same ark, threaded to process_ocr.
+    :returns: The same ark, for any downstream op mapped onto this one.
     """
     collection_key = context.partition_key
     try:
@@ -165,40 +162,6 @@ def process_derivatives(context: OpExecutionContext, config: DerivativesConfig, 
         return ark
     except Exception as e:
         _emit(context, "derivatives", ark, None, status="failed", error=str(e))
-        raise
-
-
-@op(ins={"ark": In(str)}, out=Out(str))
-def process_ocr(context: OpExecutionContext, config: OcrConfig, ark: str) -> str:
-    """Run OCR (Tesseract + Qwen vision) for one fanned-out item.
-
-    Same command lib.assets.run_ocr calls (`digtk ocr tesseract`), reading
-    back the derivative process_derivatives just published. Shares
-    lib.configs.OcrConfig with run_ocr for the same reason process_derivatives
-    shares DerivativesConfig — see its docstring.
-
-    :param context: Dagster op execution context; partitioned by collection.
-    :param config: OcrConfig with lang, psm, oem, vision.
-    :param str ark: Item ARK (this op's mapping key).
-    :returns: The same ark.
-    """
-    collection_key = context.partition_key
-    cmd = [
-        "digtk", "ocr", "tesseract", ark,
-        "--lang", config.lang,
-        "--psm", str(config.psm),
-        "--oem", str(config.oem),
-        "--reporting-job-id", context.run_id,
-        "--reporting-collection", collection_key,
-    ]
-    if not config.vision:
-        cmd.append("--no-vision")
-    try:
-        result = exec(cmd)
-        _emit(context, "ocr", ark, result)
-        return ark
-    except Exception as e:
-        _emit(context, "ocr", ark, None, status="failed", error=str(e))
         raise
 
 
@@ -221,11 +184,11 @@ def process_ocr(context: OpExecutionContext, config: OcrConfig, ark: str) -> str
     config=load_celery_run_config(),
 )
 def process_collection_job():
-    """Collection-partitioned fan-out: generate derivatives, then run OCR,
-    for every item in the partition's collection -- one Dagster run per
-    collection, each mapped item/stage its own celery task. See this module's
-    docstring for how this differs from lib.jobs.derivatives_job/ocr_job (the
-    MultiPartitionsDefinition, per-item-partition design covering the same
-    two phases today).
+    """Collection-partitioned fan-out: generate derivatives for every item in
+    the partition's collection -- one Dagster run per collection, each mapped
+    item its own celery task. See this module's docstring for how this differs
+    from lib.jobs.derivatives_job (the MultiPartitionsDefinition,
+    per-item-partition design covering the same phase). OCR is not part of
+    this job; run lib.jobs.ocr_job for that.
     """
-    fan_out_items().map(process_derivatives).map(process_ocr)
+    fan_out_items().map(process_derivatives)
