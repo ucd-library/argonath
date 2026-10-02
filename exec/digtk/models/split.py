@@ -3,19 +3,22 @@ Spread-splitting — detect the binding gutter in a scanned two-page spread,
 let a human verify/correct the detection, then cut confirmed spreads into
 separate left/right page images.
 
-Per-item, like every other derivative in this codebase: reads bronze image
-binaries via digtk.lib.items.resolve() and publishes every output
-(gutters.json, review strips, contact sheets, cut pages) as silver
-derivatives of that same item — not a promotion into new bronze items. A cut
+Per-item, like every other derivative in this codebase: reads the item's image
+binaries via digtk.lib.items.resolve_target() — a bronze item by ARK, or a
+workspace item staged before it has one (see digtk.models.workspace) — and
+publishes every output (gutters.json, review strips, contact sheets, cut pages)
+as derivatives of that same item (silver or workspace respectively) — not a
+promotion into new bronze items. A cut
 page is a display-oriented derivative of the original (uncut) bronze scan,
 the same way tag_pdf's tagged PDF is a derivative of its source PDF rather
 than a replacement for it.
 
 Ported from the digitization toolkit's split.py (originally a pre-ingest,
 whole-directory tool), adapted in three ways:
-- Operates per-item (ItemLocation) against bronze/silver instead of a raw
-  src_dir/out_dir pair — this item's own silver location replaces local
-  directories throughout.
+- Operates per-item (ItemLocation) instead of a raw src_dir/out_dir pair —
+  this item's own output location replaces local directories throughout. A
+  local folder is still usable: staged into workspace first, it's the old
+  src_dir, and its workspace derivatives/ directory is the old out_dir.
 - Cropping and the review-strip/contact-sheet visualization use
   digtk.lib.image_magick (this codebase's existing raster pipeline) instead
   of Pillow, which isn't a dependency here.
@@ -23,7 +26,7 @@ whole-directory tool), adapted in three ways:
   collection's — typically a handful of entries, sometimes just one.
 
 Two-phase, deliberately human-in-the-loop workflow:
-  1. detect(ark) — for every bronze image binary of this item not already in
+  1. detect(target) — for every image binary of this item not already in
      gutters.json, runs the vision gutter-detection call, publishes a review
      strip (gutter line, or a border for non-spreads), and rebuilds contact
      sheets tiling every review strip seen so far for this item. Never
@@ -33,7 +36,7 @@ Two-phase, deliberately human-in-the-loop workflow:
   2. Someone pulls this item's split-spreads/review-sheets/ + gutters.json
      via existing CaskFS access, reviews the contact sheet(s), hand-edits
      gutters.json, and pushes the corrected file back. No code runs this step.
-  3. apply(ark) — reads the (now human-verified) gutters.json back and cuts
+  3. apply(target) — reads the (now human-verified) gutters.json back and cuts
      each confirmed spread into left/right pages.
 
 Two caveats inherited from the reference implementation, worth knowing before
@@ -53,8 +56,8 @@ import tempfile
 from digtk.lib import ai, derivative, fs, image_magick, items
 from digtk.lib.config import CONFIG
 from digtk.lib.schema import ARGONATH_NS
+from digtk.models import prep
 from digtk.models.alt_utils import parse_model_json
-from digtk.models.digital_website import pipeline
 
 _GUTTER_PROMPT = (
     "This is a scan of an open photo album or book: a two-page spread. Find "
@@ -82,18 +85,6 @@ _SHEET_BACKGROUND = "#181818"
 GUTTERS_LINK_RELATION = f"{ARGONATH_NS}spreadGuttersOf"
 REVIEW_LINK_RELATION = f"{ARGONATH_NS}spreadReviewOf"
 SPLIT_PAGE_LINK_RELATION = f"{ARGONATH_NS}spreadPageOf"
-
-
-def _silver_rel_path(item, *parts):
-    """Silver rel_path (relative to the collection/time root) under this
-    item's own location — see digtk.models.ocr/accessibility's identical helper.
-
-    :param ItemLocation item: Resolved item location.
-    :param str parts: Path segments to join after the item's own item_path.
-    :rtype: str
-    """
-    subdir = "/".join(parts)
-    return f"{item.item_path}/{subdir}" if item.item_path else subdir
 
 
 def _stem(cask_path):
@@ -210,33 +201,35 @@ def _montage(local_paths, dest_path):
             image_magick.run(["convert", *rows, "-background", _SHEET_BACKGROUND, "-append", dest_path])
 
 
-def detect(ark, opts={}):
+def detect(target, opts={}):
     """Detect the gutter in every not-yet-detected image binary of this item.
 
-    Requires the ARK to already resolve to a bronze item — reads its image
-    binaries directly rather than a staged workspace copy. Resumable: an
+    Reads the item's image binaries directly (bronze, or workspace source/).
+    Resumable: an
     interrupted run loses at most the one file it was mid-detecting on the
     next run, and re-running never touches an entry already present in
     gutters.json — including one a human has since edited.
 
-    :param str ark: Item ARK identifier.
+    :param str|ItemLocation target: Item ARK, 'cask:/workspace/...' item path, or
+        a resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'max_px' (int, default CONFIG["split"]["max_px"] —
         detection render width), 'model' (forwarded to the vision call).
-    :returns: {"status": "success", "ark": str, "detected": int (newly
-        processed this run), "total": int (entries in gutters.json now)}.
+    :returns: {"status": "success", "ark": str|None, "item": str (see
+        items.item_id()), "detected": int (newly processed this run),
+        "total": int (entries in gutters.json now)}.
     :rtype: dict
-    :raises LookupError: If the ARK doesn't resolve to a bronze item.
+    :raises LookupError: If the target doesn't resolve to an item.
     :raises ValueError: If the item has no image binaries.
     """
-    item = items.resolve(ark)
-    image_paths, _ = pipeline.partition_by_format(item.bronze_binary_paths)
+    item = items.resolve_target(target)
+    image_paths, _ = prep.partition_by_format(item.bronze_binary_paths)
     if not image_paths:
-        raise ValueError(f"no image binaries found among this item's bronze sources: {item.bronze_binary_paths}")
+        raise ValueError(f"no image binaries found among this item's sources: {item.bronze_binary_paths}")
 
     max_px = opts.get("max_px", CONFIG["split"]["max_px"])
-    write_opts = {"group": item.group, "time": item.time, "replace": True}
+    write_opts = {**items.dest_opts(item), "replace": True}
 
-    gutters_path = f"{pipeline.derivative_dir(item, 'split-spreads')}/gutters.json"
+    gutters_path = f"{items.dest_dir(item, 'split-spreads')}/gutters.json"
     try:
         results = json.loads(fs.read(gutters_path))
     except FileNotFoundError:
@@ -272,21 +265,24 @@ def detect(ark, opts={}):
 
         new_review_bytes[stem] = review_bytes
         derivative.write(
-            type="silver", collection=item.collection,
-            rel_path=_silver_rel_path(item, "split-spreads", "review", f"{stem}.jpg"),
+            type=item.dest_type, collection=item.collection,
+            rel_path=items.dest_rel(item, "split-spreads", "review", f"{stem}.jpg"),
             data=review_bytes, source_files=[bronze_path],
             opts={**write_opts, "link_relation": REVIEW_LINK_RELATION},
         )
 
     derivative.write(
-        type="silver", collection=item.collection,
-        rel_path=_silver_rel_path(item, "split-spreads", "gutters.json"),
+        type=item.dest_type, collection=item.collection,
+        rel_path=items.dest_rel(item, "split-spreads", "gutters.json"),
         data=json.dumps(results, indent=1).encode(), source_files=image_paths,
         opts={**write_opts, "link_relation": GUTTERS_LINK_RELATION},
     )
     _build_contact_sheets(item, results, new_review_bytes, write_opts)
 
-    return {"status": "success", "ark": ark, "detected": detected, "total": len(results)}
+    return {
+        "status": "success", "ark": item.ark, "item": items.item_id(item),
+        "detected": detected, "total": len(results),
+    }
 
 
 def _build_contact_sheets(item, results, new_review_bytes, write_opts):
@@ -301,14 +297,14 @@ def _build_contact_sheets(item, results, new_review_bytes, write_opts):
     :param ItemLocation item: Resolved item location.
     :param dict results: The full (just-written) gutters.json content.
     :param dict new_review_bytes: {stem: bytes} for strips built this run.
-    :param dict write_opts: {"group": item.group, "time": item.time,
-        "replace": True} — forwarded to every derivative.write() call.
+    :param dict write_opts: items.dest_opts(item) plus "replace": True —
+        forwarded to every derivative.write() call.
     """
     stems = sorted(results)
     if not stems:
         return
 
-    review_dir = pipeline.derivative_dir(item, "split-spreads/review")
+    review_dir = items.dest_dir(item, "split-spreads/review")
     with tempfile.TemporaryDirectory() as tmp_dir:
         entries = []
         for stem in stems:
@@ -327,37 +323,39 @@ def _build_contact_sheets(item, results, new_review_bytes, write_opts):
             with open(sheet_local, "rb") as f:
                 sheet_bytes = f.read()
             derivative.write(
-                type="silver", collection=item.collection,
-                rel_path=_silver_rel_path(item, "split-spreads", "review-sheets", f"sheet-{sheet_num:02d}.jpg"),
+                type=item.dest_type, collection=item.collection,
+                rel_path=items.dest_rel(item, "split-spreads", "review-sheets", f"sheet-{sheet_num:02d}.jpg"),
                 data=sheet_bytes, source_files=[cask_path for cask_path, _ in batch],
                 opts={**write_opts, "link_relation": REVIEW_LINK_RELATION},
             )
 
 
-def apply(ark, opts={}):
+def apply(target, opts={}):
     """Cut every confirmed spread per this item's (human-reviewed) gutters.json.
 
     Requires detect() to have already run (and, ideally, for a human to have
     reviewed/corrected its output) — reads gutters.json back rather than
     re-detecting anything.
 
-    :param str ark: Item ARK identifier.
+    :param str|ItemLocation target: Item ARK, 'cask:/workspace/...' item path, or
+        a resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: Unused; present for signature symmetry with detect().
-    :returns: {"status": "success", "ark": str, "split": int (spreads cut
+    :returns: {"status": "success", "ark": str|None, "item": str (see
+        items.item_id()), "split": int (spreads cut
         into L/R pages), "singles": int (non-spreads published unchanged),
-        "skipped": list[str] (bronze filenames present on the item but absent
+        "skipped": list[str] (source filenames present on the item but absent
         from gutters.json — rerun detect for these)}.
     :rtype: dict
-    :raises LookupError: If the ARK doesn't resolve to a bronze item.
+    :raises LookupError: If the target doesn't resolve to an item.
     :raises FileNotFoundError: If this item has no gutters.json at all
         (detect() hasn't been run yet).
     """
-    item = items.resolve(ark)
-    gutters_path = f"{pipeline.derivative_dir(item, 'split-spreads')}/gutters.json"
+    item = items.resolve_target(target)
+    gutters_path = f"{items.dest_dir(item, 'split-spreads')}/gutters.json"
     results = json.loads(fs.read(gutters_path))
 
-    write_opts = {"group": item.group, "time": item.time, "replace": True}
-    image_paths, _ = pipeline.partition_by_format(item.bronze_binary_paths)
+    write_opts = {**items.dest_opts(item), "replace": True}
+    image_paths, _ = prep.partition_by_format(item.bronze_binary_paths)
     split_count = singles_count = 0
     skipped = []
 
@@ -373,8 +371,8 @@ def apply(ark, opts={}):
 
         if not info["is_spread"]:
             derivative.write(
-                type="silver", collection=item.collection,
-                rel_path=_silver_rel_path(item, "split-spreads", "pages", filename),
+                type=item.dest_type, collection=item.collection,
+                rel_path=items.dest_rel(item, "split-spreads", "pages", filename),
                 data=bronze_bytes, source_files=[bronze_path],
                 opts={**write_opts, "link_relation": SPLIT_PAGE_LINK_RELATION},
             )
@@ -398,14 +396,14 @@ def apply(ark, opts={}):
                 with open(local_side, "rb") as f:
                     side_bytes = f.read()
                 derivative.write(
-                    type="silver", collection=item.collection,
-                    rel_path=_silver_rel_path(item, "split-spreads", "pages", side_name),
+                    type=item.dest_type, collection=item.collection,
+                    rel_path=items.dest_rel(item, "split-spreads", "pages", side_name),
                     data=side_bytes, source_files=[bronze_path, gutters_path],
                     opts={**write_opts, "link_relation": SPLIT_PAGE_LINK_RELATION},
                 )
         split_count += 1
 
     return {
-        "status": "success", "ark": ark,
+        "status": "success", "ark": item.ark, "item": items.item_id(item),
         "split": split_count, "singles": singles_count, "skipped": skipped,
     }

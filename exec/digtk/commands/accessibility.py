@@ -5,22 +5,33 @@ Subcommands:
   alt-text  — generate AI alt text for an item's image(s) via Samwise vision
   tag-pdf   — assemble a searchable, PDF/UA-1-tagged PDF for an item's PDF binary(ies)
 """
+import subprocess
 from typing import Annotated
 
 import typer
 
 from digtk.lib import utils
-from digtk.lib.config import CONFIG, AltMaxCharsOption, AltWantDescriptionOption
-from digtk.models import accessibility
+from digtk.lib.config import (
+    CONFIG,
+    AltMaxCharsOption,
+    AltWantDescriptionOption,
+    ReportingCollectionOption,
+    ReportingJobIdOption,
+    TargetArgument,
+    WorkspaceCollectionOption,
+    WorkspaceUserOption,
+)
+from digtk.models import accessibility, workspace
 
 app = typer.Typer(help="Accessibility metadata commands.", no_args_is_help=True)
 
-_ERRORS = (LookupError, OSError, RuntimeError, ValueError)
+# CalledProcessError: `cask cp` failing while staging a local folder target.
+_ERRORS = (LookupError, OSError, RuntimeError, ValueError, subprocess.CalledProcessError)
 
 
 @app.command(name="alt-text")
 def alt_text(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     collection_context: Annotated[str, typer.Option(
         help="Collection-specific context for the prompt (e.g. what this collection is).",
     )] = "",
@@ -32,26 +43,35 @@ def alt_text(
     )] = True,
     want_description: AltWantDescriptionOption = CONFIG["alt"]["want_description"],
     max_alt_chars: AltMaxCharsOption = CONFIG["alt"]["max_chars"],
+    collection: WorkspaceCollectionOption = None,
+    user: WorkspaceUserOption = None,
+    reporting_job_id: ReportingJobIdOption = None,
+    reporting_collection: ReportingCollectionOption = None,
 ):
     """Generate ADA/WCAG alt text for every image binary, and every page of
     every PDF binary, in an item.
 
-    Requires `digtk showcase image derivatives` (image binaries) and/or
-    `digtk showcase pdf derivatives` (PDF binaries) to have already run for
-    this item — reads back their published "large" display JPEGs rather than
-    regenerating/rasterizing anything itself. Writes
-    silver/.../accessibility/*-alt-text.json per image, or
-    silver/.../accessibility/<pdf-filename>/<page>/alt-text.json per PDF
-    page, with CaskFS lineage to the display image and the bronze sidecar.
+    Builds its own resized image per image/PDF page from the source binary
+    — no `digtk showcase` derivatives needed. Writes
+    .../accessibility/*-alt-text.json per image, or
+    .../accessibility/<pdf-filename>/<page>/alt-text.json per PDF page, with
+    CaskFS lineage to the source binary (and the bronze sidecar, for an ARK)
+    — in silver for an ARK, or the workspace collection's derivatives/ for a
+    workspace path or local folder.
     """
     try:
-        utils.log(f"Generating alt text for {ark}")
-        utils.result(accessibility.generate_alt_text(ark, opts={
-            "collection_context": collection_context,
-            "name_people": name_people,
-            "transcribe_text": transcribe_text,
-            "want_description": want_description,
-            "max_alt_chars": max_alt_chars,
+        utils.log(f"Generating alt text for {target}")
+        utils.result(workspace.apply_to_targets(target, accessibility.generate_alt_text, opts={
+            "stage": "alt-text",
+            "fn_opts": {
+                "collection_context": collection_context,
+                "name_people": name_people,
+                "transcribe_text": transcribe_text,
+                "want_description": want_description,
+                "max_alt_chars": max_alt_chars,
+            },
+            "collection": collection, "username": user,
+            "reporting_job_id": reporting_job_id, "reporting_collection": reporting_collection,
         }))
     except _ERRORS as e:
         utils.error(str(e))
@@ -59,7 +79,7 @@ def alt_text(
 
 @app.command(name="tag-pdf")
 def tag_pdf(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     lang: Annotated[str, typer.Option(help="Document language for tagging (BCP-47, e.g. en-US).")] = "en-US",
     strict: Annotated[bool, typer.Option(
         help="Demote lines the layout doesn't account for (scanner junk) to "
@@ -83,29 +103,38 @@ def tag_pdf(
              "the searchable-PDF text layer, instead of baking OCR noise "
              "(e.g. over handwriting/marginalia) into it. Default: no filtering.",
     )] = CONFIG["accessibility"]["min_word_confidence"],
+    collection: WorkspaceCollectionOption = None,
+    user: WorkspaceUserOption = None,
+    reporting_job_id: ReportingJobIdOption = None,
+    reporting_collection: ReportingCollectionOption = None,
 ):
     """Assemble a searchable, PDF/UA-1-tagged PDF for every PDF binary in an item.
 
-    Requires `digtk showcase pdf derivatives` to have already run for this
-    item — reads back its published per-page OCR-prep images rather than
-    rasterizing anything itself, then re-runs Tesseract against them for word
-    geometry (--min-conf drops words below that confidence from the
+    Rasterizes each page and builds its own OCR-prep image from the source
+    PDF — no `digtk showcase` derivatives needed — then runs Tesseract for
+    word geometry (--min-conf drops words below that confidence from the
     resulting searchable text layer). Alt text (from `digtk accessibility
     alt-text`) and, with --tables, a vision-generated layout are read back
     and used if present, but neither is required. Writes
-    silver/.../accessibility/<pdf-filename>/tagged.pdf, with CaskFS lineage
-    to the bronze PDF, the OCR-prep images used, and any alt-text/layout
-    derivatives read.
+    .../accessibility/<pdf-filename>/tagged.pdf, with CaskFS lineage to the
+    source PDF and any alt-text/layout derivatives read — in silver for an
+    ARK, or the workspace collection's derivatives/ for a workspace path or
+    local folder.
     """
     try:
-        utils.log(f"Tagging PDF(s) for {ark}")
-        utils.result(accessibility.tag_pdf(ark, opts={
-            "lang": lang,
-            "strict": strict,
-            "lookahead": lookahead,
-            "tables": tables,
-            "validate": validate,
-            "min_conf": min_conf,
+        utils.log(f"Tagging PDF(s) for {target}")
+        utils.result(workspace.apply_to_targets(target, accessibility.tag_pdf, opts={
+            "stage": "tag-pdf",
+            "fn_opts": {
+                "lang": lang,
+                "strict": strict,
+                "lookahead": lookahead,
+                "tables": tables,
+                "validate": validate,
+                "min_conf": min_conf,
+            },
+            "collection": collection, "username": user,
+            "reporting_job_id": reporting_job_id, "reporting_collection": reporting_collection,
         }))
     except _ERRORS as e:
         utils.error(str(e))

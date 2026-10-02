@@ -12,6 +12,10 @@ and exec/digtk/sql/collection_registry.sql, applied via `digtk collection init-p
                                       collection registered via CLI (before its
                                       first successful reconcile run) is
                                       immediately visible as a partition.
+
+Plus workspace_partition_sync_sensor, which keeps the 'workspace' dynamic
+partition in sync with the collections staged under CaskFS's /workspace (see
+digtk.models.workspace) for lib.pipeline_workspace.process_workspace_job.
 """
 import datetime
 
@@ -104,6 +108,35 @@ def collection_partition_sync_sensor(context: dg.SensorEvaluationContext):
 
     return dg.SkipReason(
         f"{len(missing)} partition(s) added, {len(active)} active collection(s) total"
+    )
+
+
+@dg.sensor(minimum_interval_seconds=120)
+def workspace_partition_sync_sensor(context: dg.SensorEvaluationContext):
+    """Keep the 'workspace' dynamic partition in sync with every workspace
+    collection (anything under /workspace/[username]/[collection] with a
+    source/ directory — see `digtk workspace ls`), so a folder staged with
+    `digtk workspace add` shows up as a pickable partition in the launchpad.
+
+    Unlike collection_partition_sync_sensor, this also removes partitions whose
+    workspace collection is gone: workspace is scratch space, so a deleted
+    folder has no run history worth keeping a partition around for.
+
+    :param context: Dagster sensor evaluation context.
+    """
+    result = exec(["digtk", "workspace", "ls"])
+    current = {c["key"] for c in result.get("collections", [])}
+
+    existing = set(context.instance.get_dynamic_partitions("workspace"))
+    missing = sorted(current - existing)
+    stale = sorted(existing - current)
+    if missing:
+        context.instance.add_dynamic_partitions("workspace", missing)
+    for key in stale:
+        context.instance.delete_dynamic_partition("workspace", key)
+
+    return dg.SkipReason(
+        f"{len(missing)} partition(s) added, {len(stale)} removed, {len(current)} workspace collection(s) total"
     )
 
 

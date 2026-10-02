@@ -160,6 +160,11 @@ def test_dest_path_workspace_defaults_username_from_env(monkeypatch):
     assert path == "/workspace/jrmerz/my-collection"
 
 
+def test_dest_path_workspace_subdir_targets_a_directory_inside_the_collection():
+    path = collection.dest_path("workspace", "my-collection", {"username": "jrmerz", "subdir": "/source/"})
+    assert path == "/workspace/jrmerz/my-collection/source"
+
+
 def test_dest_path_workspace_rejects_time():
     with pytest.raises(ValueError, match="time"):
         collection.dest_path("workspace", "my-collection", {"username": "jrmerz", "time": "2026-07-22"})

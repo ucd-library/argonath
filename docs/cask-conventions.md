@@ -9,7 +9,7 @@
 ├── gold/           # Curated, per-app publish-ready view (incl. public-facing derivatives)
 └── workspace/      # Per-user staging (formerly user/)
     └── [username]/
-        ├── [collection-name]/   # Working collections
+        ├── [collection-name]/   # Working collections (see "Workspace Layout")
         ├── uploads/             # Raw ingest staging
         └── workspace/           # Temp working space
 ```
@@ -73,14 +73,20 @@ Mirrors the bronze path exactly (`[group]/[collection]/[time]/[item]/`) but hold
 
 ```
 silver/[group]/[collection]/[time]/[item]/
-├── ocr/
+├── ocr/                        # showcase-only (digtk showcase image|pdf derivatives)
 │   ├── manifest.json
 │   ├── prep.jpg                # OCR-ready image: resized, 300 DPI, fuzz-whitened.
 │   │                           # Named prep-deskew.jpg instead if the derivatives
 │   │                           # pipeline's OCR-driven orientation check (below)
 │   │                           # selected the deskewed candidate.
-│   ├── output.hocr
-│   └── output.txt
+│   ├── ocr.djvu
+│   └── ocr-stats.json
+├── text/                       # digtk ocr tesseract (see "Root-Level Tool Outputs")
+│   ├── ocr.hocr
+│   ├── transcript.txt
+│   └── ocr-result.json
+├── accessibility/              # digtk accessibility alt-text / tag-pdf
+├── split-spreads/              # digtk split-spreads detect / apply
 ├── metadata/
 │   ├── manifest.json
 │   ├── ai-metadata.jsonld.json    # AI-generated draft
@@ -126,12 +132,42 @@ comparison stats that drove it are recorded in each source's own
 `public-frontend-derivatives/images/<filename>/images/manifest.json`'s `params`
 (`deskew_selected`, `stats`) for auditability.
 
-This comparison logic lives in `digtk.lib.ocr_utils` and is deliberately shared,
-not derivatives-specific: the (separate, later) OCR phase's own `digtk ocr
-tesseract` command calls the same underlying Tesseract-invocation primitive
-independently to produce `output.hocr`/`output.txt`, with no dependency on
-anything the derivatives step did. `digtk.models.digital_website.pdf` reuses the exact
-same primitive independently per page (see "PDF Pagination" below).
+This comparison logic lives in `digtk.lib.ocr_utils` (driven by
+`digtk.models.prep.select_orientation()`) and is deliberately shared, not
+derivatives-specific: the root-level `digtk ocr tesseract` and `digtk accessibility
+tag-pdf` commands run the same comparison themselves, in-process, to build their own
+OCR-prep images, with no dependency on anything the derivatives step published.
+`digtk.models.digital_website.pdf` reuses the exact same primitive independently per
+page (see "PDF Pagination" below).
+
+### Root-Level Tool Outputs
+
+`digtk ocr`, `digtk accessibility` and `digtk split-spreads` are not showcase
+commands: they prepare their own inputs from the item's source binaries
+(`digtk.models.prep` — staging, PDF rasterization, orientation, OCR-prep and a resized
+vision-model image, all in a temp dir) and never read `ocr/` or
+`public-frontend-derivatives/`. Their outputs, each with lineage straight back to the
+source binary:
+
+```
+[item]/
+├── text/                          # digtk ocr tesseract
+│   ├── ocr.hocr, transcript.txt, ocr-result.json          # image item
+│   │   ([stem]-ocr.hocr etc. when the item has several images)
+│   └── page-NNN/{ocr.hocr, transcript.txt, ocr-result.json}  # per PDF page
+│       ([pdf-stem]/text/page-NNN/ when the item has other binaries too)
+├── accessibility/
+│   ├── [stem-]alt-text.json                   # alt-text, per image
+│   └── [pdf-filename]/
+│       ├── [page]/alt-text.json, layout.json  # alt-text / tag-pdf --tables, per page
+│       └── tagged.pdf                         # tag-pdf
+└── split-spreads/
+    ├── gutters.json, review/, review-sheets/  # detect
+    └── pages/                                 # apply
+```
+
+For an ARK these land under the item's silver location; for a workspace item, under
+its workspace collection's `derivatives/` (see "Workspace Layout").
 
 ### Multi-Format Items
 
@@ -507,6 +543,29 @@ is held for human review first. `digtk.models.digital_website.pipeline.merge_dc_
 and `update_associated_media()` merge into disjoint sets of top-level keys on the
 same `item.jsonld.json`, so either can run before or after the other without
 clobbering the other's fields.
+
+## Workspace Layout
+
+A workspace collection holds scans staged before they have an ARK or a bronze copy,
+so the root-level tools can run on them (`digtk workspace`, see
+`digtk.models.workspace`):
+
+```
+workspace/[username]/[collection]/
+├── source/                 # staged source binaries, as uploaded (digtk workspace add)
+│   ├── scan-01.tif         # files directly in a directory = one item
+│   └── folder-3/           # each subdirectory holding files = its own item
+│       └── page-01.tif
+└── derivatives/            # every tool output, mirroring source/'s item paths
+    ├── text/, accessibility/, split-spreads/      # for source/'s own item
+    └── folder-3/text/, ...                       # for source/folder-3
+```
+
+No time dimension and no sidecars. Outputs follow "Root-Level Tool Outputs" above.
+Once an item is ingested to bronze under an ARK, `digtk workspace promote <item-dir>
+--ark <ark>` copies its outputs into the ARK's silver location unchanged (no
+OCR/vision re-run), re-pointing lineage at the same-named bronze binaries. Workspace
+collections are what Dagster's `workspace` partitions list (`workspace/[username]/[collection]`).
 
 ## Multi-Part Items
 

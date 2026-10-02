@@ -19,6 +19,26 @@ def make_chat_response(content):
     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
 
+def as_stream(response):
+    """Re-shape a non-streamed chat response the way a streamed call returns it:
+    an iterable of chunks whose delta carries the message's content/reasoning,
+    split in two so joining is exercised."""
+    message = response.choices[0].message
+    chunks = []
+    for field in ("content", "reasoning_content"):
+        text = getattr(message, field, None)
+        if text:
+            mid = len(text) // 2
+            for part in (text[:mid], text[mid:]):
+                chunks.append(SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(**{field: part}))]))
+    return chunks
+
+
+def respond(kwargs, response):
+    """What a client double should return for a create() call with these kwargs."""
+    return as_stream(response) if kwargs.get("stream") else response
+
+
 def make_embed_response(vectors):
     return SimpleNamespace(data=[SimpleNamespace(embedding=v) for v in vectors])
 
@@ -37,7 +57,7 @@ class FakeClient:
 
     def _create_chat(self, **kwargs):
         self.chat_calls.append(kwargs)
-        return self._chat_response
+        return respond(kwargs, self._chat_response)
 
     def _create_embed(self, **kwargs):
         self.embed_calls.append(kwargs)
@@ -218,13 +238,13 @@ def test_chat_completion_retries_and_eventually_succeeds(monkeypatch):
     calls = {"n": 0}
 
     class FlakyClient:
-        chat = SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: _flaky(calls)))
+        chat = SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: _flaky(calls, kw)))
 
-    def _flaky(calls):
+    def _flaky(calls, kw):
         calls["n"] += 1
         if calls["n"] < 3:
             raise ConnectionError("wedged")
-        return make_chat_response("ok")
+        return respond(kw, make_chat_response("ok"))
 
     monkeypatch.setattr(ai, "get_client", lambda opts: FlakyClient())
 
@@ -264,6 +284,143 @@ def test_chat_completion_skips_maintenance_wait_for_full_response(monkeypatch):
     monkeypatch.setattr(ai, "get_client", lambda opts: fake)
 
     ai.chat_completion("hi", {"full_response": True})
+
+
+# --- streaming ---------------------------------------------------------------------
+
+
+def test_chat_completion_streams_by_default_and_joins_chunks(monkeypatch):
+    fake = FakeClient(chat_response=make_chat_response("<think>hmm</think>A long transcript."))
+    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
+
+    assert ai.chat_completion("hi") == "A long transcript."
+    assert fake.chat_calls[0]["stream"] is True
+
+
+def test_chat_completion_streamed_falls_back_to_reasoning_deltas(monkeypatch):
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        content=None, reasoning_content="reasoned answer",
+    ))])
+    monkeypatch.setattr(ai, "get_client", lambda opts: FakeClient(chat_response=response))
+
+    assert ai.chat_completion("hi") == "reasoned answer"
+
+
+def test_chat_completion_stream_setting_off_uses_a_single_request(monkeypatch):
+    monkeypatch.setitem(CONFIG["samwise"], "stream", False)
+    fake = FakeClient(chat_response=make_chat_response("ok"))
+    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
+
+    assert ai.chat_completion("hi") == "ok"
+    assert "stream" not in fake.chat_calls[0]
+
+
+def test_streamed_chunks_with_no_choices_are_ignored(monkeypatch):
+    chunks = [
+        SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="Hello "))]),
+        SimpleNamespace(choices=[]),  # e.g. a trailing usage-only chunk
+        SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="world"))]),
+    ]
+
+    class StreamClient:
+        chat = SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: iter(chunks)))
+
+    monkeypatch.setattr(ai, "get_client", lambda opts: StreamClient())
+
+    assert ai.chat_completion("hi") == "Hello world"
+
+
+class ClockedStream:
+    """A streamed response that advances a fake monotonic clock `step_s` per chunk
+    and records whether it was closed."""
+
+    def __init__(self, clock, step_s, n):
+        self.clock, self.step_s, self.n, self.closed = clock, step_s, n, False
+
+    def __iter__(self):
+        for _ in range(self.n):
+            self.clock["now"] += self.step_s
+            yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="abcd"))])
+
+    def close(self):
+        self.closed = True
+
+
+def test_streamed_call_past_max_call_s_raises_without_retrying(monkeypatch):
+    clock = {"now": 0.0}
+    monkeypatch.setattr(ai.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(ai.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("must not retry")))
+    monkeypatch.setitem(CONFIG["samwise"], "max_call_s", 100.0)
+    streams = []
+
+    def create(**kw):
+        streams.append(ClockedStream(clock, step_s=40.0, n=10))
+        return streams[-1]
+
+    monkeypatch.setattr(ai, "get_client", lambda opts: SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=create))))
+
+    with pytest.raises(ai.CallTooLong, match=r"after 100s \(12 chars received\)"):
+        ai.chat_completion("hi")
+    assert len(streams) == 1
+    assert streams[0].closed is True
+
+
+def test_long_but_steady_stream_completes_and_logs_progress(monkeypatch, capsys):
+    clock = {"now": 0.0}
+    monkeypatch.setattr(ai.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setitem(CONFIG["samwise"], "max_call_s", 900.0)
+    stream = ClockedStream(clock, step_s=20.0, n=20)  # 400s total, well past the old 180s read timeout
+    monkeypatch.setattr(ai, "get_client", lambda opts: SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=lambda **kw: stream))))
+
+    assert ai.chat_completion("hi") == "abcd" * 20
+    assert stream.closed is True
+    err = capsys.readouterr().err
+    assert "digtk: Samwise still responding (40s, 8 chars so far)" in err
+
+
+def test_streamed_call_logs_a_full_timeline(monkeypatch, capsys):
+    clock = {"now": 0.0}
+    monkeypatch.setattr(ai.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setitem(CONFIG["samwise"], "progress_every_s", 10.0)
+    stream = ClockedStream(clock, step_s=6.0, n=5)  # chunks at 6, 12, 18, 24, 30s
+    monkeypatch.setattr(ai, "get_client", lambda opts: SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=lambda **kw: stream))))
+
+    ai.chat_completion("hi")
+
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.startswith("digtk: Samwise")]
+    assert lines == [
+        "digtk: Samwise first response after 6s",
+        "digtk: Samwise still responding (12s, 8 chars so far)",
+        "digtk: Samwise still responding (24s, 16 chars so far)",
+        "digtk: Samwise done in 30s (20 chars)",
+    ]
+
+
+def test_first_response_log_waits_for_actual_text(monkeypatch, capsys):
+    """A buffering proxy shows up as a late 'first response' — empty keep-alive
+    chunks before the text must not count as the first response."""
+    clock = {"now": 0.0}
+    monkeypatch.setattr(ai.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setitem(CONFIG["samwise"], "progress_every_s", 1000.0)
+
+    def chunks():
+        for _ in range(3):
+            clock["now"] += 20.0
+            yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=None))])
+        clock["now"] += 20.0
+        yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="all at once"))])
+
+    monkeypatch.setattr(ai, "get_client", lambda opts: SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=lambda **kw: chunks()))))
+
+    ai.chat_completion("hi")
+
+    err = capsys.readouterr().err
+    assert "digtk: Samwise first response after 80s" in err
+    assert "digtk: Samwise done in 80s (11 chars)" in err
 
 
 # --- _wait_out_maintenance -------------------------------------------------------

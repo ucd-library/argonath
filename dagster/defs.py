@@ -12,6 +12,11 @@ Submodule layout (all files live alongside this one in dagster/):
                             level fan-out alternative to derivatives_job's
                             per-item partitions (derivatives only; see its
                             own docstring)
+  lib/pipeline_workspace.py — process_workspace_job, the same fan-out pattern
+                            over a CaskFS workspace collection (scans staged
+                            before they have an ARK), and promote_workspace_job,
+                            which copies reviewed items into silver (see its
+                            own docstring)
 
 Note: Dagster inserts this file's parent directory into sys.path when loading
 via python_file in workspace.yaml, so sibling-module imports work without
@@ -51,6 +56,7 @@ from lib.jobs import (
 from lib.sensors import (
     preservica_auto_sync_sensor,
     collection_partition_sync_sensor,
+    workspace_partition_sync_sensor,
     derivatives_on_ingest,
     ocr_on_derivatives,
     metadata_on_ocr,
@@ -61,6 +67,7 @@ from lib.schedules import (
     nightly_arda_index,
 )
 from lib.pipeline_fanout import process_collection_job
+from lib.pipeline_workspace import process_workspace_job, promote_workspace_job
 
 defs = dg.Definitions(
     assets=[
@@ -91,10 +98,13 @@ defs = dg.Definitions(
         dams_search_index_job,
         full_pipeline_job,
         process_collection_job,
+        process_workspace_job,
+        promote_workspace_job,
     ],
     sensors=[
         preservica_auto_sync_sensor,
         collection_partition_sync_sensor,
+        workspace_partition_sync_sensor,
         derivatives_on_ingest,
         ocr_on_derivatives,
         metadata_on_ocr,

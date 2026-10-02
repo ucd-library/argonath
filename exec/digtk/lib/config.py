@@ -81,6 +81,12 @@ SAMWISE_EMBED_MODEL_ENV = "DIGTK_SAMWISE_EMBED_MODEL"
 SAMWISE_CONNECT_TIMEOUT_S_ENV = "DIGTK_SAMWISE_CONNECT_TIMEOUT_S"
 SAMWISE_READ_TIMEOUT_S_ENV = "DIGTK_SAMWISE_READ_TIMEOUT_S"
 SAMWISE_RETRIES_ENV = "DIGTK_SAMWISE_RETRIES"
+# Streaming (see digtk.lib.ai.chat_completion()): with it on, read_timeout_s only
+# fires when Samwise stops sending, so a long answer still arriving never times
+# out; max_call_s is the separate overall cap on one call.
+SAMWISE_STREAM_ENV = "DIGTK_SAMWISE_STREAM"
+SAMWISE_MAX_CALL_S_ENV = "DIGTK_SAMWISE_MAX_CALL_S"
+SAMWISE_PROGRESS_EVERY_S_ENV = "DIGTK_SAMWISE_PROGRESS_EVERY_S"
 # HH:MM, both empty disables the pause. Same window shape as digtk's
 # DIGTK_MAINT_START/END — a long-running batch pauses through a nightly
 # maintenance window instead of burning retries against it.
@@ -225,6 +231,9 @@ SETTINGS = [
     {"dotpath": "samwise.connect_timeout_s", "env": SAMWISE_CONNECT_TIMEOUT_S_ENV, "cast": float, "secret": False},
     {"dotpath": "samwise.read_timeout_s", "env": SAMWISE_READ_TIMEOUT_S_ENV, "cast": float, "secret": False},
     {"dotpath": "samwise.retries", "env": SAMWISE_RETRIES_ENV, "cast": int, "secret": False},
+    {"dotpath": "samwise.stream", "env": SAMWISE_STREAM_ENV, "cast": _cast_bool, "secret": False},
+    {"dotpath": "samwise.max_call_s", "env": SAMWISE_MAX_CALL_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "samwise.progress_every_s", "env": SAMWISE_PROGRESS_EVERY_S_ENV, "cast": float, "secret": False},
     {"dotpath": "samwise.maint_start", "env": SAMWISE_MAINT_START_ENV, "cast": str, "secret": False},
     {"dotpath": "samwise.maint_end", "env": SAMWISE_MAINT_END_ENV, "cast": str, "secret": False},
     {"dotpath": "alt.max_chars", "env": ALT_MAX_CHARS_ENV, "cast": int, "secret": False},
@@ -450,6 +459,13 @@ CONFIG = {
         "connect_timeout_s": _env(SAMWISE_CONNECT_TIMEOUT_S_ENV, 15.0, float),
         "read_timeout_s": _env(SAMWISE_READ_TIMEOUT_S_ENV, 180.0, float),
         "retries": _env(SAMWISE_RETRIES_ENV, 6, int),
+        "stream": _env(SAMWISE_STREAM_ENV, True, _cast_bool),
+        # 15 minutes: a dense full-page transcript (~10-15k chars) at the ~30
+        # chars/s Samwise has been producing fits comfortably; a runaway
+        # repetition loop still stops.
+        "max_call_s": _env(SAMWISE_MAX_CALL_S_ENV, 900.0, float),
+        # How often a streamed call logs how much it has received, in seconds.
+        "progress_every_s": _env(SAMWISE_PROGRESS_EVERY_S_ENV, 30.0, float),
         "maint_start": _env(SAMWISE_MAINT_START_ENV, ""),
         "maint_end": _env(SAMWISE_MAINT_END_ENV, ""),
     },
@@ -778,6 +794,27 @@ SearchEmbedModelOption = Annotated[str | None, typer.Option(
 GcsBucketOption = Annotated[str, typer.Option(
     "--bucket", envvar=GCS_BUCKET_ENV,
     help=f"Target GCS bucket for the derivative sync. Env: {GCS_BUCKET_ENV}.",
+)]
+
+# Positional target for every root-level tool command (see
+# digtk.models.workspace.resolve_targets()).
+TargetArgument = Annotated[str, typer.Argument(
+    help="An item ARK, a cask:/workspace/... path, or a local folder (staged into "
+         "workspace first). A folder or workspace path covers every item under it.",
+)]
+
+# Shared by every root-level tool command that accepts a local folder target
+# (see digtk.models.workspace.stage()) — where in workspace it gets staged.
+WorkspaceCollectionOption = Annotated[str | None, typer.Option(
+    "--collection",
+    help="Workspace collection to stage a local folder into. Defaults to the "
+         "folder's own name. Ignored for an ARK or cask:/ target.",
+)]
+
+WorkspaceUserOption = Annotated[str | None, typer.Option(
+    "--user",
+    help="Workspace username to stage a local folder under. Defaults to the "
+         "current OS user. Ignored for an ARK or cask:/ target.",
 )]
 
 # Shared by every command digtk.lib.reporting.track() instruments. No CONFIG
