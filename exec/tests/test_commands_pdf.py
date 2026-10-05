@@ -148,3 +148,15 @@ def test_derivatives_routes_exception_through_utils_error(monkeypatch):
 
     assert result.exit_code == 1
     assert last_json_line(result.output) == {"status": "error", "error": "rasterize exploded"}
+
+
+def test_derivatives_file_option_is_forwarded(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(pdf_model, "derivatives", lambda ark, opts={}: seen.update(opts=opts) or {
+        "status": "success", "pdfs": {},
+    })
+
+    result = runner.invoke(pdf.app, ["derivatives", ARK, "--file", "cask:/bronze/g/c/latest/item/doc.pdf"])
+
+    assert result.exit_code == 0
+    assert seen["opts"]["files"] == ["cask:/bronze/g/c/latest/item/doc.pdf"]

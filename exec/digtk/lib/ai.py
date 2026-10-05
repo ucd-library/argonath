@@ -18,6 +18,16 @@ re-rolls onto a healthy backend) across 6,000+ item batches. Retries are impleme
 here rather than left to the openai SDK's own (narrower, HTTP-error-only) retry
 logic, so `max_retries=0` is passed to the client and this module's own retry loop —
 which catches broadly, matching what real runs needed — is authoritative.
+
+chat_completion() streams the response by default (CONFIG["samwise"]["stream"]).
+Without streaming, Samwise sends nothing until the whole answer is generated, so
+the read timeout effectively capped each call's *total* time — and a dense page
+whose transcript took longer than that timed out and was regenerated from
+scratch on every retry. Streamed, the read timeout only fires when Samwise stops
+sending for that long (the wedged-backend case it exists for), and
+CONFIG["samwise"]["max_call_s"] separately caps one call's total time. A call that
+hits that cap isn't retried: asking again for the same overlong (or looping)
+answer would just spend the same time again.
 """
 import datetime
 import os
@@ -141,6 +151,88 @@ def _extract_content(message):
     return _THINK.sub("", text).strip()
 
 
+class CallTooLong(RuntimeError):
+    """Raised when one streamed chat completion runs past
+    CONFIG["samwise"]["max_call_s"] — deliberately not retried (see the module
+    docstring).
+
+    :param float limit_s: The cap that was exceeded.
+    :param int chars: Characters received before giving up.
+    """
+
+    def __init__(self, limit_s, chars):
+        super().__init__(f"Samwise response still incomplete after {limit_s:.0f}s ({chars} chars received)")
+        self.limit_s = limit_s
+        self.chars = chars
+
+
+def _stream_content(client, model, message):
+    """Run one streamed chat completion and join the pieces into the reply text.
+
+    Accumulates both 'content' and the 'reasoning_content'/'reasoning' deltas
+    some backend models use instead (see _extract_content()), then cleans the
+    joined text the same way. Logs a timeline of the call to stderr (see
+    _progress()): when the first text arrives — a first response only at the
+    very end means something between digtk and Samwise is buffering the stream
+    — then every CONFIG["samwise"]["progress_every_s"] seconds while it's still
+    arriving, then how long it took and how much it returned.
+
+    :param client: openai.OpenAI client (see get_client()).
+    :param str model: Model name.
+    :param list message: Chat messages.
+    :returns: Cleaned reply text.
+    :rtype: str
+    :raises CallTooLong: If the response is still arriving after
+        CONFIG["samwise"]["max_call_s"].
+    """
+    limit_s = CONFIG["samwise"]["max_call_s"]
+    every_s = CONFIG["samwise"]["progress_every_s"]
+    start = time.monotonic()
+    next_progress = start + every_s
+    first_seen = False
+    content, reasoning = [], []
+    stream = client.chat.completions.create(model=model, messages=message, stream=True)
+    try:
+        for chunk in stream:
+            for choice in getattr(chunk, "choices", None) or []:
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+                if getattr(delta, "content", None):
+                    content.append(delta.content)
+                extra = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                if extra:
+                    reasoning.append(extra)
+            now = time.monotonic()
+            received = sum(len(c) for c in content) + sum(len(r) for r in reasoning)
+            if received and not first_seen:
+                first_seen = True
+                _progress(f"first response after {now - start:.0f}s")
+            if now - start > limit_s:
+                raise CallTooLong(limit_s, received)
+            if now >= next_progress:
+                _progress(f"still responding ({now - start:.0f}s, {received} chars so far)")
+                next_progress = now + every_s
+    finally:
+        close = getattr(stream, "close", None)
+        if close:
+            close()
+
+    text = _THINK.sub("", "".join(content) or "".join(reasoning)).strip()
+    _progress(f"done in {time.monotonic() - start:.0f}s ({len(text)} chars)")
+    return text
+
+
+def _progress(message):
+    """Log one line of a streamed call's timeline to stderr — same channel and
+    'digtk: Samwise' prefix as chat_completion()'s retry messages, so the whole
+    story of a call reads together.
+
+    :param str message: e.g. 'first response after 3s'.
+    """
+    print(f"digtk: Samwise {message}", file=sys.stderr, flush=True)
+
+
 def chat_completion(message, opts={}):
     """Generate a chat completion.
 
@@ -158,9 +250,12 @@ def chat_completion(message, opts={}):
             - model: Override the default model
             - image: Optional image to include in the message — a file path (str, local
               or 'cask:/'-prefixed) or an ai.Image(data=bytes, mimetype=str)
-            - full_response: Return the raw SDK response object, unretried, unstripped.
+            - full_response: Return the raw SDK response object, unretried, unstripped
+              (never streamed).
     :returns: The model's response text (or the raw response, see full_response above).
     :rtype: str
+    :raises CallTooLong: If a streamed response runs past CONFIG["samwise"]["max_call_s"]
+        (not retried).
     :raises RuntimeError: If every retry attempt fails.
     """
     client = get_client(opts)
@@ -186,10 +281,15 @@ def chat_completion(message, opts={}):
     _wait_out_maintenance()
     retries = CONFIG["samwise"]["retries"]
     last_error = None
+    stream = CONFIG["samwise"]["stream"]
     for attempt in range(retries):
         try:
+            if stream:
+                return _stream_content(client, model, message)
             response = client.chat.completions.create(model=model, messages=message)
             return _extract_content(response.choices[0].message)
+        except CallTooLong:
+            raise
         except Exception as e:  # noqa: BLE001 — a transient endpoint blip should retry
             last_error = e
             print(

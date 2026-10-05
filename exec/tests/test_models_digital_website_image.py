@@ -508,3 +508,96 @@ def test_generate_associated_media_covers_every_image_for_multi_image_item(fake_
     assert sorted(sidecar_write["source_files"]) == sorted(MULTI_ITEM.bronze_binary_paths)
     doc = json.loads(sidecar_write["data"])
     assert len(doc["associatedMedia"]) == 6  # 2 images x 3 sizes each
+
+
+# --- per-file mode + finalize ------------------------------------------------
+
+def _written(calls, suffix):
+    return [c for c in calls if c["rel_path"].endswith(suffix)]
+
+
+def test_generate_per_file_writes_only_that_images_outputs(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
+    use_multi_item(monkeypatch)
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("deskewed"))
+
+    result = dw.generate(ARK, opts={"widths": WIDTHS, "files": ["photo-b.tiff"]})
+
+    assert result["finalized"] is False
+    assert set(result["derivatives"]) == {"photo-b.tiff"}
+    assert fake_fs["read_stream_calls"] == ["cask:/bronze/g/c/latest/box-1/folder-3/photo-b.tiff"]
+    rel_paths = {c["rel_path"] for c in fake_derivative}
+    # Its own images/ set + manifest, and its own (still stem-prefixed) ocr/ files...
+    assert "box-1/folder-3/public-frontend-derivatives/images/photo-b.tiff/images/manifest.json" in rel_paths
+    assert "box-1/folder-3/ocr/photo-b-prep-deskew.jpg" in rel_paths
+    assert "box-1/folder-3/ocr/photo-b-ocr.djvu" in rel_paths
+    # ...but none of the other image's, and neither item-level aggregate.
+    assert not any("photo-a" in p for p in rel_paths)
+    assert not _written(fake_derivative, "ocr/manifest.json")
+    assert not _written(fake_derivative, "item.jsonld.json")
+
+
+def test_generate_per_file_accepts_a_full_bronze_path(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
+    use_multi_item(monkeypatch)
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
+
+    result = dw.generate(ARK, opts={"widths": WIDTHS, "files": ["cask:/bronze/g/c/latest/box-1/folder-3/photo-a.tiff"]})
+
+    assert set(result["derivatives"]) == {"photo-a.tiff"}
+
+
+def test_generate_per_file_rejects_an_unknown_file(fake_fs, fake_derivative, monkeypatch):
+    use_multi_item(monkeypatch)
+
+    with pytest.raises(ValueError, match="no source binary matches 'nope.tiff'"):
+        dw.generate(ARK, opts={"widths": WIDTHS, "files": ["nope.tiff"]})
+
+
+def test_per_file_runs_then_finalize_match_a_whole_item_run(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
+    """The point of finalize(): one-image-at-a-time runs plus finalize() leave
+    ocr/manifest.json and associatedMedia exactly as a whole-item generate() would."""
+    use_multi_item(monkeypatch)
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("deskewed"))
+
+    dw.generate(ARK, opts={"widths": WIDTHS})
+    whole_ocr = json.loads(_written(fake_derivative, "ocr/manifest.json")[0]["data"])
+    whole_sidecar = _written(fake_derivative, "item.jsonld.json")[0]
+    fake_derivative.clear()
+
+    for filename in ("photo-a.tiff", "photo-b.tiff"):
+        dw.generate(ARK, opts={"widths": WIDTHS, "files": [filename]})
+    published = {
+        f"cask:/silver/g/c/latest/{c['rel_path']}": c["data"]
+        for c in _written(fake_derivative, "/images/manifest.json")
+    }
+    fake_derivative.clear()
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: published[path])
+
+    result = dw.finalize(ARK)
+
+    ocr_write = _written(fake_derivative, "ocr/manifest.json")[0]
+    finalized_ocr = json.loads(ocr_write["data"])
+    assert finalized_ocr["params"] == whole_ocr["params"]
+    assert finalized_ocr["outputs"] == whole_ocr["outputs"]
+    assert ocr_write["source_files"] == MULTI_ITEM.bronze_binary_paths
+    sidecar_write = _written(fake_derivative, "item.jsonld.json")[0]
+    assert json.loads(sidecar_write["data"]) == json.loads(whole_sidecar["data"])
+    assert sidecar_write["source_files"] == whole_sidecar["source_files"]
+    assert result == {
+        "status": "success", "ark": ARK, "images": 2,
+        "ocr_manifest": finalized_ocr, "associated_media": 6,
+    }
+
+
+def test_finalize_writes_nothing_if_an_images_derivatives_are_missing(fake_fs, fake_derivative, monkeypatch):
+    use_multi_item(monkeypatch)
+    manifest = json.dumps({"params": {"orientation": {"deskew_selected": False}}}).encode()
+
+    def fake_read(path):
+        if "photo-b.tiff" in path:
+            raise FileNotFoundError(path)
+        return manifest
+    monkeypatch.setattr(pipeline.fs, "read", fake_read)
+
+    with pytest.raises(FileNotFoundError, match=r"1 image\(s\) of .*\['photo-b.tiff'\]"):
+        dw.finalize(ARK)
+    assert fake_derivative == []

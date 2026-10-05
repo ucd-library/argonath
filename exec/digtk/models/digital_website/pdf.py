@@ -22,11 +22,12 @@ subdirectory, as before.
 See docs/cask-conventions.md for the full silver layout, including how this differs from
 the existing "Multi-Part Items" (parts/, per-page ARK) convention.
 """
+import json
 import os
 import tempfile
 import time
 
-from digtk.lib import image_magick, items, pdf_render, utils
+from digtk.lib import fs, image_magick, items, pdf_render, utils
 from digtk.lib.config import CONFIG
 from digtk.lib.schema import ARGONATH_NS
 from digtk.models.digital_website import pipeline
@@ -270,44 +271,47 @@ def derivatives(ark, opts={}):
     manifest additionally carries a "pages" array composing every page's own extra
     block, mirroring the legacy pipeline's per-PDF composite manifest.
 
+    Per-file mode (opts['files']) — one Dagster step per PDF, see
+    dagster/lib/pipeline_fanout.py — processes only the named PDF(s). Everything
+    above is already written per PDF, so the only thing skipped is the item
+    sidecar's associatedMedia, which combines every PDF; finalize() writes it
+    once every PDF is done. The ocr/ namespacing decision still follows the
+    whole item, so a per-file run writes exactly the paths a whole-item run would.
+
     :param str ark: Item ARK identifier.
     :param dict opts: 'widths' (comma-separated str, default
-        CONFIG["image"]["thumbnail_widths"]); forwarded to pdf_render/image_magick/ocr_utils:
+        CONFIG["image"]["thumbnail_widths"]); 'files' (iterable of bronze paths or
+        filenames, optional — per-file mode, see above; see
+        pipeline.select_binaries()); forwarded to pdf_render/image_magick/ocr_utils:
         'target_pixel_width', 'default_density', 'quality', 'dpi', 'fuzz', 'threshold', etc.
     :returns: {"status": "success", "ark": str, "pdfs": {filename: {"pages": int,
         "derivatives": {"pages": {page_number: {...}}, "manifest": {...}}, "ocr": {...},
-        "orientation": {page_number: {...}}}}}
+        "orientation": {page_number: {...}}}}, "finalized": bool (False in
+        per-file mode — run finalize())}
     :rtype: dict
+    :raises ValueError: If a 'files' selector matches no PDF, or is ambiguous.
     """
     widths = pipeline.parse_widths(opts.get("widths", CONFIG["image"]["thumbnail_widths"]))
     item = items.resolve(ark)
     pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
+    files = opts.get("files")
+    selected = pipeline.select_binaries(pdf_paths, files) if files else pdf_paths
     start = time.monotonic()
-    multi_pdf = len(pdf_paths) > 1
-    # Namespace the OCR output by the PDF's own filename whenever anything else
-    # could also publish to the item's bare "ocr/" directory — not just when
-    # there's more than one PDF. image.py's generate() publishes its own
-    # ocr/manifest.json (keyed by filename stem) to that exact same bare path
-    # for any co-located image binaries; without this, whichever of image/pdf
-    # derivatives ran most recently silently overwrites the other's manifest.
-    # (The "images_base" display-image path below has always been namespaced
-    # by pdf_filename regardless of multi_pdf — this brings ocr/ in line with
-    # that, only for the case that actually needs it, so a pure single-PDF
-    # item's existing ocr/ layout is unaffected.)
-    mixed_item = len(pdf_paths) < len(item.bronze_binary_paths)
 
     pdfs_result = {}
     image_objects = []
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pdf_paths})
+        sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": selected})
         total_pdfs = len(sources)
 
         for pdf_i, src in enumerate(sources, start=1):
             stem = src["stem"]
             pdf_path = src["local_path"]
             pdf_filename = os.path.basename(src["bronze_path"])
-            ocr_prefix = f"{stem}/" if (multi_pdf or mixed_item) else ""
+            # Namespaced by the PDF's own stem whenever anything else in the
+            # item could also write to the bare ocr/ — see pipeline.pdf_ocr_prefix().
+            ocr_prefix = pipeline.pdf_ocr_prefix(item.bronze_binary_paths, src["bronze_path"])
             images_base = f"{pipeline.PUBLIC_FRONTEND_DIR}/{pdf_filename}/images"
             count = pdf_render.page_count(pdf_path, opts)
             utils.log(f"[{pdf_i}/{total_pdfs}] {stem}: {count} page(s)")
@@ -315,6 +319,7 @@ def derivatives(ark, opts={}):
             orientations = {}
             derivatives_pages = {}
             ocr_pages = []
+            ocr_page_dirs = []
             page_manifest_entries = []
 
             for page_index in range(count):
@@ -413,6 +418,7 @@ def derivatives(ark, opts={}):
                     })
                 derivatives_pages[str(page_no)] = page_result
                 ocr_pages.append(ocr_result)
+                ocr_page_dirs.append(f"{page_tag}/")
                 utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: done")
 
             duration_s = time.monotonic() - start
@@ -435,7 +441,9 @@ def derivatives(ark, opts={}):
                 item.collection, agg_ocr_rel_path,
                 command=["digtk", "pdf", "derivatives", ark],
                 params={"pages": count, "orientation": {tag: {"deskew_selected": o["deskew"]} for tag, o in orientations.items()}},
-                outputs=[f"{tag}/" for tag in orientations],
+                # The real per-page subdirectories under ocr/ (page-NNN/), not
+                # the 1-indexed page numbers the images/ side uses.
+                outputs=ocr_page_dirs,
                 source_files=[src["bronze_path"]],
                 opts=manifest_opts,
             )
@@ -447,7 +455,48 @@ def derivatives(ark, opts={}):
                 "orientation": orientations,
             }
 
-        utils.log("Updating associated-media sidecar...")
-        pipeline.update_associated_media(item, image_objects, [src["bronze_path"] for src in sources], "pdf")
+        if not files:
+            utils.log("Updating associated-media sidecar...")
+            pipeline.update_associated_media(item, image_objects, [src["bronze_path"] for src in sources], "pdf")
 
-    return {"status": "success", "ark": ark, "pdfs": pdfs_result}
+    return {"status": "success", "ark": ark, "pdfs": pdfs_result, "finalized": not files}
+
+
+def finalize(ark, opts={}):
+    """Write a PDF item's associatedMedia from its already-published per-PDF
+    derivatives — the step after one-per-PDF derivatives() runs (see its 'files' opt).
+
+    Reads each PDF's aggregate images/manifest.json back — its "pages" array
+    carries every page's small/medium/large urls and sizes — and writes the
+    item sidecar's "pdf" associatedMedia entries in one go, the same content a
+    whole-item derivatives() writes.
+
+    :param str ark: Item ARK identifier.
+    :param dict opts: Unused; present for signature symmetry.
+    :returns: {"status": "success", "ark": str, "pdfs": int, "associated_media": int}
+    :rtype: dict
+    :raises FileNotFoundError: If any PDF's aggregate manifest is missing (its
+        per-PDF run hasn't completed) — nothing is written in that case.
+    """
+    item = items.resolve(ark)
+    pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
+
+    manifests, missing = {}, []
+    for path in pdf_paths:
+        filename = os.path.basename(path)
+        images_dir = pipeline.derivative_dir(item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}/images")
+        try:
+            manifests[path] = json.loads(fs.read(f"{images_dir}/manifest.json"))
+        except FileNotFoundError:
+            missing.append(filename)
+    if missing:
+        raise FileNotFoundError(f"no derivatives published yet for {len(missing)} PDF(s) of {ark}: {missing}")
+
+    image_objects = []
+    for path in pdf_paths:
+        for page in manifests[path].get("pages", []):
+            image_objects += pipeline.image_objects_from_manifest(page, opts={"position": page["page"] - 1})
+
+    utils.log("Updating associated-media sidecar...")
+    pipeline.update_associated_media(item, image_objects, pdf_paths, "pdf")
+    return {"status": "success", "ark": ark, "pdfs": len(pdf_paths), "associated_media": len(image_objects)}

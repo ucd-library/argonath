@@ -26,7 +26,14 @@ VIDEO_ONLY_ITEM = ItemLocation(
     bronze_binary_paths=["cask:/bronze/g/c/latest/item/reel.mp4"],
 )
 
+WORKSPACE_ITEM = ItemLocation(
+    ark=None, group="jdoe", collection="album", time=None, item_path="",
+    bronze_binary_paths=["cask:/workspace/jdoe/album/source/spread-01.tiff"],
+    dest_type="workspace", dest_prefix="derivatives",
+)
+
 GUTTERS_PATH = "cask:/silver/g/c/latest/item/split-spreads/gutters.json"
+WORKSPACE_GUTTERS_PATH = "cask:/workspace/jdoe/album/derivatives/split-spreads/gutters.json"
 
 
 def _stub_resolve(monkeypatch, item):
@@ -37,7 +44,7 @@ def _stub_fs_read(monkeypatch, table):
     def fake_read(path):
         if path in table:
             return table[path]
-        if path.startswith("cask:/bronze/"):
+        if path.startswith("cask:/bronze/") or "/source/" in path:
             return b"RAWBYTES"
         raise FileNotFoundError(path)
     monkeypatch.setattr(fs, "read", fake_read)
@@ -52,6 +59,8 @@ def fake_derivative(monkeypatch):
             "type": type, "collection": collection, "rel_path": rel_path,
             "data": data, "source_files": source_files, "opts": opts,
         })
+        if type == "workspace":
+            return {"path": f"cask:/workspace/{opts['group']}/{collection}/{rel_path}", "links": []}
         return {"path": f"cask:/silver/{opts['group']}/{collection}/{opts['time']}/{rel_path}", "links": []}
 
     monkeypatch.setattr(derivative, "write", fake_write)
@@ -125,7 +134,7 @@ def test_detect_skips_already_present_stems_and_preserves_edits(
 
     result = split.detect(ARK)
 
-    assert result == {"status": "success", "ark": ARK, "detected": 1, "total": 2}
+    assert result == {"status": "success", "ark": ARK, "item": ARK, "detected": 1, "total": 2}
     assert len(fake_vision) == 1  # only photo-b was newly detected
 
     gutters_write = next(w for w in fake_derivative if w["rel_path"] == "item/split-spreads/gutters.json")
@@ -227,3 +236,42 @@ def test_apply_skips_stem_missing_from_gutters_without_aborting(monkeypatch, fak
 
     assert result["skipped"] == ["photo-b.tiff"]
     assert result["split"] == 1  # photo-a still processed
+
+
+# --- workspace items -----------------------------------------------------------
+
+def test_detect_workspace_item_writes_to_workspace_derivatives(
+    monkeypatch, fake_derivative, fake_image_magick, fake_vision,
+):
+    _stub_fs_read(monkeypatch, {})
+
+    result = split.detect(WORKSPACE_ITEM)
+
+    assert result["ark"] is None
+    assert result["item"] == "cask:/workspace/jdoe/album/source"
+    assert {w["rel_path"] for w in fake_derivative} == {
+        "derivatives/split-spreads/review/spread-01.jpg",
+        "derivatives/split-spreads/gutters.json",
+        "derivatives/split-spreads/review-sheets/sheet-01.jpg",
+    }
+    for write in fake_derivative:
+        assert write["type"] == "workspace"
+        assert write["opts"]["group"] == "jdoe"
+        assert "time" not in write["opts"]
+
+
+def test_apply_workspace_item_reads_workspace_gutters(monkeypatch, fake_derivative, fake_image_magick):
+    gutters = {"spread-01": {"gutter_x": 500, "is_spread": True, "confidence": "high"}}
+    _stub_fs_read(monkeypatch, {WORKSPACE_GUTTERS_PATH: json.dumps(gutters).encode()})
+
+    result = split.apply(WORKSPACE_ITEM)
+
+    assert result["split"] == 1
+    assert {w["rel_path"] for w in fake_derivative} == {
+        "derivatives/split-spreads/pages/spread-01_L.tiff",
+        "derivatives/split-spreads/pages/spread-01_R.tiff",
+    }
+    for write in fake_derivative:
+        assert write["source_files"] == [
+            "cask:/workspace/jdoe/album/source/spread-01.tiff", WORKSPACE_GUTTERS_PATH,
+        ]

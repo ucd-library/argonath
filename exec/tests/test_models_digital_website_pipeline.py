@@ -103,125 +103,6 @@ def test_detect_formats_never_raises_for_a_single_format_item():
     assert pipeline.detect_formats(["cask:/bronze/g/c/latest/item/photo.tiff"]) == {"image"}
 
 
-# --- pdf_ocr_prep_images() -------------------------------------------------------
-
-PDF_ITEM = ItemLocation(
-    ark=ARK, group="g", collection="c", time="latest", item_path="item",
-    bronze_binary_paths=["cask:/bronze/g/c/latest/item/document.pdf"],
-)
-
-
-def test_pdf_ocr_prep_images_builds_paths_per_page(monkeypatch):
-    manifest = json.dumps({"params": {
-        "pages": 2,
-        "orientation": {"1": {"deskew_selected": False}, "2": {"deskew_selected": True}},
-    }}).encode()
-    monkeypatch.setattr(pipeline.fs, "read", lambda path: manifest)
-
-    images, count = pipeline.pdf_ocr_prep_images(
-        PDF_ITEM, "cask:/bronze/g/c/latest/item/document.pdf", namespace_ocr=False,
-    )
-
-    assert count == 2
-    assert images == [
-        "cask:/silver/g/c/latest/item/ocr/page-000/document-page-000-prep.jpg",
-        "cask:/silver/g/c/latest/item/ocr/page-001/document-page-001-prep-deskew.jpg",
-    ]
-
-
-def test_pdf_ocr_prep_images_uses_stem_prefixed_ocr_dir_for_multi_pdf_items(monkeypatch):
-    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps({
-        "params": {"pages": 1, "orientation": {"1": {"deskew_selected": False}}},
-    }).encode())
-
-    images, count = pipeline.pdf_ocr_prep_images(
-        PDF_ITEM, "cask:/bronze/g/c/latest/item/document.pdf", namespace_ocr=True,
-    )
-
-    assert images == ["cask:/silver/g/c/latest/item/document/ocr/page-000/document-page-000-prep.jpg"]
-
-
-def test_pdf_ocr_prep_images_raises_if_derivatives_not_published(monkeypatch):
-    def fake_read(path):
-        raise FileNotFoundError(path)
-    monkeypatch.setattr(pipeline.fs, "read", fake_read)
-
-    with pytest.raises(FileNotFoundError):
-        pipeline.pdf_ocr_prep_images(PDF_ITEM, "cask:/bronze/g/c/latest/item/document.pdf", namespace_ocr=False)
-
-
-# --- image_ocr_prep_image() -------------------------------------------------------
-
-def test_image_ocr_prep_image_builds_path_from_manifest(monkeypatch):
-    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps({
-        "params": {"orientation": {"photo": {"deskew_selected": False}}},
-    }).encode())
-
-    path = pipeline.image_ocr_prep_image(ITEM, "cask:/bronze/g/c/latest/item/photo.tiff", multi_image=False)
-
-    assert path == "cask:/silver/g/c/latest/item/ocr/prep.jpg"
-
-
-def test_image_ocr_prep_image_uses_deskewed_filename_when_selected(monkeypatch):
-    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps({
-        "params": {"orientation": {"photo": {"deskew_selected": True}}},
-    }).encode())
-
-    path = pipeline.image_ocr_prep_image(ITEM, "cask:/bronze/g/c/latest/item/photo.tiff", multi_image=False)
-
-    assert path == "cask:/silver/g/c/latest/item/ocr/prep-deskew.jpg"
-
-
-def test_image_ocr_prep_image_disambiguates_multi_image_items(monkeypatch):
-    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps({
-        "params": {"orientation": {"photo-a": {"deskew_selected": False}, "photo-b": {"deskew_selected": True}}},
-    }).encode())
-
-    a = pipeline.image_ocr_prep_image(MULTI_ITEM, "cask:/bronze/g/c/latest/box-1/folder-3/photo-a.tiff", multi_image=True)
-    b = pipeline.image_ocr_prep_image(MULTI_ITEM, "cask:/bronze/g/c/latest/box-1/folder-3/photo-b.tiff", multi_image=True)
-
-    assert a == "cask:/silver/g/c/latest/box-1/folder-3/ocr/photo-a-prep.jpg"
-    assert b == "cask:/silver/g/c/latest/box-1/folder-3/ocr/photo-b-prep-deskew.jpg"
-
-
-def test_image_ocr_prep_image_raises_if_derivatives_not_published(monkeypatch):
-    def fake_read(path):
-        raise FileNotFoundError(path)
-    monkeypatch.setattr(pipeline.fs, "read", fake_read)
-
-    with pytest.raises(FileNotFoundError):
-        pipeline.image_ocr_prep_image(ITEM, "cask:/bronze/g/c/latest/item/photo.tiff", multi_image=False)
-
-# generate_thumbnail_set(), select_orientation(), and update_associated_media() are
-# already exercised end-to-end via test_models_digital_website_image.py's dw.generate() tests
-# (same code, invoked through the still-image-specific orchestrator on top) — this file
-# focuses on the pure helpers and on publish()'s link_relation behavior, which changed
-# during the extraction from digital_website/image.py's private _publish().
-
-
-def test_parse_widths_sorts_and_parses_comma_separated_string():
-    assert pipeline.parse_widths("1024,256,512") == [256, 512, 1024]
-
-
-def test_parse_widths_passes_through_a_list():
-    assert pipeline.parse_widths([512, 256]) == [256, 512]
-
-
-def test_output_name_prefixes_only_when_multi():
-    assert pipeline.output_name("photo-a", "thumb-256.jpg", multi=True) == "photo-a-thumb-256.jpg"
-    assert pipeline.output_name("photo", "thumb-256.jpg", multi=False) == "thumb-256.jpg"
-
-
-def test_page_tag_pads_to_at_least_three_digits():
-    assert pipeline.page_tag(0, 5) == "page-000"
-    assert pipeline.page_tag(4, 5) == "page-004"
-
-
-def test_page_tag_widens_padding_for_large_counts():
-    assert pipeline.page_tag(0, 1500) == "page-0000"
-    assert pipeline.page_tag(1499, 1500) == "page-1499"
-
-
 # --- build_ocr_products() ---------------------------------------------------
 
 ORIENTATION = {
@@ -542,3 +423,60 @@ def test_merge_dc_metadata_merges_field_sources_rather_than_replacing(fake_deriv
     doc = pipeline.merge_dc_metadata(item_metadata)
 
     assert doc["argonath:fieldSources"] == {"caption": "ai", "name": "human"}
+
+
+# --- per-file helpers -------------------------------------------------------------
+
+def test_select_binaries_by_filename_or_full_path_keeps_item_order():
+    paths = ["cask:/b/x/a.tif", "cask:/b/x/b.tif", "cask:/b/x/c.pdf"]
+
+    assert pipeline.select_binaries(paths, ["c.pdf", "cask:/b/x/a.tif"]) == ["cask:/b/x/a.tif", "cask:/b/x/c.pdf"]
+
+
+def test_select_binaries_rejects_unknown_and_ambiguous_names():
+    paths = ["cask:/b/x/Access/p1.tif", "cask:/b/x/Preservation/p1.tif"]
+
+    with pytest.raises(ValueError, match="no source binary matches"):
+        pipeline.select_binaries(paths, ["p2.tif"])
+    with pytest.raises(ValueError, match="ambiguous"):
+        pipeline.select_binaries(paths, ["p1.tif"])
+    assert pipeline.select_binaries(paths, ["cask:/b/x/Preservation/p1.tif"]) == ["cask:/b/x/Preservation/p1.tif"]
+
+
+def test_image_objects_from_manifest_rebuilds_small_medium_large():
+    manifest = {
+        label: {"size": {"width": str(w), "height": str(w * 2)}, "url": f"cask://x/{label}.jpg"}
+        for label, w in (("small", 256), ("medium", 512), ("large", 1024))
+    }
+
+    objects = pipeline.image_objects_from_manifest(manifest, opts={"position": 3})
+
+    assert objects[0] == {
+        "@type": "ImageObject", "contentUrl": "cask://x/small.jpg", "encodingFormat": "image/jpeg",
+        "position": 3, "width": 256, "height": 512,
+    }
+    assert [o["contentUrl"] for o in objects] == ["cask://x/small.jpg", "cask://x/medium.jpg", "cask://x/large.jpg"]
+    assert "position" not in pipeline.image_objects_from_manifest(manifest)[0]
+
+
+def test_publish_can_skip_the_manifest(monkeypatch, tmp_path):
+    writes = []
+    monkeypatch.setattr(pipeline.derivative, "write", lambda **kw: writes.append(kw["rel_path"]) or {"path": "x"})
+    local = tmp_path / "f.jpg"
+    local.write_bytes(b"x")
+
+    result = pipeline.publish(ITEM, "ocr", [("f.jpg", str(local), ITEM.bronze_binary_paths[0])],
+                              command=["c"], params={}, opts={"manifest": False})
+
+    assert writes == ["item/ocr/f.jpg"]
+    assert result["manifest"] is None
+
+
+def test_pdf_ocr_prefix_bare_for_a_lone_pdf_and_namespaced_otherwise():
+    lone = ["cask:/b/x/doc.pdf"]
+    two_pdfs = ["cask:/b/x/a.pdf", "cask:/b/x/b.pdf"]
+    with_image = ["cask:/b/x/doc.pdf", "cask:/b/x/page.tif"]
+
+    assert pipeline.pdf_ocr_prefix(lone, lone[0]) == ""
+    assert pipeline.pdf_ocr_prefix(two_pdfs, two_pdfs[1]) == "b/"
+    assert pipeline.pdf_ocr_prefix(with_image, with_image[0]) == "doc/"

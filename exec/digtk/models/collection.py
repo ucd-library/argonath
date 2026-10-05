@@ -79,7 +79,9 @@ def dest_path(root, collection, opts={}):
     :param str collection: Collection name.
     :param dict opts: 'group' (required when root='bronze'), 'time' (bronze only — literal
         time-folder name or a CURRENT_TIME/CURRENT_DATE sentinel; defaults to 'latest' if
-        omitted), 'username' (workspace only, defaults to the current OS user).
+        omitted), 'username' (workspace only, defaults to the current OS user), 'subdir'
+        (workspace only — a directory inside the collection to target instead of its root,
+        e.g. digtk.models.workspace's 'source').
     :returns: CaskFS-absolute path, e.g. '/bronze/digital-collections/ucd-photos/latest'.
     :rtype: str
     :raises ValueError: If `root` isn't 'bronze'/'workspace', a required opt is missing, or
@@ -100,7 +102,9 @@ def dest_path(root, collection, opts={}):
     username = opts.get("username") or os.environ.get("USER") or os.environ.get("USERNAME")
     if not username:
         raise ValueError("opts['username'] is required when root='workspace' (could not detect current user)")
-    return f"/workspace/{username}/{collection}"
+    path = f"/workspace/{username}/{collection}"
+    subdir = (opts.get("subdir") or "").strip("/")
+    return f"{path}/{subdir}" if subdir else path
 
 
 def _build_argv(source, dest, opts):

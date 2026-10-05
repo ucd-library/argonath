@@ -4,166 +4,159 @@ around the pike-tools accessibility modules (alt_utils, pdf_utils, pdf_tag)
 and the ported vision-layout generator (layout), none of which were wired
 into any command before this.
 
-generate_alt_text(): AI-generated ADA/WCAG alt text. Resolves an ARK to its
-bronze item location, reads the item's existing bronze descriptive metadata
-(title/description/date/creator) for prompt context, and generates alt text
-for each of the item's image binaries and each page of each PDF binary,
-against the "large" display JPEG generate_derivatives (image items) or
-`digtk showcase pdf derivatives` (PDF items) already publishes — not the raw
-bronze binary (could be a huge TIFF) or the OCR-prep image (contrast-tuned
-for Tesseract, not human/vision-model viewing). Each result is written as
-its own silver derivative, with CaskFS lineage back to both the display
-image and the bronze sidecar the metadata came from.
+generate_alt_text(): AI-generated ADA/WCAG alt text. Resolves the target (an
+ARK or a staged workspace item — see digtk.lib.items.resolve_target()), reads
+the item's descriptive metadata (title/description/date/creator) for prompt
+context when it has a bronze sidecar, and generates alt text for each image
+binary and each page of each PDF binary, against a plain resized JPEG built
+from the source binary (digtk.models.prep.vision_image()) — not the raw
+binary (could be a huge TIFF) or an OCR-prep image (contrast-tuned for
+Tesseract, not human/vision-model viewing). Each result is written as its own
+derivative, with CaskFS lineage back to the source binary and, if present,
+the bronze sidecar the metadata came from.
 
 tag_pdf(): searchable + PDF/UA-1 tagged PDF assembly. For each PDF binary,
-stages the already-published per-page OCR-prep images, runs Tesseract fresh
-for hOCR word geometry (pdf.derivatives() computes this internally too, but
-only persists a converted djvu text layer, not the raw hOCR pdf_utils needs),
+rasterizes every page, builds a Tesseract-tuned OCR-prep image per page
+(digtk.models.prep.ocr_image()), runs Tesseract for hOCR word geometry,
 assembles a searchable PDF, optionally overlays alt text (generate_alt_text's
 output, if present) and a vision-generated table/heading layout (layout.py,
 cached as its own derivative), tags it PDF/UA-1, validates it with veraPDF,
-and publishes the tagged PDF with lineage back to the bronze PDF, the
-OCR-prep images used, and any alt-text/layout derivatives read.
+and publishes the tagged PDF with lineage back to the source PDF and any
+alt-text/layout derivatives read.
 
-Both entry points deliberately depend on `digtk showcase image|pdf
-derivatives` having already run — they read back published derivatives
-rather than regenerating/rasterizing anything themselves, so neither needs
-the still-unimplemented `digtk ocr tesseract` (phase 0.5) or AI metadata
-draft (phase 0.6) commands.
+Neither entry point reads anything `digtk showcase image|pdf derivatives`
+publishes — both prepare their own inputs in-process (see digtk.models.prep).
 """
 import json
 import os
 import tempfile
 
-from digtk.lib import derivative, fs, items, ocr_utils
+from digtk.lib import derivative, fs, items, ocr_utils, utils
 from digtk.lib.config import CONFIG
 from digtk.lib.schema import ARGONATH_NS
-from digtk.models import alt_utils, layout, pdf_tag, pdf_utils
-from digtk.models.digital_website import pipeline
+from digtk.models import alt_utils, layout, pdf_tag, pdf_utils, prep
 
 # Distinguishes this lineage from _LINK_RELATION_BY_SUBDIR's "derivativeOf"/
-# "ocrPrepOf" (digtk.models.digital_website.image/.pdf) — these are derived
-# from a display/OCR-prep image, not themselves a viewable/OCR derivative.
+# "ocrPrepOf" (digtk.models.digital_website.image/.pdf) — these are accessibility
+# metadata derived from a source binary, not themselves a viewable/OCR derivative.
 ALT_TEXT_LINK_RELATION = f"{ARGONATH_NS}altTextOf"
 LAYOUT_LINK_RELATION = f"{ARGONATH_NS}layoutOf"
 TAGGED_PDF_LINK_RELATION = f"{ARGONATH_NS}taggedPdfOf"
 
 
-def _silver_rel_path(item, *parts):
-    """Silver rel_path (relative to the collection/time root) under this item's
-    own location — the item_path-prefixing every derivative.write() call in
-    this module needs, factored out so it's written in exactly one place.
+def _generate_and_write(item, vision_image, source_files, rel_path, metadata, opts):
+    """Generate alt text for one image and publish it as a derivative.
 
     :param digtk.lib.items.ItemLocation item: Resolved item location.
-    :param str parts: Path segments to join after the item's own item_path.
-    :rtype: str
-    """
-    subdir = "/".join(parts)
-    return f"{item.item_path}/{subdir}" if item.item_path else subdir
-
-
-def _generate_and_write(item, display_image, sidecar_path, rel_path, metadata, opts):
-    """Generate alt text for one display image and publish it as a silver derivative.
-
-    :param digtk.lib.items.ItemLocation item: Resolved item location.
-    :param str display_image: 'cask:/...' path to the published display JPEG —
-        passed straight through to alt_utils.generate_alt() as the vision input.
-    :param str sidecar_path: 'cask:/...' path to the bronze sidecar `metadata` came from.
-    :param str rel_path: Silver rel_path (relative to the collection/time root) to publish to.
+    :param str vision_image: Local path to the resized JPEG (prep.vision_image())
+        — passed straight through to alt_utils.generate_alt() as the vision input.
+    :param list[str] source_files: Lineage sources — the source binary, plus the
+        bronze sidecar `metadata` came from when there is one.
+    :param str rel_path: rel_path (items.dest_rel()) to publish to.
     :param dict metadata: alt_utils.build_alt_prompt() metadata (title/description/
         date/creator, plus 'page' for a PDF page).
     :param dict opts: alt_utils.generate_alt() opts.
     :returns: {"alt": str, "description": str|None, "flags": [str], "path": "cask:/..."}
     :rtype: dict
     """
-    alt, description, flags = alt_utils.generate_alt(display_image, metadata, opts)
+    alt, description, flags = alt_utils.generate_alt(vision_image, metadata, opts)
     payload = json.dumps({"alt": alt, "description": description, "flags": flags}, indent=2).encode()
     write_result = derivative.write(
-        type="silver", collection=item.collection, rel_path=rel_path, data=payload,
-        source_files=[display_image, sidecar_path],
-        opts={
-            "group": item.group, "time": item.time, "replace": True,
-            "link_relation": ALT_TEXT_LINK_RELATION,
-        },
+        type=item.dest_type, collection=item.collection, rel_path=rel_path, data=payload,
+        source_files=source_files,
+        opts={**items.dest_opts(item), "replace": True, "link_relation": ALT_TEXT_LINK_RELATION},
     )
     return {"alt": alt, "description": description, "flags": flags, "path": write_result["path"]}
 
 
-def generate_alt_text(ark, opts={}):
+def _sidecar_sources(item):
+    """The bronze sidecar as a lineage source, when the item has one.
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :returns: [sidecar_path], or [] for a workspace item.
+    :rtype: list[str]
+    """
+    return [item.sidecar_path] if item.sidecar_path else []
+
+
+def generate_alt_text(target, opts={}):
     """Generate and publish AI alt text for every image binary, and every page of
     every PDF binary, in an item.
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, 'cask:/workspace/...'
+        item path, or a resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: alt_utils.build_alt_prompt() opts (collection_context, name_people,
         transcribe_text, tone, language, max_alt_chars, extra_instructions,
         want_description), plus 'model' forwarded to the Samwise chat call —
-        see alt_utils.generate_alt().
-    :returns: {"status": "success", "ark": str,
+        see alt_utils.generate_alt() — 'vision_width' (see prep.vision_image()), and
+        'files' (set[str], optional — only these source filenames; naming still
+        follows the whole item, see digtk.models.ocr.run_ocr()).
+    :returns: {"status": "success"|"partial", "ark": str|None, "item": str
+        (see items.item_id()),
         "images": {filename: {"alt": str, "description": str|None, "flags":
             [str], "path": "cask:/..."}},
-        "pdfs": {filename: {"pages": {page_no_str: {same shape as an image entry}}}}}
-        — "images"/"pdfs" are only present when the item has that kind of binary.
+        "pdfs": {filename: {"pages": {page_no_str: {same shape as an image entry}}}},
+        "failed": [{"file": str, "page": int|None, "stage": "alt-text", "error": str}]}
+        — "images"/"pdfs" are only present when the item has that kind of
+        binary. One page failing (e.g. Samwise still unreachable after
+        digtk.lib.ai's own retries) doesn't fail the item: that page is left
+        out, listed in "failed" (and logged via utils.warn()), and status is
+        "partial". Re-running the command redoes every page.
     :rtype: dict
-    :raises LookupError: If the ARK doesn't resolve to a bronze item (see items.resolve()).
+    :raises LookupError: If the target doesn't resolve to an item.
     :raises ValueError: If the item has no image or PDF binaries.
-    :raises FileNotFoundError: If a display image (from `digtk showcase image
-        derivatives`) or a PDF's aggregate images/ manifest.json (from `digtk
-        showcase pdf derivatives`) hasn't been published yet — see this module's
-        docstring.
+    :raises RuntimeError: If every page failed.
     """
-    item = items.resolve(ark)
-    image_paths, pdf_paths = pipeline.partition_by_format(item.bronze_binary_paths)
+    item = items.resolve_target(target)
+    image_paths, pdf_paths = prep.partition_by_format(item.bronze_binary_paths)
     if not image_paths and not pdf_paths:
         raise ValueError(
-            f"no image or PDF binaries found among this item's bronze sources: {item.bronze_binary_paths}"
+            f"no image or PDF binaries found among this item's sources: {item.bronze_binary_paths}"
         )
     multi_image = len(image_paths) > 1
+    metadata = items.metadata_for(item)
 
-    sidecar_path = item.sidecar_path
-    metadata = items.metadata(ark)
+    result = {"status": "success", "ark": item.ark, "item": items.item_id(item)}
+    images, pdfs, failed = {}, {}, []
 
-    result = {"status": "success", "ark": ark}
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        pages = prep.stage_pages(item, tmp_dir, opts={"files": opts.get("files")})
+        for page in pages:
+            label = (f"{page['filename']} page {page['page_no']}/{page['count']}"
+                     if page["kind"] == "pdf" else page["filename"])
+            utils.log(f"{label}: alt text...")
+            source_files = [page["source_path"]] + _sidecar_sources(item)
+            if page["kind"] == "image":
+                out_filename = prep.output_name(page["stem"], "alt-text.json", multi_image)
+                rel_path = items.dest_rel(item, "accessibility", out_filename)
+                page_metadata = metadata
+            else:
+                rel_path = items.dest_rel(item, "accessibility", page["filename"], str(page["page_no"]), "alt-text.json")
+                page_metadata = {**metadata, "page": (page["page_no"], page["count"])}
+
+            try:
+                vision_image = prep.vision_image(page, tmp_dir, opts)
+                page_result = _generate_and_write(item, vision_image, source_files, rel_path, page_metadata, opts)
+            except Exception as e:  # noqa: BLE001 — skip just this page, keep the rest of the item
+                utils.warn(f"{label}: alt text failed, skipping page: {e}")
+                failed.append({"file": page["filename"], "page": page["page_no"], "stage": "alt-text", "error": str(e)})
+                continue
+
+            if page["kind"] == "image":
+                images[page["filename"]] = page_result
+            else:
+                pdfs.setdefault(page["filename"], {"pages": {}})["pages"][str(page["page_no"])] = page_result
+
+    if pages and not images and not pdfs:
+        raise RuntimeError(f"alt text failed for all {len(pages)} page(s): {failed[0]['error']}")
 
     if image_paths:
-        images = {}
-        for bronze_path in image_paths:
-            filename = bronze_path.rsplit("/", 1)[-1]
-            stem = filename.rsplit(".", 1)[0]
-            images_dir = pipeline.derivative_dir(
-                item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images",
-            )
-            display_image = f"{images_dir}/large.jpg"
-
-            out_filename = pipeline.output_name(stem, "alt-text.json", multi_image)
-            rel_path = _silver_rel_path(item, "accessibility", out_filename)
-            images[filename] = _generate_and_write(item, display_image, sidecar_path, rel_path, metadata, opts)
         result["images"] = images
-
     if pdf_paths:
-        pdfs = {}
-        for bronze_path in pdf_paths:
-            filename = bronze_path.rsplit("/", 1)[-1]
-            # Mirrors digtk.models.digital_website.pdf.derivatives()'s own
-            # images_base/images_dir construction exactly, so this reads back
-            # precisely what that command published — see its module docstring.
-            images_base = f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}/images"
-            images_base_dir = pipeline.derivative_dir(item, images_base)
-            manifest = json.loads(fs.read(f"{images_base_dir}/manifest.json"))
-            count = manifest["params"]["pages"]
-
-            pages = {}
-            for page_no in range(1, count + 1):
-                page_dir = pipeline.derivative_dir(item, f"{images_base}/{page_no}")
-                display_image = f"{page_dir}/large.jpg"
-                page_metadata = {**metadata, "page": (page_no, count)}
-
-                rel_path = _silver_rel_path(item, "accessibility", filename, str(page_no), "alt-text.json")
-                pages[str(page_no)] = _generate_and_write(
-                    item, display_image, sidecar_path, rel_path, page_metadata, opts
-                )
-            pdfs[filename] = {"pages": pages}
         result["pdfs"] = pdfs
-
+    if failed:
+        result["status"] = "partial"
+    result["failed"] = failed
     return result
 
 
@@ -180,18 +173,17 @@ def _read_json_derivative(path):
         return None
 
 
-def tag_pdf(ark, opts={}):
+def tag_pdf(target, opts={}):
     """Assemble a searchable, PDF/UA-1-tagged PDF for every PDF binary in an item.
 
-    Requires `digtk showcase pdf derivatives` to have already run (reads back
-    its published per-page OCR-prep images). Re-runs Tesseract against those
-    images for hOCR word geometry (pdf.derivatives() computes this internally
-    too but only persists a converted djvu text layer). Alt text
+    Rasterizes each page and builds its own OCR-prep image (prep.ocr_image()),
+    then runs Tesseract against it for hOCR word geometry. Alt text
     (generate_alt_text's output) and, with opts['tables'], a vision-generated
     layout (layout.page_layout(), cached as its own derivative) are read back
     if present and used to enrich tagging — neither is a hard prerequisite.
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, 'cask:/workspace/...'
+        item path, or a resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'lang' (str, default 'en-US' — the *document* language
         for pdf_tag.tag_scan_pdf, e.g. 'en-US'; NOT Tesseract's language code,
         see below), 'strict' (bool, default False), 'lookahead' (int, default
@@ -199,8 +191,8 @@ def tag_pdf(ark, opts={}):
         the per-page vision layout pass), 'validate' (bool, default True —
         run veraPDF on the tagged PDF), 'dpi' (float, default
         CONFIG["image"]["dpi"] — pixel->point scale for the OCR-prep images'
-        word geometry, forwarded to both build_searchable_pdf and
-        run_tesseract), 'min_conf' (float, default
+        word geometry, forwarded to build_searchable_pdf, run_tesseract and
+        image_magick.prep_ocr), 'min_conf' (float, default
         CONFIG["accessibility"]["min_word_confidence"] — drop words below
         this hOCR confidence (0-100) from the searchable-PDF text layer
         instead of baking in obviously-wrong low-confidence guesses; see
@@ -208,25 +200,21 @@ def tag_pdf(ark, opts={}):
         digtk.lib.ocr_utils.run_tesseract() accepts (psm/oem/timeout) — its
         own 'lang' (a Tesseract language code like 'eng', a different thing
         from this opts['lang']) is deliberately never forwarded and always
-        resolves to CONFIG["ocr"]["lang"] instead.
-    :returns: {"status": "success", "ark": str, "pdfs": {filename: {**tag_scan_pdf
-        stats, **validate_ua result (if opts['validate']), "path": "cask:/..."}}}
+        resolves to CONFIG["ocr"]["lang"] instead. 'files' (set[str], optional)
+        limits the run to those PDF filenames.
+    :returns: {"status": "success", "ark": str|None, "item": str (see
+        items.item_id()), "pdfs": {filename: {**tag_scan_pdf stats,
+        **validate_ua result (if opts['validate']), "path": "cask:/..."}}}
     :rtype: dict
-    :raises LookupError: If the ARK doesn't resolve to a bronze item.
+    :raises LookupError: If the target doesn't resolve to an item.
     :raises ValueError: If the item has no PDF binaries.
-    :raises FileNotFoundError: If `digtk showcase pdf derivatives` hasn't
-        published this item's OCR-prep images yet.
     """
-    item = items.resolve(ark)
-    pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
-    # Matches pdf.derivatives()'s own namespace_ocr condition exactly — see
-    # pipeline.pdf_ocr_prep_images()'s docstring for why "mixed item" (also
-    # has non-PDF binaries) needs this alongside "more than one PDF".
-    namespace_ocr = len(pdf_paths) > 1 or len(pdf_paths) < len(item.bronze_binary_paths)
+    item = items.resolve_target(target)
+    _, pdf_paths = prep.partition_by_format(item.bronze_binary_paths)
+    if not pdf_paths:
+        raise ValueError(f"no PDF binaries found among this item's sources: {item.bronze_binary_paths}")
 
-    sidecar_path = item.sidecar_path
-    metadata = items.metadata(ark)
-    title = metadata.get("title") or ark
+    metadata = items.metadata_for(item)
 
     lang = opts.get("lang", "en-US")
     strict = opts.get("strict", False)
@@ -243,35 +231,37 @@ def tag_pdf(ark, opts={}):
     # run_tesseract() falls back to CONFIG["ocr"]["lang"] on its own.
     # psm/oem/dpi/timeout still pass through for callers that want to
     # override Tesseract's behavior.
-    tesseract_opts = {k: v for k, v in opts.items() if k not in ("lang", "min_conf")}
+    tesseract_opts = {k: v for k, v in opts.items() if k not in ("lang", "min_conf", "files")}
 
     pdfs = {}
-    for bronze_path in pdf_paths:
-        filename = bronze_path.rsplit("/", 1)[-1]
-        page_images, count = pipeline.pdf_ocr_prep_images(item, bronze_path, namespace_ocr)
-        source_files = [bronze_path, sidecar_path]
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        pages_by_pdf = {}
+        for page in prep.stage_pages(item, tmp_dir, opts={"formats": {"pdf"}, "files": opts.get("files")}):
+            pages_by_pdf.setdefault(page["source_path"], []).append(page)
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
+        for source_path, pages in pages_by_pdf.items():
+            filename = pages[0]["filename"]
+            count = pages[0]["count"]
+            title = metadata.get("title") or item.ark or pages[0]["stem"]
+            source_files = [source_path] + _sidecar_sources(item)
+
             local_images, words_per_page = [], []
-            for page_no, cask_image in enumerate(page_images, start=1):
-                local_path = os.path.join(tmp_dir, f"page-{page_no:04d}.jpg")
-                with open(local_path, "wb") as f:
-                    f.write(fs.read(cask_image))
+            for page in pages:
+                local_path = prep.ocr_image(page, tmp_dir, tesseract_opts)["local_path"]
                 local_images.append(local_path)
-                source_files.append(cask_image)
 
-                hocr_base = os.path.join(tmp_dir, f"page-{page_no:04d}")
+                hocr_base = os.path.join(tmp_dir, f"{page['stem']}-{page['page_tag']}")
                 tess_result = ocr_utils.run_tesseract(local_path, hocr_base, tesseract_opts)
                 words_per_page.append(pdf_utils.hocr_words(tess_result["hocr_path"], min_conf=min_conf))
 
-            searchable_path = os.path.join(tmp_dir, "searchable.pdf")
+            searchable_path = os.path.join(tmp_dir, f"{pages[0]['stem']}-searchable.pdf")
             pdf_utils.build_searchable_pdf(local_images, words_per_page, searchable_path, opts={
                 "dpi": opts.get("dpi", CONFIG["image"]["dpi"]), "title": title,
             })
 
             alt = []
             for page_no in range(1, count + 1):
-                alt_path = pipeline.derivative_dir(item, f"accessibility/{filename}/{page_no}") + "/alt-text.json"
+                alt_path = items.dest_dir(item, f"accessibility/{filename}/{page_no}") + "/alt-text.json"
                 alt_doc = _read_json_derivative(alt_path)
                 if alt_doc:
                     alt.append(alt_doc.get("alt") or None)
@@ -282,27 +272,27 @@ def tag_pdf(ark, opts={}):
             layouts = None
             if want_tables:
                 layouts = []
-                for page_no, local_path, cask_image in zip(range(1, count + 1), local_images, page_images):
-                    layout_path = pipeline.derivative_dir(item, f"accessibility/{filename}/{page_no}") + "/layout.json"
+                for page_no, local_path in zip(range(1, count + 1), local_images):
+                    layout_path = items.dest_dir(item, f"accessibility/{filename}/{page_no}") + "/layout.json"
                     lay = _read_json_derivative(layout_path)
                     if lay is not None:
                         source_files.append(layout_path)
                     else:
-                        lay = layout.page_layout(cask_image, opts)
+                        lay = layout.page_layout(local_path, opts)
                         if lay is not None:
-                            derivative.write(
-                                type="silver", collection=item.collection,
-                                rel_path=_silver_rel_path(item, "accessibility", filename, str(page_no), "layout.json"),
-                                data=json.dumps(lay).encode(), source_files=[cask_image],
+                            layout_write = derivative.write(
+                                type=item.dest_type, collection=item.collection,
+                                rel_path=items.dest_rel(item, "accessibility", filename, str(page_no), "layout.json"),
+                                data=json.dumps(lay).encode(), source_files=[source_path],
                                 opts={
-                                    "group": item.group, "time": item.time, "replace": True,
+                                    **items.dest_opts(item), "replace": True,
                                     "link_relation": LAYOUT_LINK_RELATION,
                                 },
                             )
-                            source_files.append(cask_image)
+                            source_files.append(layout_write["path"])
                     layouts.append(lay)
 
-            tagged_path = os.path.join(tmp_dir, "tagged.pdf")
+            tagged_path = os.path.join(tmp_dir, f"{pages[0]['stem']}-tagged.pdf")
             stats = pdf_tag.tag_scan_pdf(searchable_path, tagged_path, title, opts={
                 "alt": alt, "layouts": layouts, "lang": lang,
                 "strict": strict, "lookahead": lookahead,
@@ -317,15 +307,15 @@ def tag_pdf(ark, opts={}):
             with open(tagged_path, "rb") as f:
                 tagged_data = f.read()
             write_result = derivative.write(
-                type="silver", collection=item.collection,
-                rel_path=_silver_rel_path(item, "accessibility", filename, "tagged.pdf"),
+                type=item.dest_type, collection=item.collection,
+                rel_path=items.dest_rel(item, "accessibility", filename, "tagged.pdf"),
                 data=tagged_data, source_files=source_files,
                 opts={
-                    "group": item.group, "time": item.time, "replace": True,
+                    **items.dest_opts(item), "replace": True,
                     "link_relation": TAGGED_PDF_LINK_RELATION,
                 },
             )
 
-        pdfs[filename] = {**stats, **compliance, "path": write_result["path"]}
+            pdfs[filename] = {**stats, **compliance, "path": write_result["path"]}
 
-    return {"status": "success", "ark": ark, "pdfs": pdfs}
+    return {"status": "success", "ark": item.ark, "item": items.item_id(item), "pdfs": pdfs}

@@ -331,7 +331,10 @@ def _tiled_iiif_url_for_filename(location, filename):
     except FileNotFoundError:
         return None
 
-    tiled = json.loads(raw).get("extra", {}).get("tiled")
+    # utils.write_manifest() merges its "extra" content into the manifest's top
+    # level (no nested "extra" key), so "tiled" sits right alongside
+    # small/medium/large.
+    tiled = json.loads(raw).get("tiled")
     if not tiled:
         return None
 

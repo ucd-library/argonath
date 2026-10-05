@@ -452,19 +452,11 @@ def _sync_ocr_outputs(item, *, ocr_rel_dir, stem, multi, gcs_prefix, bucket):
     names them with an output_name() stem prefix on disk.
 
     Tries reading each expected file directly rather than first checking the
-    ocr dir's own manifest.json's "outputs" list -- confirmed via a real
-    derivatives run (2026-08-28) that this list can't be trusted for a mixed
-    image+PDF item: image.py's generate() and pdf.py's derivatives() both
-    compute the exact same shared ocr/ CaskFS path for such an item
-    (image.py always uses "ocr"; pdf.py's own aggregate manifest write also
-    lands there whenever the item has exactly one PDF, since its ocr_prefix
-    is only non-empty for a *multi-PDF* item) and each unconditionally
-    overwrites manifest.json there -- whichever media type's derivatives ran
-    last wins, silently discarding the other's real "outputs" list even
-    though every individual product file itself is untouched and still
-    exists. Reading files directly sidesteps that collision entirely; this
-    is an argonath-side workaround; the underlying directory-naming
-    collision in image.py/pdf.py is a separate, pre-existing issue.
+    ocr dir's own manifest.json's "outputs" list. Items processed before
+    pdf.py namespaced a mixed item's PDF ocr/ output (see
+    pipeline.pdf_ocr_prefix()) can still have a bare ocr/manifest.json whose
+    "outputs" list was overwritten by whichever of image/PDF derivatives ran
+    last; reading the files directly works either way.
 
     :param digtk.lib.items.ItemLocation item:
     :param str ocr_rel_dir: See _sync_outputs().
@@ -697,15 +689,13 @@ def sync_pdf_item(ark, opts={}):
     item = items.resolve(ark)
     pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
     is_media = _needs_media_wrapper(item)
-    # Matches pdf.py's derivatives()'s own 'ocr_prefix' -- a multi-PDF item
-    # nests each PDF's ocr/ under its own stem, same as its images/ dir.
-    multi_pdf = len(pdf_paths) > 1
 
     results = {}
     for bronze_path in pdf_paths:
         filename = bronze_path.rsplit("/", 1)[-1]
-        stem = os.path.splitext(filename)[0]
-        ocr_prefix = f"{stem}/" if multi_pdf else ""
+        # The same rule pdf.py's derivatives() writes with -- a multi-PDF *or*
+        # mixed-format item nests each PDF's ocr/ under its own stem.
+        ocr_prefix = pipeline.pdf_ocr_prefix(item.bronze_binary_paths, bronze_path)
         images_base = f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}/images"
         fin_path = _fin_path(ark, filename, media=is_media)
         page_numbers = _pdf_page_numbers(pipeline.derivative_dir(item, images_base))

@@ -148,3 +148,11 @@ def test_write_manifest_without_extra_has_no_extra_keys(monkeypatch):
     monkeypatch.setattr(derivative, "write", lambda **kwargs: None)
     manifest = utils.write_manifest("c", "x", [], {}, [], source_files=["cask:/bronze/g/c/latest/x/y.tiff"], opts={"group": "g"})
     assert set(manifest.keys()) == {"written_at", "status", "command", "params", "outputs", "duration_s"}
+
+
+def test_warn_prints_to_stderr_and_does_not_exit(capsys):
+    utils.warn("page 3 skipped")
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Warning: page 3 skipped\n"

@@ -16,10 +16,12 @@ from typing import Literal
 # Partition definitions
 # ---------------------------------------------------------------------------
 
-# Collection dimension — keyed "[group]/[collection]" (e.g. "digital-collections/ucd-photos").
+# Collection dimension — keyed "bronze/[group]/[collection]" (e.g.
+# "bronze/preservica/haeger"), matching the collection's CaskFS bronze path.
 # Group is folded into the key so identically-named collections in different
 # groups (e.g. a "website-harvests" collection and a "digital-collections"
-# collection that happen to share a name) don't collide.
+# collection that happen to share a name) don't collide. Partitions registered
+# under the older "[group]/[collection]" form aren't removed automatically.
 collections_partitions = dg.DynamicPartitionsDefinition(name="collections")
 
 # Item dimension — keyed by the item's ARK (e.g. "ark:/87287/d7abc1234").
@@ -32,6 +34,13 @@ items_partitions = dg.MultiPartitionsDefinition({
     "collection": collections_partitions,
     "item": items_partitions_dim,
 })
+
+# Workspace collections — keyed "workspace/[username]/[collection]" (e.g.
+# "workspace/jdoe/box-12"), i.e. cask:/workspace/[username]/[collection]: scans
+# staged before they have an ARK or a bronze copy (see digtk.models.workspace).
+# Kept in sync with CaskFS by lib.sensors.workspace_partition_sync_sensor; used by
+# lib.pipeline_workspace's process_workspace_job and promote_workspace_job.
+workspace_partitions = dg.DynamicPartitionsDefinition(name="workspace")
 
 
 # ---------------------------------------------------------------------------
@@ -217,3 +226,108 @@ class TagPdfConfig(Config):
     strict: bool = Field(False, description="Demote unaccounted-for lines to artifacts.")
     tables: bool = Field(False, description="Vision layout pass for Table/TR/TD structure.")
     validate: bool = Field(True, description="Run veraPDF on the tagged PDF.")
+
+
+class WorkspaceRunConfig(Config):
+    """Config for lib.pipeline_workspace.process_workspace_job's fan_out_workspace op —
+    which `digtk workspace run` steps to run, plus each step's tuning options
+    (the same fields as SplitSpreadsConfig/OcrConfig/AltTextConfig/TagPdfConfig).
+
+    Steps always run in digtk.models.workspace.STEP_ORDER regardless of which
+    are ticked; split_detect and split_apply are meant to be separate runs, with
+    a human reviewing gutters.json (`digtk workspace pull`) in between.
+
+    By default every step is ticked — split-detect, split-apply, OCR, alt text
+    (with a catalog description) and PDF tagging — so a plain launch or a
+    backfill (which never sees launchpad edits) does the whole job. That means
+    the first split-apply cuts pages from gutters.json before anyone has
+    reviewed it; after a review corrects gutters.json, launch again with only
+    split_apply ticked to re-cut from the corrected file. Steps that don't apply to an item
+    (e.g. tag-pdf on an images-only folder) are skipped, and a step that fails
+    doesn't stop the item's remaining steps — see digtk.models.workspace.run().
+
+    :param bool split_detect: Run split-spreads detect.
+    :param bool split_apply: Run split-spreads apply.
+    :param bool ocr: Run Tesseract + vision OCR.
+    :param bool alt_text: Generate alt text.
+    :param bool tag_pdf: Build tagged PDF/UA-1 PDFs (PDF items only).
+    :param int max_px: split-detect render width.
+    :param str lang: Tesseract language code.
+    :param int psm: Page segmentation mode.
+    :param int oem: OCR engine mode.
+    :param bool vision: Also run Qwen vision OCR for the transcript.
+    :param str collection_context: alt-text prompt context.
+    :param bool want_description: Also generate a catalog description.
+    :param int max_alt_chars: Maximum alt-text length.
+    :param str doc_lang: tag-pdf document language (BCP-47).
+    :param bool tables: tag-pdf vision layout pass for tables.
+    :param float min_conf: tag-pdf minimum hOCR word confidence (0-100).
+    :param bool validate: Run veraPDF on each tagged PDF.
+    """
+    split_detect: bool = Field(True, description="Run split-spreads detect.")
+    split_apply: bool = Field(True, description="Run split-spreads apply (re-run alone after correcting gutters.json).")
+    ocr: bool = Field(True, description="Run Tesseract + vision OCR.")
+    alt_text: bool = Field(True, description="Generate alt text.")
+    tag_pdf: bool = Field(True, description="Build tagged PDF/UA-1 PDFs (PDF items only).")
+    max_px: int = Field(1400, description="split-detect: render width, in pixels.")
+    lang: str = Field("eng", description="ocr: Tesseract language code.")
+    psm: int = Field(1, description="ocr: page segmentation mode.")
+    oem: int = Field(3, description="ocr: OCR engine mode.")
+    vision: bool = Field(True, description="ocr: also run Qwen vision OCR for the transcript.")
+    collection_context: str = Field("", description="alt-text: collection-specific prompt context.")
+    want_description: bool = Field(True, description="alt-text: also generate a catalog description.")
+    max_alt_chars: int = Field(150, description="alt-text: maximum alt-text length.")
+    doc_lang: str = Field("en-US", description="tag-pdf: document language.")
+    tables: bool = Field(False, description="tag-pdf: vision layout pass for Table/TR/TD structure.")
+    min_conf: float = Field(0.0, description="tag-pdf: drop hOCR words below this confidence (0-100).")
+    validate: bool = Field(True, description="tag-pdf: run veraPDF on the tagged PDF.")
+
+
+class PromoteItemConfig(Config):
+    """One workspace item to promote, and the ARK it was ingested under.
+
+    :param str source: Item folder under the collection's source/ ("" for
+        source/ itself — the usual case, a collection holding a single item).
+    :param str ark: The item's ARK in bronze, e.g. "ark:/87287/d3bv7b33r".
+    """
+    source: str = Field("", description="Item folder under source/ (\"\" = source/ itself).")
+    ark: str = Field(..., description="The item's ARK in bronze.")
+
+
+class PromoteWorkspaceConfig(Config):
+    """Config for lib.pipeline_workspace.promote_workspace_job — which reviewed
+    workspace items to copy into silver, and under which ARKs (see
+    `digtk workspace promote`).
+
+    Three ways to say what to promote, which can be combined:
+      - `ark` (+ `source`) for one item — `source` defaults to the collection's
+        source/ itself, the case where the collection is a single item;
+      - `items`, a list of {source, ark} pairs;
+      - `ark_from_folder` + `naan`, for a batch whose item folders are named
+        after their ARK ids (e.g. source/d3bv7b33r -> ark:/87293/d3bv7b33r):
+        every item folder in the partition is promoted, no list needed. A
+        folder also given explicitly (via `ark`/`source` or `items`) uses that
+        ARK instead.
+
+    :param str ark: ARK for the item at `source`. Leave empty to use only `items`
+        / `ark_from_folder`.
+    :param str source: Item folder under source/ for `ark` ("" = source/ itself).
+    :param list[PromoteItemConfig] items: Additional {source, ark} pairs.
+    :param bool ark_from_folder: Promote every item folder as ark:/<naan>/<folder name>.
+    :param str naan: The ARKs' Name Assigning Authority Number (e.g. "87293") —
+        required with ark_from_folder.
+    :param bool dry_run: Only report what would be copied (default True —
+        check the event log, then launch again with dry_run: false).
+    :param bool replace: Overwrite outputs already in silver.
+    """
+    ark: str = Field("", description="ARK for the item at `source` (the usual single-item case).")
+    source: str = Field("", description="Item folder under source/ for `ark` (\"\" = source/ itself).")
+    items: list[PromoteItemConfig] = Field(
+        default_factory=list, description="More {source, ark} pairs, for a collection with several items.",
+    )
+    ark_from_folder: bool = Field(
+        False, description="Promote every item folder as ark:/<naan>/<folder name> (folders named by ARK id).",
+    )
+    naan: str = Field("", description="ARK NAAN (e.g. 87293), required with ark_from_folder.")
+    dry_run: bool = Field(True, description="Only report what would be copied.")
+    replace: bool = Field(False, description="Overwrite outputs already in silver.")

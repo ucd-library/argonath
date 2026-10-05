@@ -58,6 +58,16 @@ def log(message):
     print(message, flush=True)
 
 
+def warn(message):
+    """Print a non-fatal problem to stderr — something the command worked
+    around (e.g. one page it had to skip) rather than a reason to stop, so it
+    stays visible even with --output json keeping stdout for the result line.
+
+    :param str message: Human-readable warning.
+    """
+    print(f"Warning: {message}", file=sys.stderr, flush=True)
+
+
 def result(data):
     """Print a structured JSON result as the final stdout line, if JSON output is
     enabled (see _json_enabled()), and exit 0.

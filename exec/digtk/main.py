@@ -12,9 +12,9 @@ Subcommands mirror the pipeline phases:
                           audio (transcode, waveform, captions via local Whisper),
                           gcs (sync derivatives into the legacy DAMS/fin GCS bucket layout),
                           es (index items into the DAMS website's Elasticsearch index)
-  digtk ocr           — OCR via Tesseract or ML fallback
+  digtk ocr           — Tesseract word geometry + Qwen vision transcript
   digtk metadata      — AI and human metadata generation
-  digtk accessibility — accessibility metadata (AI alt text; PDF/UA-1 tagging planned)
+  digtk accessibility — accessibility metadata (AI alt text, PDF/UA-1 tagging)
   digtk split-spreads — detect + cut scanned two-page spreads (corrective, not a
                           showcase display asset — see digtk.models.split)
   digtk ingest        — ingest files into CaskFS
@@ -23,6 +23,9 @@ Subcommands mirror the pipeline phases:
   digtk preservica  — pull a collection out of Preservica into bronze (import/tree)
   digtk reporting     — admin commands for the reporting Postgres schema
                           (see digtk.lib.reporting)
+  digtk workspace     — stage local folders into CaskFS workspace, run ocr/
+                          accessibility/split-spreads on them, pull outputs,
+                          promote them to silver (see digtk.models.workspace)
 
 Every command finishes with a result — --output controls whether that also
 includes a structured JSON line (see digtk.lib.utils's module docstring):
@@ -36,6 +39,7 @@ import typer
 
 from digtk.commands import (
     accessibility, ai, auth, collection, config, ocr, metadata, ingest, preservica, reporting, showcase, search, split,
+    workspace,
 )
 from digtk.lib import utils
 from digtk.lib.banner import print_banner
@@ -60,6 +64,7 @@ app.add_typer(ingest.app,        name="ingest")
 app.add_typer(collection.app,    name="collection")
 app.add_typer(search.app,        name="search")
 app.add_typer(reporting.app,     name="reporting")
+app.add_typer(workspace.app,     name="workspace")
 
 class OutputMode(str, Enum):
     """CLI-wide --output mode, applying to every command's final result line."""

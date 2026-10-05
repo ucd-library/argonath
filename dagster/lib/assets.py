@@ -21,6 +21,32 @@ from lib.configs import (
 from lib.utils import exec
 
 
+def _log_failures(context, result):
+    """Surface the pages a digtk tool skipped (status "partial" — see e.g.
+    digtk.models.ocr.run_ocr()) as warnings, so a partial run is visible in the
+    event log instead of only in the raw stdout.
+
+    :param context: Dagster asset execution context.
+    :param dict result: The digtk command's parsed JSON result.
+    """
+    for failure in result.get("failed") or []:
+        page = f" page {failure['page']}" if failure.get("page") else ""
+        context.log.warning(f"{failure['file']}{page} {failure['stage']} failed -> {failure['error']}")
+
+
+def _reporting_args(context):
+    """--reporting-job-id/--reporting-collection flags for a per-item asset's
+    digtk call, so each run records a digtk.lib.reporting row the same way
+    lib.pipeline_fanout's ops do.
+
+    :param context: Dagster asset execution context, partitioned by items_partitions.
+    :returns: argv fragment.
+    :rtype: list[str]
+    """
+    collection_key = context.partition_key.keys_by_dimension["collection"]
+    return ["--reporting-job-id", context.run_id, "--reporting-collection", collection_key]
+
+
 @dg.asset(
     group_name="ingest",
 )
@@ -51,7 +77,7 @@ def reconcile_collection_items(context: dg.AssetExecutionContext, config: Reconc
         source_uri (non-preservica sources) / preservica_changed (preservica).
     :returns: Dict with the collection key and added/removed/changed ARK lists.
     """
-    collection_key = f"{config.group}/{config.collection}"
+    collection_key = f"bronze/{config.group}/{config.collection}"
 
     preservica_cmd = ["digtk", "preservica", "sync"]
     for entity in config.preservica_changed:
@@ -176,7 +202,7 @@ def detect_spreads(context: dg.AssetExecutionContext, config: SplitSpreadsConfig
     """
     ark = context.partition_key.keys_by_dimension["item"]
     cmd = ["digtk", "split-spreads", "detect", ark, "--max-px", str(config.max_px)]
-    result = exec(cmd)
+    result = exec(cmd + _reporting_args(context))
     context.log.info(f"Detected spreads for {ark}: {result}")
     return dg.Output(result)
 
@@ -198,7 +224,7 @@ def apply_spreads(context: dg.AssetExecutionContext):
     """
     ark = context.partition_key.keys_by_dimension["item"]
     cmd = ["digtk", "split-spreads", "apply", ark]
-    result = exec(cmd)
+    result = exec(cmd + _reporting_args(context))
     context.log.info(f"Applied spread splits for {ark}: {result}")
     return dg.Output(result)
 
@@ -234,15 +260,17 @@ def generate_derivatives(context: dg.AssetExecutionContext, config: DerivativesC
 
 @dg.asset(
     partitions_def=items_partitions,
-    deps=[generate_derivatives],
+    deps=[ingest_item],
     group_name="ocr",
 )
 def run_ocr(context: dg.AssetExecutionContext, config: OcrConfig):
-    """Run OCR on the prepared derivative image for an item.
+    """Run OCR on every image/PDF page of an item.
 
     Both engines run unconditionally: Tesseract for word geometry, Qwen
     vision for the authoritative transcript — not a confidence-gated
-    fallback, see digtk.models.ocr's module docstring.
+    fallback, see digtk.models.ocr's module docstring. Depends on
+    ingest_item, not generate_derivatives: `digtk ocr tesseract` prepares its
+    own inputs from the bronze binaries (see digtk.models.prep).
 
     :param context: Dagster asset execution context.
     :param config: OcrConfig with lang, psm, oem, vision.
@@ -254,25 +282,24 @@ def run_ocr(context: dg.AssetExecutionContext, config: OcrConfig):
            "--oem",  str(config.oem)]
     if not config.vision:
         cmd.append("--no-vision")
-    result = exec(cmd)
+    result = exec(cmd + _reporting_args(context))
+    _log_failures(context, result)
     context.log.info(f"OCR result: {result}")
     return dg.Output(result)
 
 
 @dg.asset(
     partitions_def=items_partitions,
-    deps=[generate_derivatives],
+    deps=[ingest_item],
     group_name="accessibility",
 )
 def generate_alt_text(context: dg.AssetExecutionContext, config: AltTextConfig):
     """Generate AI alt text for an item's image(s)/PDF page(s) using Samwise vision.
 
-    Depends on generate_derivatives, not run_ocr/generate_metadata: it only
-    needs the "large" display JPEG(s) generate_derivatives (image items) or
-    `digtk showcase pdf derivatives` (PDF items, run separately — see
-    generate_derivatives' own docstring on multi-format items) already
-    publish, not OCR text or the (still-unimplemented, phase 0.6) AI metadata
-    draft — see digtk.models.accessibility's module docstring.
+    Depends only on ingest_item: `digtk accessibility alt-text` builds its
+    own resized image per image/PDF page from the bronze binaries (see
+    digtk.models.prep) — it needs neither showcase derivatives, OCR text,
+    nor the (still-unimplemented, phase 0.6) AI metadata draft.
 
     :param context: Dagster asset execution context.
     :param config: AltTextConfig with collection_context, want_description, max_alt_chars.
@@ -283,27 +310,25 @@ def generate_alt_text(context: dg.AssetExecutionContext, config: AltTextConfig):
         cmd += ["--collection-context", config.collection_context]
     if config.want_description:
         cmd += ["--want-description"]
-    result = exec(cmd)
+    result = exec(cmd + _reporting_args(context))
+    _log_failures(context, result)
     context.log.info(f"Alt-text result: {result}")
     return dg.Output(result)
 
 
 @dg.asset(
     partitions_def=items_partitions,
-    deps=[generate_derivatives],
+    deps=[ingest_item],
     group_name="accessibility",
 )
 def tag_accessible_pdf(context: dg.AssetExecutionContext, config: TagPdfConfig):
     """Assemble a searchable, PDF/UA-1-tagged PDF for an item's PDF binary(ies).
 
-    Depends on generate_derivatives the same way generate_alt_text does — a
-    soft/approximate signal, not a real one: there is no Dagster asset for
-    PDF derivative generation yet (see generate_derivatives' own docstring on
-    multi-format items), so `digtk showcase pdf derivatives` must have been
-    run out of band before this asset can succeed. It fails with a clear
-    FileNotFoundError (missing OCR manifest) otherwise. Optionally reads back
-    generate_alt_text's output for richer /Figure tagging, but doesn't
-    require it — see digtk.models.accessibility.tag_pdf's own docstring.
+    Depends only on ingest_item: `digtk accessibility tag-pdf` rasterizes
+    each page and builds its own OCR-prep images from the bronze PDF (see
+    digtk.models.prep). Optionally reads back generate_alt_text's output for
+    richer /Figure tagging, but doesn't require it — see
+    digtk.models.accessibility.tag_pdf's own docstring.
 
     :param context: Dagster asset execution context.
     :param config: TagPdfConfig with lang, strict, tables, validate.
@@ -316,7 +341,7 @@ def tag_accessible_pdf(context: dg.AssetExecutionContext, config: TagPdfConfig):
         cmd.append("--tables")
     if not config.validate:
         cmd.append("--no-validate")
-    result = exec(cmd)
+    result = exec(cmd + _reporting_args(context))
     context.log.info(f"PDF tagging result: {result}")
     return dg.Output(result)
 
