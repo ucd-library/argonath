@@ -16,10 +16,12 @@ from typing import Literal
 # Partition definitions
 # ---------------------------------------------------------------------------
 
-# Collection dimension — keyed "[group]/[collection]" (e.g. "digital-collections/ucd-photos").
+# Collection dimension — keyed "bronze/[group]/[collection]" (e.g.
+# "bronze/preservica/haeger"), matching the collection's CaskFS bronze path.
 # Group is folded into the key so identically-named collections in different
 # groups (e.g. a "website-harvests" collection and a "digital-collections"
-# collection that happen to share a name) don't collide.
+# collection that happen to share a name) don't collide. Partitions registered
+# under the older "[group]/[collection]" form aren't removed automatically.
 collections_partitions = dg.DynamicPartitionsDefinition(name="collections")
 
 # Item dimension — keyed by the item's ARK (e.g. "ark:/87287/d7abc1234").

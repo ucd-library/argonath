@@ -273,8 +273,11 @@ The Dagster UI is at http://localhost:3000 in local dev.
 
 ### Bronze items (with ARKs)
 
-- **Collection partitions** are registered by `collection_partition_sync_sensor` for
+- **Collection partitions** are keyed `bronze/<group>/<collection>` (e.g.
+  `bronze/preservica/haeger`). `collection_partition_sync_sensor` registers them for
   anything added with `digtk collection add --root bronze` or `digtk preservica import`.
+  Partitions under the older `<group>/<collection>` form aren't removed automatically;
+  delete them in the UI once they're no longer needed.
 - **Item partitions** (ARKs) are registered by `reconcile_collection_job`.
 - **Per-item tool jobs:** `ocr_job`, `alt_text_job`, `tag_pdf_job`,
   `detect_spreads_job`, and `apply_spreads_job`. Pick a (collection, item) partition and
@@ -282,6 +285,23 @@ The Dagster UI is at http://localhost:3000 in local dev.
   records reporting under the Dagster run ID.
 - **Webapp derivatives for a whole collection:** `process_collection_job` (derivatives
   only).
+  - **Steps:** one step per image and per PDF file (`process_derivative_task[...]`),
+    each running `digtk showcase image|pdf derivatives <ark> --file <bronze path>`.
+    Video and audio stay one step per item.
+  - **Finalize:** after every derivative step, a `finalize_item[...]` step per item
+    (`digtk showcase finalize <ark>`) writes what combines all of an item's files: an
+    image item's `ocr/manifest.json` and the item's `associatedMedia`.
+  - **Failures:** an item with a failed file step isn't finalized. Every other item
+    still is, and `check_derivative_failures` marks the run failed. Re-run the
+    partition, or the failed file by hand, then finalize that item:
+
+    ```bash
+    digtk showcase image derivatives <ark> --file <bronze path>
+    ```
+
+    ```bash
+    digtk showcase finalize <ark>
+    ```
 
 ## Promoting workspace results to silver
 

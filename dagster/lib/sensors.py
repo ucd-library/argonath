@@ -99,10 +99,8 @@ def collection_partition_sync_sensor(context: dg.SensorEvaluationContext):
     active = result.get("collections", [])
 
     existing = set(context.instance.get_dynamic_partitions("collections"))
-    missing = [
-        f"{c['group_name']}/{c['name']}" for c in active
-        if f"{c['group_name']}/{c['name']}" not in existing
-    ]
+    keys = [f"bronze/{c['group_name']}/{c['name']}" for c in active]
+    missing = [key for key in keys if key not in existing]
     if missing:
         context.instance.add_dynamic_partitions("collections", missing)
 

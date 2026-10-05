@@ -77,7 +77,7 @@ def reconcile_collection_items(context: dg.AssetExecutionContext, config: Reconc
         source_uri (non-preservica sources) / preservica_changed (preservica).
     :returns: Dict with the collection key and added/removed/changed ARK lists.
     """
-    collection_key = f"{config.group}/{config.collection}"
+    collection_key = f"bronze/{config.group}/{config.collection}"
 
     preservica_cmd = ["digtk", "preservica", "sync"]
     for entity in config.preservica_changed:

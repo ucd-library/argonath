@@ -157,12 +157,17 @@ def publish(item, subdir, local_outputs, command, params, *, type="silver", type
         (and the manifest's) destination opts, merged with the link/manifest
         opts below.
     :param dict opts: 'manifest_opts' forwarded to utils.write_manifest (e.g. duration_s).
+        'manifest' (bool, default True) — set False to publish the files without
+        writing the directory's manifest.json, for a directory several per-file
+        runs share (e.g. an image item's combined ocr/ — see image.generate()'s
+        'files' opt), whose manifest a later finalize step writes once.
         'link_relation' (str, optional) — forwarded to derivative.write() as every
         output's CaskFS lineage relation. The caller decides this per subdir rather than
         this function inferring it from the subdir string, since subdir naming doesn't map
         1:1 to a relation across every media type this pipeline now serves (e.g.
         "derivatives/page-000" for a PDF page vs. plain "derivatives" for an image).
-    :returns: {"dir": CaskFS process directory ('cask:/...'), "outputs": [filenames], "manifest": {...}}
+    :returns: {"dir": CaskFS process directory ('cask:/...'), "outputs": [filenames],
+        "manifest": {...}|None (None when opts['manifest'] is False)}
     :rtype: dict
     :raises ValueError: If `type_opts` is omitted for a non-silver `type`.
     """
@@ -191,14 +196,95 @@ def publish(item, subdir, local_outputs, command, params, *, type="silver", type
         if source_bronze_path not in source_files:
             source_files.append(source_bronze_path)
 
-    manifest = utils.write_manifest(
-        item.collection, rel_path, command, params, outputs,
-        source_files=source_files,
-        type=type,
-        opts={**opts.get("manifest_opts", {}), **type_opts},
-    )
+    manifest = None
+    if opts.get("manifest", True):
+        manifest = utils.write_manifest(
+            item.collection, rel_path, command, params, outputs,
+            source_files=source_files,
+            type=type,
+            opts={**opts.get("manifest_opts", {}), **type_opts},
+        )
     dest_dir = derivative_dir(item, subdir, type=type, type_opts=type_opts)
     return {"dir": dest_dir, "outputs": outputs, "manifest": manifest}
+
+
+def pdf_ocr_prefix(bronze_binary_paths, pdf_path):
+    """The directory prefix a PDF's per-page ocr/ output lives under within its
+    item — the one place this rule lives, so the code that writes it
+    (pdf.derivatives()) and the code that reads it back (digtk.lib.gcs_sync)
+    can't disagree.
+
+    A PDF's OCR output is namespaced by its own filename stem ("<stem>/ocr/...")
+    whenever anything else in the item could also write to the bare "ocr/"
+    directory: more than one PDF, or any non-PDF binary alongside it (e.g.
+    image.generate() publishes its own ocr/manifest.json there). A pure
+    single-PDF item keeps the bare "ocr/".
+
+    :param list[str] bronze_binary_paths: Every binary of the item.
+    :param str pdf_path: The PDF in question (one of bronze_binary_paths).
+    :returns: "<stem>/" or "".
+    :rtype: str
+    """
+    pdf_count = sum(
+        1 for p in bronze_binary_paths if FORMAT_BY_EXTENSION.get(os.path.splitext(p)[1].lower()) == "pdf"
+    )
+    if pdf_count > 1 or pdf_count < len(bronze_binary_paths):
+        return f"{os.path.splitext(os.path.basename(pdf_path))[0]}/"
+    return ""
+
+
+def select_binaries(bronze_binary_paths, files):
+    """Pick out the source binaries a per-file run should process.
+
+    Supports one Dagster step per image/PDF (see dagster/lib/pipeline_fanout.py):
+    each step names its file, while output naming and item-level layout
+    decisions still come from the whole item.
+
+    :param list[str] bronze_binary_paths: The candidate binaries ('cask:/...'), in item order.
+    :param iterable files: Selectors — a full bronze path, or a bare filename.
+    :returns: The selected binaries, in item order.
+    :rtype: list[str]
+    :raises ValueError: If a selector matches nothing, or a bare filename matches
+        more than one binary (e.g. the same name under Access/ and Preservation/ —
+        pass the full path instead).
+    """
+    selected = set()
+    for selector in files:
+        matches = [p for p in bronze_binary_paths if p == selector or p.rsplit("/", 1)[-1] == selector]
+        if not matches:
+            raise ValueError(f"no source binary matches {selector!r}")
+        if len(matches) > 1:
+            raise ValueError(f"{selector!r} is ambiguous ({len(matches)} binaries share that name) — pass the full path")
+        selected.add(matches[0])
+    return [p for p in bronze_binary_paths if p in selected]
+
+
+def image_objects_from_manifest(manifest, opts={}):
+    """Rebuild the small/medium/large associatedMedia ImageObjects for one image
+    (or PDF page) from the manifest content its derivatives run published — the
+    same entries image.generate()/pdf.derivatives() build in-process, so a
+    finalize step can write associatedMedia without regenerating anything.
+
+    :param dict manifest: A per-image images/manifest.json, or one entry of a
+        PDF's aggregate manifest "pages" array — {label: {"size": {"width",
+        "height"} (strings), "url": str}} for each THUMBNAIL_SIZE_LABELS label.
+    :param dict opts: 'position' (int, optional) — a PDF page's 0-indexed position.
+    :returns: One ImageObject per label, in label order.
+    :rtype: list[dict]
+    """
+    objects = []
+    for label in THUMBNAIL_SIZE_LABELS:
+        entry = {
+            "@type": "ImageObject",
+            "contentUrl": manifest[label]["url"],
+            "encodingFormat": "image/jpeg",
+        }
+        if "position" in opts:
+            entry["position"] = opts["position"]
+        entry["width"] = int(manifest[label]["size"]["width"])
+        entry["height"] = int(manifest[label]["size"]["height"])
+        objects.append(entry)
+    return objects
 
 
 def size_as_strings(dims):

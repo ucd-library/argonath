@@ -423,3 +423,60 @@ def test_merge_dc_metadata_merges_field_sources_rather_than_replacing(fake_deriv
     doc = pipeline.merge_dc_metadata(item_metadata)
 
     assert doc["argonath:fieldSources"] == {"caption": "ai", "name": "human"}
+
+
+# --- per-file helpers -------------------------------------------------------------
+
+def test_select_binaries_by_filename_or_full_path_keeps_item_order():
+    paths = ["cask:/b/x/a.tif", "cask:/b/x/b.tif", "cask:/b/x/c.pdf"]
+
+    assert pipeline.select_binaries(paths, ["c.pdf", "cask:/b/x/a.tif"]) == ["cask:/b/x/a.tif", "cask:/b/x/c.pdf"]
+
+
+def test_select_binaries_rejects_unknown_and_ambiguous_names():
+    paths = ["cask:/b/x/Access/p1.tif", "cask:/b/x/Preservation/p1.tif"]
+
+    with pytest.raises(ValueError, match="no source binary matches"):
+        pipeline.select_binaries(paths, ["p2.tif"])
+    with pytest.raises(ValueError, match="ambiguous"):
+        pipeline.select_binaries(paths, ["p1.tif"])
+    assert pipeline.select_binaries(paths, ["cask:/b/x/Preservation/p1.tif"]) == ["cask:/b/x/Preservation/p1.tif"]
+
+
+def test_image_objects_from_manifest_rebuilds_small_medium_large():
+    manifest = {
+        label: {"size": {"width": str(w), "height": str(w * 2)}, "url": f"cask://x/{label}.jpg"}
+        for label, w in (("small", 256), ("medium", 512), ("large", 1024))
+    }
+
+    objects = pipeline.image_objects_from_manifest(manifest, opts={"position": 3})
+
+    assert objects[0] == {
+        "@type": "ImageObject", "contentUrl": "cask://x/small.jpg", "encodingFormat": "image/jpeg",
+        "position": 3, "width": 256, "height": 512,
+    }
+    assert [o["contentUrl"] for o in objects] == ["cask://x/small.jpg", "cask://x/medium.jpg", "cask://x/large.jpg"]
+    assert "position" not in pipeline.image_objects_from_manifest(manifest)[0]
+
+
+def test_publish_can_skip_the_manifest(monkeypatch, tmp_path):
+    writes = []
+    monkeypatch.setattr(pipeline.derivative, "write", lambda **kw: writes.append(kw["rel_path"]) or {"path": "x"})
+    local = tmp_path / "f.jpg"
+    local.write_bytes(b"x")
+
+    result = pipeline.publish(ITEM, "ocr", [("f.jpg", str(local), ITEM.bronze_binary_paths[0])],
+                              command=["c"], params={}, opts={"manifest": False})
+
+    assert writes == ["item/ocr/f.jpg"]
+    assert result["manifest"] is None
+
+
+def test_pdf_ocr_prefix_bare_for_a_lone_pdf_and_namespaced_otherwise():
+    lone = ["cask:/b/x/doc.pdf"]
+    two_pdfs = ["cask:/b/x/a.pdf", "cask:/b/x/b.pdf"]
+    with_image = ["cask:/b/x/doc.pdf", "cask:/b/x/page.tif"]
+
+    assert pipeline.pdf_ocr_prefix(lone, lone[0]) == ""
+    assert pipeline.pdf_ocr_prefix(two_pdfs, two_pdfs[1]) == "b/"
+    assert pipeline.pdf_ocr_prefix(with_image, with_image[0]) == "doc/"

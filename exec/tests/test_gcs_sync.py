@@ -642,3 +642,18 @@ def test_sync_item_raises_on_unrecognized_extension(fake_fs, monkeypatch, fake_u
 
     with pytest.raises(ValueError, match="unrecognized media extension"):
         gcs_sync.sync_item(ARK, opts={"bucket": "b"})
+
+
+def test_sync_pdf_item_reads_a_mixed_items_namespaced_ocr_dir(fake_fs, fake_mixed_item, fake_upload, monkeypatch):
+    """A PDF alongside an image writes its OCR under '<pdf stem>/ocr/' (see
+    pipeline.pdf_ocr_prefix()); the sync must read from there, not the bare
+    'ocr/' the image item owns."""
+    reads = []
+    real_read = gcs_sync.fs.read
+    monkeypatch.setattr(gcs_sync.fs, "read", lambda path: reads.append(path) or real_read(path))
+
+    gcs_sync.sync_pdf_item(ARK, opts={"bucket": "b"})
+
+    djvu_reads = [p for p in reads if p.endswith("ocr.djvu")]
+    assert djvu_reads
+    assert all("/item/document/ocr/page-" in p for p in djvu_reads)

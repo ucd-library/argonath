@@ -156,3 +156,26 @@ def test_derivatives_routes_exception_through_utils_error(monkeypatch):
 
     assert result.exit_code == 1
     assert last_json_line(result.output) == {"status": "error", "error": "convert exploded"}
+
+
+def test_derivatives_file_option_is_repeatable_and_forwarded(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(image_model, "generate", lambda ark, opts={}: seen.update(opts=opts) or {
+        "status": "success", "orientation": {},
+    })
+
+    result = runner.invoke(image.app, ["derivatives", ARK, "--file", "a.tif", "--file", "b.tif"])
+
+    assert result.exit_code == 0
+    assert seen["opts"]["files"] == ["a.tif", "b.tif"]
+
+
+def test_derivatives_without_file_runs_the_whole_item(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(image_model, "generate", lambda ark, opts={}: seen.update(opts=opts) or {
+        "status": "success", "orientation": {},
+    })
+
+    runner.invoke(image.app, ["derivatives", ARK])
+
+    assert seen["opts"]["files"] is None

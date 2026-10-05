@@ -98,6 +98,11 @@ def derivatives(
     widths: ImageThumbnailWidthsOption = CONFIG["image"]["thumbnail_widths"],
     deskew_threshold: ImageDeskewThresholdOption = CONFIG["image"]["deskew_threshold"],
     fuzz_threshold: ImageFuzzThresholdOption = CONFIG["image"]["fuzz_threshold"],
+    file: Annotated[list[str] | None, typer.Option(
+        "--file", help="Only process this source file (bronze path or filename; repeatable) — "
+                       "one Dagster step per file. Skips the item-level outputs; run "
+                       "`digtk showcase finalize` once every file is done.",
+    )] = None,
     reporting_job_id: ReportingJobIdOption = None,
     reporting_collection: ReportingCollectionOption = None,
 ):
@@ -112,14 +117,16 @@ def derivatives(
     """
     try:
         utils.log(f"Generating derivatives for {ark} at widths {widths}")
+        item_label = f"{ark}#{','.join(file)}" if file else ark
         with reporting.track(
-            reporting_job_id, stage="derivatives", item_id=ark, collection=reporting_collection,
+            reporting_job_id, stage="derivatives", item_id=item_label, collection=reporting_collection,
             options={"widths": widths, "deskew_threshold": deskew_threshold, "fuzz_threshold": fuzz_threshold},
         ):
             result = image.generate(ark, opts={
                 "widths": widths,
                 "threshold": deskew_threshold,
                 "fuzz": fuzz_threshold,
+                "files": file or None,
             })
         for stem, orientation in result["orientation"].items():
             utils.log(f"  {stem}: {'deskewed' if orientation['deskew'] else 'original'}")

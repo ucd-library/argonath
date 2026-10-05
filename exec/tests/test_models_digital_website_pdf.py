@@ -378,3 +378,95 @@ def test_derivatives_multi_pdf_item_nests_by_filename(fake_fs, fake_pdf_render, 
     assert result["pdfs"]["doc-a.pdf"]["derivatives"]["pages"]["1"]["dir"] == (
         "cask:/silver/g/c/latest/box-1/folder-3/public-frontend-derivatives/doc-a.pdf/images/1"
     )
+
+
+# --- per-file mode + finalize ------------------------------------------------
+
+def _written(calls, suffix):
+    return [c for c in calls if c["rel_path"].endswith(suffix)]
+
+
+def test_derivatives_per_file_processes_only_that_pdf_and_skips_associated_media(
+    fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch,
+):
+    use_multi_item(monkeypatch)
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
+
+    result = pd.derivatives(ARK, opts={"widths": WIDTHS, "files": ["doc-b.pdf"]})
+
+    assert result["finalized"] is False
+    assert set(result["pdfs"]) == {"doc-b.pdf"}
+    rel_paths = {c["rel_path"] for c in fake_derivative}
+    assert "box-1/folder-3/public-frontend-derivatives/doc-b.pdf/images/manifest.json" in rel_paths
+    # The multi-PDF ocr/ namespacing still follows the whole item.
+    assert any(p.startswith("box-1/folder-3/doc-b/ocr/") for p in rel_paths)
+    assert not any("doc-a" in p for p in rel_paths)
+    assert not _written(fake_derivative, "item.jsonld.json")
+
+
+def test_per_pdf_runs_then_finalize_match_a_whole_item_run(
+    fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch,
+):
+    use_multi_item(monkeypatch)
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
+
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
+    whole_sidecar = _written(fake_derivative, "item.jsonld.json")[0]
+    fake_derivative.clear()
+
+    for filename in ("doc-a.pdf", "doc-b.pdf"):
+        pd.derivatives(ARK, opts={"widths": WIDTHS, "files": [filename]})
+    published = {
+        f"cask:/silver/g/c/latest/{c['rel_path']}": c["data"]
+        for c in _written(fake_derivative, "/images/manifest.json")
+    }
+    fake_derivative.clear()
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: published[path])
+
+    result = pd.finalize(ARK)
+
+    sidecar_write = _written(fake_derivative, "item.jsonld.json")[0]
+    assert json.loads(sidecar_write["data"]) == json.loads(whole_sidecar["data"])
+    assert sidecar_write["source_files"] == whole_sidecar["source_files"]
+    assert result == {"status": "success", "ark": ARK, "pdfs": 2, "associated_media": 6}
+
+
+def test_pdf_finalize_writes_nothing_if_a_pdfs_derivatives_are_missing(fake_fs, fake_derivative, monkeypatch):
+    use_multi_item(monkeypatch)
+
+    def fake_read(path):
+        raise FileNotFoundError(path)
+    monkeypatch.setattr(pipeline.fs, "read", fake_read)
+
+    with pytest.raises(FileNotFoundError, match=r"2 PDF\(s\)"):
+        pd.finalize(ARK)
+    assert fake_derivative == []
+
+
+def test_derivatives_ocr_aggregate_manifest_lists_its_page_dirs(
+    fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch,
+):
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
+
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
+
+    ocr_manifest = json.loads(_written(fake_derivative, "item/ocr/manifest.json")[0]["data"])
+    assert ocr_manifest["outputs"] == ["page-000/", "page-001/"]
+    page_dirs = {c["rel_path"].split("/")[2] for c in fake_derivative if c["rel_path"].startswith("item/ocr/page-")}
+    assert page_dirs == {"page-000", "page-001"}
+    # The images/ aggregate keeps its own 1-indexed page directories.
+    images_manifest = json.loads(_written(fake_derivative, "document.pdf/images/manifest.json")[0]["data"])
+    assert images_manifest["outputs"] == ["1/", "2/"]
+
+
+def test_derivatives_mixed_item_namespaces_pdf_ocr_dir(
+    fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch,
+):
+    monkeypatch.setattr(pd.items, "resolve", lambda ark, opts={}: MIXED_FORMAT_ITEM)
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
+
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
+
+    rel_paths = {c["rel_path"] for c in fake_derivative}
+    assert "item/document/ocr/manifest.json" in rel_paths
+    assert not any(p.startswith("item/ocr/") for p in rel_paths)
