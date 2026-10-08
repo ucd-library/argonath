@@ -42,8 +42,8 @@ def test_tiled_url_reads_the_top_level_tiled_entry(manifest):
     url = showcase_index._tiled_iiif_url_for_filename(ITEM, "photo.tiff")
 
     assert url == (
-        "/svc:cask-iiif/silver%2Fg%2Fc%2Flatest%2Fitem%2Fpublic-frontend-derivatives"
-        "%2Fimages%2Fphoto.tiff%2Fimages%2Ftiled.tif"
+        "/iiif/silver/g/c/latest/item/public-frontend-derivatives"
+        "/images/photo.tiff/images/tiled.tif"
     )
 
 
@@ -139,6 +139,24 @@ def test_client_media_adds_the_pages_ocr_layer_for_bookreader(manifest):
         "url": "/cask/file/silver/g/c/latest/item/ocr/photo-ocr.djvu",
         "size": {"width": "1024", "height": "1325"},
         "imageSize": "large",
+    }
+
+
+def test_client_media_nests_the_tiled_iiif_url_under_images(manifest):
+    """The fullscreen lightbox reads tiled off the page's images object, not
+    off clientMedia itself."""
+    base = "cask://silver/g/c/latest/item/public-frontend-derivatives/images/photo.tiff/images"
+    manifest({"tiled": {"url": f"{base}/tiled.tif"}})
+    media = [{"contentUrl": f"{base}/large.jpg", "width": 1024, "height": 1325}]
+
+    client_media = showcase_index._build_client_media(ITEM, media, "photo.tiff")
+
+    assert "tiled" not in client_media
+    assert client_media["images"]["tiled"] == {
+        "iiif": (
+            "/iiif/silver/g/c/latest/item/public-frontend-derivatives"
+            "/images/photo.tiff/images/tiled.tif"
+        ),
     }
 
 

@@ -506,9 +506,12 @@ def _build_client_media(location, page_media, filename=None):
     /svc:gcs/ - the gateway proxies that prefix straight to the caskfs file
     API, so this can point directly at wherever generate_derivatives wrote
     silver outputs, with no ark lookup needed at request time. The IIIF
-    deep-zoom viewer url uses a separate /svc:cask-iiif/ prefix instead,
+    deep-zoom viewer url uses a separate /iiif/ prefix instead,
     which the dams-router forwards to the new argonath-iiif (Cantaloupe)
     service rather than the argonath-adapter - see _tiled_iiif_url_for_filename().
+    It's nested in images (images.tiled.iiif), like the legacy fin image
+    manifest, because the fullscreen lightbox reads it off the page's images
+    object (app-image-viewer-lightbox.js renderCanvas()).
 
     :param digtk.lib.items.ItemLocation location:
     :param list page_media: This page's associatedMedia entries (from
@@ -541,8 +544,8 @@ def _build_client_media(location, page_media, filename=None):
     if filename:
         manifest = _image_manifest(location, filename)
         tiled_iiif_url = _tiled_iiif_url_for_filename(location, filename, manifest)
-        if tiled_iiif_url:
-            client_media["tiled"] = {"iiif": tiled_iiif_url}
+        if tiled_iiif_url and images:
+            images["tiled"] = {"iiif": tiled_iiif_url}
         ocr = _ocr_from_manifest(manifest)
         if ocr and images:
             images["ocr"] = ocr
@@ -602,7 +605,8 @@ def _tiled_iiif_url_for_filename(location, filename, manifest=None):
         of its images/{filename}/images/ derivative directory).
     :param dict|None manifest: The page's manifest, if already read (see
         _image_manifest()) — read here otherwise.
-    :returns: "/svc:cask-iiif/{percent-encoded tiled.tif caskfs path}", or None.
+    :returns: "/iiif/{tiled.tif caskfs path}" (slashes kept, other unsafe
+        characters percent-encoded), or None.
     :rtype: str|None
     """
     if manifest is None:
@@ -612,7 +616,7 @@ def _tiled_iiif_url_for_filename(location, filename, manifest=None):
         return None
 
     tiled_path = tiled["url"].removeprefix("cask://")
-    return "/svc:cask-iiif/" + urllib.parse.quote(tiled_path, safe="")
+    return "/iiif/" + urllib.parse.quote(tiled_path)
 
 
 def index_item(ark):
