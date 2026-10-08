@@ -19,6 +19,7 @@ migrating it into the shared config system can happen once the shape of what
 this needs settles.
 """
 import json
+import mimetypes
 import os
 import re
 import urllib.parse
@@ -136,89 +137,312 @@ def _normalize_creator(creator):
     return nodes[0] if len(nodes) == 1 else nodes
 
 
-# An item can legitimately have both a compiled PDF and individual page
-# scans as separate bronze binaries (see pipeline.update_associated_media()'s
-# docstring) - each media-generation pipeline stamps its own
-# "argonath:sourceGroup" on the entries it writes, and they coexist in one
-# flat associatedMedia list rather than overwriting each other. When both are
-# present, the image (raw scan) group takes precedence over the pdf
-# (rasterized) group for building the page list - confirmed with the user
-# after real yearbook data showed both groups present at once, which without
-# this precedence double-counted every page (256 instead of 128).
-MEDIA_GROUP_PRECEDENCE = ["image", "pdf"]
+SCHEMA = "http://schema.org/"
+
+# Order of the root's associatedMedia links, by source group. Video comes
+# first: the showcase's video player only ever reads the first media group
+# (dc-showcase app-video-viewer.js). Within a group, sources sort by filename.
+MEDIA_ORDER = ["video", "audio", "image", "pdf"]
 
 
-def _group_media_by_page(associated_media):
-    """Groups a flat associatedMedia list by the source filename embedded in
-    each entry's contentUrl.
+def _cask_url(cask_uri):
+    """A "cask://silver/..." reference URI as the URL the dc-showcase gateway
+    serves it at ("/cask/file/silver/...").
 
-    image.py's generate() publishes each source image's derivatives under its
-    own .../images/{filename}/images/{label}.jpg directory (see
-    pipeline.PUBLIC_FRONTEND_DIR), but accumulates every source's ImageObject
-    entries into one flat associatedMedia list on the item's silver sidecar
-    (pipeline.update_associated_media() merges by source_group, not by
-    source file) - so a multi-binary item's pages have to be reconstructed by
-    grouping on that embedded filename segment.
+    :param str cask_uri: e.g. "cask://silver/g/c/latest/item/ocr/ocr.djvu".
+    :returns: e.g. "/cask/file/silver/g/c/latest/item/ocr/ocr.djvu".
+    :rtype: str
+    """
+    return CASK_FILE_PREFIX + cask_uri.removeprefix("cask://")
 
-    First selects one source_group per MEDIA_GROUP_PRECEDENCE (image wins
-    over pdf when both are present), then groups that group's entries by
-    filename - see MEDIA_GROUP_PRECEDENCE's comment for why.
 
-    ASSUMPTION: page order is derived by sorting group keys (filenames)
-    alphabetically - nothing in the sidecar records an explicit page order.
-    Correct for zero-padded sequential scan filenames (e.g. page-001.jpg,
-    page-002.jpg, a common convention), but not verified against a real
-    multi-page item end to end.
+def _mime(filename, default):
+    """A filename's mime type, guessed from its extension.
+
+    :param str filename: e.g. "movie.mp4".
+    :param str default: Returned when the extension isn't recognized.
+    :rtype: str
+    """
+    return mimetypes.guess_type(filename)[0] or default
+
+
+def _source_filename(content_url):
+    """The bronze source filename an associatedMedia entry was derived from,
+    read from its contentUrl's public-frontend-derivatives/ segment:
+    images/<file>/images/... for an image, <file>/... for a PDF, video or
+    audio source (see pipeline.PUBLIC_FRONTEND_DIR).
+
+    :param str content_url: The entry's contentUrl.
+    :returns: The source filename, or None for a URL outside that layout.
+    :rtype: str|None
+    """
+    marker = f"/{pipeline.PUBLIC_FRONTEND_DIR}/"
+    if marker not in content_url:
+        return None
+    rest = content_url.split(marker, 1)[1]
+    parts = rest.split("/")
+    if parts[0] == "images" and len(parts) > 1:
+        return parts[1]
+    return parts[0] or None
+
+
+def _group_media_by_source(associated_media):
+    """Groups a flat associatedMedia list by source group and source file.
+
+    Every media-generation pipeline stamps "argonath:sourceGroup" (image, pdf,
+    video, audio) on the entries it writes, and they all accumulate in one
+    flat list on the item's silver sidecar (pipeline.update_associated_media()).
+    Every source file of every group is kept — the website decides what to
+    show.
+
+    ASSUMPTION: page order within an image list is the filenames' sort order —
+    nothing records an explicit order. Correct for zero-padded sequential scan
+    names (page_001.tif, page_002.tif).
 
     :param list associated_media: Flat associatedMedia list.
-    :returns: {filename: [entries]}, ordered by sorted filename.
+    :returns: {source group: {filename: [entries]}}, filenames sorted.
     :rtype: dict
     """
-    by_source_group = {}
-    for entry in associated_media:
-        by_source_group.setdefault(entry.get("argonath:sourceGroup"), []).append(entry)
-
-    selected = associated_media
-    for source_group in MEDIA_GROUP_PRECEDENCE:
-        if by_source_group.get(source_group):
-            selected = by_source_group[source_group]
-            break
-
     groups = {}
-    for entry in selected:
-        content_url = entry.get("contentUrl", "")
-        if "/images/" not in content_url:
-            continue
-        filename = content_url.split("/images/")[1].split("/")[0]
-        groups.setdefault(filename, []).append(entry)
+    for entry in associated_media:
+        group = entry.get("argonath:sourceGroup")
+        filename = _source_filename(entry.get("contentUrl", ""))
+        if group and filename:
+            groups.setdefault(group, {}).setdefault(filename, []).append(entry)
+    return {group: {f: files[f] for f in sorted(files)} for group, files in groups.items()}
 
-    return {filename: groups[filename] for filename in sorted(groups)}
+
+def _caption_links(entry):
+    """An audio/video entry's captions as the website's player reads them:
+    [{"@id": servable .vtt URL, "language"}] — it uses @id as the <track> src.
+
+    :param dict entry: A VideoObject/AudioObject associatedMedia entry.
+    :returns: Caption links, or None if the entry has none.
+    :rtype: list|None
+    """
+    captions = entry.get("caption") or []
+    if not isinstance(captions, list):
+        captions = [captions]
+    links = [
+        {"@id": _cask_url(c["contentUrl"]), "language": c.get("inLanguage")}
+        for c in captions if c.get("contentUrl")
+    ]
+    return links or None
+
+
+def _image_download(client_media):
+    """A download entry for an image node: its largest derivative.
+
+    :param dict client_media: _build_client_media()'s result.
+    :returns: {"url", "label"}, or None if the node has no images.
+    :rtype: dict|None
+    """
+    images = client_media.get("images") or {}
+    best = images.get("large") or images.get("medium") or images.get("small")
+    if not best:
+        return None
+    return {"url": best["url"], "label": best["url"].rsplit(".", 1)[-1]}
+
+
+def _image_node(location, node_id, filename, entries, opts={}):
+    """An ImageObject node for one source image.
+
+    :param digtk.lib.items.ItemLocation location:
+    :param str node_id: The node's @id.
+    :param str filename: The source image's filename.
+    :param list entries: Its associatedMedia entries.
+    :param dict opts: 'position' (int — for an image-list page; also makes
+        clientMedia.download a single entry, which is how the website's image
+        list collects its pages' downloads, rather than a list).
+    :rtype: dict
+    """
+    client_media = _build_client_media(location, entries, filename)
+    download = _image_download(client_media)
+    if "position" in opts:
+        client_media["download"] = download or {}
+    else:
+        client_media["download"] = [download] if download else []
+    node = {
+        "@id": node_id,
+        "@type": [f"{SCHEMA}ImageObject"],
+        "name": filename,
+        "fileFormat": _mime(filename, "image/jpeg"),
+        "fileFormatSimple": "image",
+        "clientMedia": client_media,
+    }
+    if "position" in opts:
+        # required, not decorative: the website numbers image-list pages from
+        # each hasPart node's position (client-media/model.js handleImageList).
+        node["position"] = opts["position"]
+    return node
+
+
+def _video_node(node_id, filename, entries):
+    """A VideoObject node for one source video: its HLS stream and captions.
+
+    :param str node_id: The node's @id.
+    :param str filename: The source video's filename.
+    :param list entries: Its associatedMedia entries (one VideoObject).
+    :rtype: dict
+    """
+    entry = entries[0]
+    return {
+        "@id": node_id,
+        "@type": [f"{SCHEMA}VideoObject"],
+        "name": filename,
+        "fileFormat": _mime(filename, "video/mp4"),
+        "fileFormatSimple": "video",
+        "encodingFormat": entry.get("encodingFormat"),
+        "clientMedia": {
+            "streamingVideo": {"manifest": _cask_url(entry["contentUrl"])},
+            # an HLS ladder isn't a downloadable file
+            "download": [],
+        },
+        "caption": _caption_links(entry),
+    }
+
+
+def _audio_node(node_id, filename, entries):
+    """An AudioObject node for one source audio file: its transcoded copy
+    (clientMedia.audio.url — the website's audio player plays this) and
+    captions.
+
+    :param str node_id: The node's @id.
+    :param str filename: The source audio file's filename.
+    :param list entries: Its associatedMedia entries (one AudioObject).
+    :rtype: dict
+    """
+    entry = entries[0]
+    url = _cask_url(entry["contentUrl"])
+    encoding = entry.get("encodingFormat") or _mime(url, "audio/mpeg")
+    return {
+        "@id": node_id,
+        "@type": [f"{SCHEMA}AudioObject"],
+        "name": filename,
+        "fileFormat": encoding,
+        "fileFormatSimple": "audio",
+        "encodingFormat": encoding,
+        "clientMedia": {
+            "audio": {"url": url, "encodingFormat": encoding},
+            "download": [{"url": url, "label": url.rsplit(".", 1)[-1]}],
+        },
+        "caption": _caption_links(entry),
+    }
+
+
+def _pdf_pages(location, node_id, filename):
+    """A PDF's pages as the website's BookReader reads them, from the PDF's
+    aggregate derivatives manifest (its "pages" array — see
+    docs/cask-conventions.md's "PDF Manifest Content"), with servable URLs.
+
+    :param digtk.lib.items.ItemLocation location:
+    :param str node_id: The PDF node's @id (page ids are "<node_id>:<index>").
+    :param str filename: The PDF's filename.
+    :returns: [{"page", "@id", "small"/"medium"/"large": {"url", "size"},
+        "ocr": {"url", "size", "imageSize"}}], or [] if the manifest is missing.
+    :rtype: list[dict]
+    """
+    images_dir = pipeline.derivative_dir(location, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}/images")
+    try:
+        manifest = json.loads(fs.read(f"{images_dir}/manifest.json"))
+    except FileNotFoundError:
+        return []
+
+    pages = []
+    for page in manifest.get("pages") or []:
+        entry = {"page": page["page"], "@id": f"{node_id}:{page['page'] - 1}"}
+        for label in ("small", "medium", "large"):
+            if page.get(label, {}).get("url"):
+                entry[label] = {"url": _cask_url(page[label]["url"]), "size": page[label].get("size")}
+        ocr = page.get("ocr") or {}
+        if ocr.get("url") and ocr.get("size"):
+            entry["ocr"] = {
+                "url": _cask_url(ocr["url"]), "size": ocr["size"], "imageSize": ocr.get("imageSize", "large"),
+            }
+        pages.append(entry)
+    return sorted(pages, key=lambda p: p["page"])
+
+
+def _pdf_node(location, node_id, filename):
+    """A PDF node. Typed ImageObject with fileFormat application/pdf — how the
+    website recognizes a PDF media group — with its pages embedded in
+    clientMedia.pages (see _pdf_pages()) and the first page as its images.
+
+    :param digtk.lib.items.ItemLocation location:
+    :param str node_id: The node's @id.
+    :param str filename: The PDF's filename.
+    :rtype: dict
+    """
+    pages = _pdf_pages(location, node_id, filename)
+    client_media = {"pages": pages, "download": []}
+    if pages:
+        client_media["images"] = {k: v for k, v in pages[0].items() if k in ("small", "medium", "large")}
+    return {
+        "@id": node_id,
+        "@type": [f"{SCHEMA}ImageObject"],
+        "name": filename,
+        "fileFormat": "application/pdf",
+        "fileFormatSimple": "pdf",
+        "clientMedia": client_media,
+    }
+
+
+def _media_nodes(location, fin_path, groups):
+    """Every media node for an item: one per video, audio, PDF source, and
+    either one ImageObject (a single image) or an image list whose pages are
+    the image nodes (two or more images).
+
+    :param digtk.lib.items.ItemLocation location:
+    :param str fin_path: The item's @id ("/item/<ark>").
+    :param dict groups: _group_media_by_source()'s result.
+    :returns: (top-level nodes in MEDIA_ORDER, child nodes) — the root links
+        to the top-level ones; image-list pages are children.
+    :rtype: tuple[list[dict], list[dict]]
+    """
+    top, children = [], []
+    for group in MEDIA_ORDER:
+        sources = groups.get(group) or {}
+        if group == "video":
+            top += [_video_node(f"{fin_path}/{f}", f, e) for f, e in sources.items()]
+        elif group == "audio":
+            top += [_audio_node(f"{fin_path}/{f}", f, e) for f, e in sources.items()]
+        elif group == "pdf":
+            top += [_pdf_node(location, f"{fin_path}/{f}", f) for f in sources]
+        elif group == "image" and len(sources) == 1:
+            filename, entries = next(iter(sources.items()))
+            top.append(_image_node(location, f"{fin_path}/{filename}", filename, entries))
+        elif group == "image" and sources:
+            list_id = f"{fin_path}/images"
+            pages = [
+                _image_node(location, f"{list_id}/{i}", f, e, {"position": i})
+                for i, (f, e) in enumerate(sources.items(), start=1)
+            ]
+            top.append({
+                "@id": list_id,
+                "@type": [f"{SCHEMA}MediaObject", IMAGE_LIST_TYPE],
+                "name": "Image List",
+                "hasPart": [{"@id": page["@id"]} for page in pages],
+                "clientMedia": {"download": []},
+            })
+            children += pages
+    return top, children
 
 
 def build_document(ark):
-    """Builds the ES document for an item.
+    """Builds the ES document for an item: a metadata root node plus one node
+    per media file, all in @graph, linked from the root's associatedMedia —
+    every image, PDF, video and audio source the item has (see
+    _media_nodes()), so the website can decide what to render.
 
-    Single-binary items (e.g. one photo) produce one flat node - clientMedia
-    lives directly on the root, matching the plain ImageObject/VideoObject/etc.
-    display the client already handles. Multi-binary items (e.g. a scanned
-    yearbook) produce a compound @graph, but NOT by typing the root itself as
-    an ImageList - confirmed against a real fin/fedora ES document
-    (ark:/87293/d3zp3w73h) that the root stays a plain metadata node (with a
-    single representative `image` reference to the first page, and an
-    `associatedMedia` reference to a *separate* images-container child node),
-    and that separate child node is the one typed IMAGE_LIST_TYPE and
-    carrying `hasPart` - see dams/services/fin/ucd-lib-client's RecordGraph.js
-    (compound-graph resolution) and client-media/definition.js
-    (MEDIA_LINK: associatedMedia/image vs. CHILD_LINKS: hasPart - two
-    different navigation steps, not one).
-
-    Also confirmed from that same real document: two document-level fields
-    outside @graph are required, not @graph.* fields - "name" (promoted copy
-    of the root's name; item/model.js sorts search results by "name.raw", not
-    "@graph.name.raw") and "roles" (["public"] - access-control gate; a
-    document search can't be missing this and still show up). Both were
-    absent before this fix, which likely explains "visible in Kibana but not
-    in search" independent of the graph-shape issue above.
+    Shaped like fin's item documents, confirmed against a real fin/fedora ES
+    document (ark:/87293/d3zp3w73h): the root stays a plain metadata node; a
+    multi-image item's images hang off a separate image-list node typed
+    IMAGE_LIST_TYPE with hasPart pages (see dams/services/fin/ucd-lib-client's
+    RecordGraph.js and client-media/definition.js: MEDIA_LINK
+    associatedMedia/image vs. CHILD_LINKS hasPart). Two document-level fields
+    outside @graph are required: "name" (item/model.js sorts search results by
+    "name.raw") and "roles" (["public"] — a document without it doesn't show
+    up in search).
 
     isPartOf (collection linking) is deliberately omitted: fin's collection
     linking expects an ark-identified collection @id, but argonath
@@ -236,7 +460,6 @@ def build_document(ark):
     associated_media = derivative_sidecar.get("associatedMedia") or []
     if not isinstance(associated_media, list):
         associated_media = [associated_media]
-    pages = _group_media_by_page(associated_media)
 
     fin_path = f"/item/{ark}"
     base_type = _normalize_type(bronze_sidecar.get("@type"), "http://schema.org/MediaObject")
@@ -253,37 +476,18 @@ def build_document(ark):
         "fileFormat": bronze_sidecar.get("encodingFormat"),
     }
 
-    if len(location.bronze_binary_paths) == 1 and len(pages) <= 1:
-        filename, page_media = next(iter(pages.items()), (None, []))
-        root["clientMedia"] = _build_client_media(location, page_media, filename)
-        graph = [root]
-    else:
-        images_container_id = f"{fin_path}/images"
-        page_nodes = []
-        for i, (filename, page_media) in enumerate(pages.items(), start=1):
-            page_nodes.append({
-                "@id": f"{images_container_id}/{i}",
-                "@type": ["http://schema.org/ImageObject"],
-                "name": filename,
-                # required, not decorative: dams's client reads this directly
-                # off each hasPart node (client-media/model.js:294,
-                # `parseInt(node.position)`) to number pages in its viewer -
-                # without it every page's clientMedia.images.page is NaN.
-                "position": i,
-                "clientMedia": _build_client_media(location, page_media, filename),
-            })
+    top, children = _media_nodes(location, fin_path, _group_media_by_source(associated_media))
+    if top:
+        root["associatedMedia"] = [{"@id": node["@id"]} for node in top]
+        thumbnail = next((n for n in children + top if n.get("fileFormatSimple") in ("image", "pdf")), None)
+        if thumbnail:
+            root["image"] = {"@id": thumbnail["@id"]}
 
-        images_container = {
-            "@id": images_container_id,
-            "@type": ["http://schema.org/MediaObject", IMAGE_LIST_TYPE],
-            "name": "Image List",
-            "hasPart": [{"@id": page["@id"]} for page in page_nodes],
-        }
-
-        root["image"] = {"@id": page_nodes[0]["@id"]}
-        root["associatedMedia"] = [{"@id": images_container_id}]
-        graph = [root, images_container, *page_nodes]
-
+    graph = [root]
+    for node in top:
+        graph.append(node)
+        if IMAGE_LIST_TYPE in node["@type"]:
+            graph += children
     graph = [{k: v for k, v in node.items() if v is not None} for node in graph]
 
     return {
@@ -295,8 +499,8 @@ def build_document(ark):
 
 
 def _build_client_media(location, page_media, filename=None):
-    """Builds the clientMedia urls the dams webapp reads off a node (the root
-    node for a single-binary item, or one page node for a multi-binary item),
+    """Builds the clientMedia urls the dams webapp reads off an image node (a
+    single image, or one page of an image list),
     pointing at the dc-showcase gateway's /cask/file/ prefix (CASK_FILE_PREFIX
     — see dc-showcase/services/gateway/index.js) for images, instead of fin's
     /svc:gcs/ - the gateway proxies that prefix straight to the caskfs file
@@ -308,7 +512,7 @@ def _build_client_media(location, page_media, filename=None):
 
     :param digtk.lib.items.ItemLocation location:
     :param list page_media: This page's associatedMedia entries (from
-        _group_media_by_page()).
+        _group_media_by_source()).
     :param str|None filename: This page's source filename, used to locate its
         tiled/IIIF manifest - None skips the IIIF lookup (no page to look up).
     :returns: clientMedia object, or {} if there's no derivative info yet.
@@ -323,7 +527,7 @@ def _build_client_media(location, page_media, filename=None):
             # "cask://" scheme (not just "cask:/") so the result doesn't carry
             # a leading slash into the prefix and create a
             # "/cask/file//silver/..." double-slash.
-            image = {"url": CASK_FILE_PREFIX + content_url.removeprefix("cask://")}
+            image = {"url": _cask_url(content_url)}
             # the record page's viewer builds its srcset from size.width and
             # crashes without it (app-image-viewer.js _renderImg())
             if candidate.get("width") and candidate.get("height"):
@@ -383,7 +587,7 @@ def _ocr_from_manifest(manifest):
     if not ocr or not ocr.get("url") or not ocr.get("size"):
         return None
     return {
-        "url": CASK_FILE_PREFIX + ocr["url"].removeprefix("cask://"),
+        "url": _cask_url(ocr["url"]),
         "size": ocr["size"],
         "imageSize": ocr.get("imageSize", "large"),
     }
@@ -451,28 +655,37 @@ def _with_page_size(djvu_xml, size):
 
 def build_page_documents(document):
     """Builds an item's page-search documents from its ES document: one per
-    image-list page that has an OCR text layer, shaped like fin's page-search
-    transform produced them — {"@id": item, "@graph": [{"@id": page,
-    "encodesCreativeWork": image list, "position", "content": DjVu XML}]}.
-    The page search matches on encodesCreativeWork (the BookReader searches
-    by its image list's @id) and full-text searches content.
+    page that has an OCR text layer — every image-list page and every page of
+    every PDF — shaped like fin's page-search transform produced them:
+    {"@id": item, "@graph": [{"@id": page, "encodesCreativeWork": the image
+    list or PDF node, "position", "content": DjVu XML}]}. The page search
+    matches on encodesCreativeWork (the BookReader searches by the @id of the
+    image list or PDF it's showing) and full-text searches content.
 
-    A single-image item has no image list (and no BookReader), so it gets no
-    page documents. A page whose DjVu file is missing is skipped.
+    A single image has no pages (and no BookReader), so it gets no page
+    documents. A page whose DjVu file is missing is skipped.
 
     :param dict document: build_document()'s result.
-    :returns: Page documents, in page order.
+    :returns: Page documents, in graph/page order.
     :rtype: list[dict]
     """
     graph = document["@graph"]
-    image_list = next((n for n in graph if IMAGE_LIST_TYPE in (n.get("@type") or [])), None)
-    if not image_list:
-        return []
+    by_id = {node["@id"]: node for node in graph}
+
+    targets = []  # (book @id, page @id, position, ocr)
+    for node in graph:
+        if IMAGE_LIST_TYPE in (node.get("@type") or []):
+            for link in node.get("hasPart") or []:
+                page = by_id.get(link["@id"]) or {}
+                ocr = ((page.get("clientMedia") or {}).get("images") or {}).get("ocr")
+                targets.append((node["@id"], page.get("@id"), page.get("position"), ocr))
+        elif node.get("fileFormatSimple") == "pdf":
+            for page in (node.get("clientMedia") or {}).get("pages") or []:
+                targets.append((node["@id"], page["@id"], page["page"], page.get("ocr")))
 
     pages = []
-    for node in graph:
-        ocr = ((node.get("clientMedia") or {}).get("images") or {}).get("ocr")
-        if "position" not in node or not ocr:
+    for book_id, page_id, position, ocr in targets:
+        if not page_id or not ocr:
             continue
         try:
             raw = fs.read(f"cask:/{ocr['url'].removeprefix(CASK_FILE_PREFIX)}")
@@ -482,9 +695,9 @@ def build_page_documents(document):
         pages.append({
             "@id": document["@id"],
             "@graph": [{
-                "@id": node["@id"],
-                "encodesCreativeWork": image_list["@id"],
-                "position": node["position"],
+                "@id": page_id,
+                "encodesCreativeWork": book_id,
+                "position": position,
                 "content": _with_page_size(content, ocr["size"]),
             }],
             "roles": document.get("roles", ["public"]),

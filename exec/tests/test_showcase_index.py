@@ -165,7 +165,8 @@ def _image_list_document(ocr=True):
         "roles": ["public"],
         "@graph": [
             {"@id": ITEM_ID},
-            {"@id": f"{ITEM_ID}/images", "@type": ["http://schema.org/MediaObject", showcase_index.IMAGE_LIST_TYPE]},
+            {"@id": f"{ITEM_ID}/images", "@type": ["http://schema.org/MediaObject", showcase_index.IMAGE_LIST_TYPE],
+             "hasPart": [{"@id": f"{ITEM_ID}/images/1"}]},
             page,
         ],
     }
@@ -223,3 +224,159 @@ def test_index_pages_replaces_the_items_page_documents(monkeypatch, page_deletes
     assert page_deletes[0]["url"].endswith("/page-search-write/_delete_by_query")
     assert page_deletes[0]["json"] == {"query": {"term": {"@id": ITEM_ID}}}
     assert puts == [f"{showcase_index.ES_HOST}/page-search-write/_doc/%2Fitem%2Fark%3A%2F87287%2Fd7abc1234%2Fimages%2F1"]
+
+
+# --- build_document: one node per media file ----------------------------------------
+
+ARK = "ark:/87287/d7abc1234"
+SILVER = "cask://silver/g/c/latest/item"
+PFD = f"{SILVER}/public-frontend-derivatives"
+LOCATION = ItemLocation(
+    ark=ARK, group="g", collection="c", time="latest", item_path="item",
+    bronze_binary_paths=[], sidecar_path="cask:/bronze/g/c/latest/item/item.jsonld.json",
+)
+
+
+def _image_entries(filename):
+    return [
+        {"@type": "ImageObject", "contentUrl": f"{PFD}/images/{filename}/images/{size}.jpg",
+         "width": w, "height": w * 2, "argonath:sourceGroup": "image"}
+        for size, w in (("small", 256), ("medium", 512), ("large", 1024))
+    ]
+
+
+@pytest.fixture
+def item_files(monkeypatch):
+    """A fake CaskFS for one item: bronze + silver sidecars, plus any extra
+    files a test adds (manifests); everything else is missing."""
+    files = {LOCATION.sidecar_path: {"name": "An item", "creator": "Someone"}}
+
+    def set_media(entries):
+        files["cask:/silver/g/c/latest/item/item.jsonld.json"] = {"associatedMedia": entries}
+
+    def fake_read(path):
+        if path not in files:
+            raise FileNotFoundError(path)
+        return json.dumps(files[path]).encode()
+
+    monkeypatch.setattr(showcase_index.items, "resolve", lambda ark: LOCATION)
+    monkeypatch.setattr(showcase_index.fs, "read", fake_read)
+    files["set_media"] = set_media
+    return files
+
+
+def _graph(document):
+    return {node["@id"]: node for node in document["@graph"]}
+
+
+def test_build_document_gives_audio_image_and_pdf_each_a_node(item_files):
+    item_files["set_media"]([
+        *_image_entries("logo.jpg"),
+        {"@type": "ImageObject", "contentUrl": f"{PFD}/doc.pdf/images/1/large.jpg", "position": 0,
+         "argonath:sourceGroup": "pdf"},
+        {"@type": "AudioObject", "identifier": "talk", "contentUrl": f"{PFD}/talk.mp3/converted.mp3",
+         "encodingFormat": "audio/mp3", "argonath:sourceGroup": "audio",
+         "caption": {"contentUrl": f"{SILVER}/captions/output-en.vtt", "inLanguage": "en"}},
+    ])
+    item_files["cask:/silver/g/c/latest/item/public-frontend-derivatives/doc.pdf/images/manifest.json"] = {"pages": [
+        {"page": 1,
+         "large": {"size": {"width": "1024", "height": "1325"}, "url": f"{PFD}/doc.pdf/images/1/large.jpg"},
+         "ocr": {"size": {"width": "1024", "height": "1325"}, "imageSize": "large",
+                 "url": f"{SILVER}/doc/ocr/page-000/ocr.djvu"}},
+    ]}
+
+    document = showcase_index.build_document(ARK)
+    root, nodes = document["@graph"][0], _graph(document)
+
+    item = f"/item/{ARK}"
+    assert root["associatedMedia"] == [{"@id": f"{item}/talk.mp3"}, {"@id": f"{item}/logo.jpg"}, {"@id": f"{item}/doc.pdf"}]
+    assert "clientMedia" not in root
+
+    audio = nodes[f"{item}/talk.mp3"]
+    assert audio["@type"] == ["http://schema.org/AudioObject"] and audio["fileFormatSimple"] == "audio"
+    assert audio["clientMedia"]["audio"]["url"] == "/cask/file/silver/g/c/latest/item/public-frontend-derivatives/talk.mp3/converted.mp3"
+    assert audio["clientMedia"]["download"] == [{"url": audio["clientMedia"]["audio"]["url"], "label": "mp3"}]
+    assert audio["caption"] == [{"@id": "/cask/file/silver/g/c/latest/item/captions/output-en.vtt", "language": "en"}]
+
+    image = nodes[f"{item}/logo.jpg"]
+    assert image["@type"] == ["http://schema.org/ImageObject"] and image["fileFormatSimple"] == "image"
+    assert image["fileFormat"] == "image/jpeg"
+    assert image["clientMedia"]["download"] == [{"url": image["clientMedia"]["images"]["large"]["url"], "label": "jpg"}]
+
+    pdf = nodes[f"{item}/doc.pdf"]
+    assert pdf["@type"] == ["http://schema.org/ImageObject"]
+    assert (pdf["fileFormat"], pdf["fileFormatSimple"]) == ("application/pdf", "pdf")
+    assert pdf["clientMedia"]["pages"] == [{
+        "page": 1, "@id": f"{item}/doc.pdf:0",
+        "large": {"url": "/cask/file/silver/g/c/latest/item/public-frontend-derivatives/doc.pdf/images/1/large.jpg",
+                  "size": {"width": "1024", "height": "1325"}},
+        "ocr": {"url": "/cask/file/silver/g/c/latest/item/doc/ocr/page-000/ocr.djvu",
+                "size": {"width": "1024", "height": "1325"}, "imageSize": "large"},
+    }]
+    assert pdf["clientMedia"]["images"] == {"large": pdf["clientMedia"]["pages"][0]["large"]}
+    assert pdf["clientMedia"]["download"] == []
+
+
+def test_build_document_puts_video_first_with_its_stream_and_captions(item_files):
+    item_files["set_media"]([
+        *_image_entries("poster.jpg"),
+        {"@type": "VideoObject", "identifier": "movie", "contentUrl": f"{PFD}/movie.mp4/streaming/playlist.m3u8",
+         "encodingFormat": "application/vnd.apple.mpegurl", "argonath:sourceGroup": "video",
+         "caption": {"contentUrl": f"{SILVER}/captions/movie-en.vtt", "inLanguage": "en"}},
+    ])
+
+    document = showcase_index.build_document(ARK)
+    root, nodes = document["@graph"][0], _graph(document)
+
+    video_id = f"/item/{ARK}/movie.mp4"
+    assert root["associatedMedia"][0] == {"@id": video_id}
+    video = nodes[video_id]
+    assert video["@type"] == ["http://schema.org/VideoObject"]
+    assert (video["fileFormat"], video["fileFormatSimple"]) == ("video/mp4", "video")
+    assert video["clientMedia"] == {
+        "streamingVideo": {"manifest": "/cask/file/silver/g/c/latest/item/public-frontend-derivatives/movie.mp4/streaming/playlist.m3u8"},
+        "download": [],
+    }
+    assert video["caption"] == [{"@id": "/cask/file/silver/g/c/latest/item/captions/movie-en.vtt", "language": "en"}]
+
+
+def test_build_document_makes_an_image_list_for_several_images(item_files):
+    item_files["set_media"]([*_image_entries("page_002.tif"), *_image_entries("page_001.tif")])
+
+    document = showcase_index.build_document(ARK)
+    root, nodes = document["@graph"][0], _graph(document)
+
+    list_id = f"/item/{ARK}/images"
+    assert root["associatedMedia"] == [{"@id": list_id}]
+    assert showcase_index.IMAGE_LIST_TYPE in nodes[list_id]["@type"]
+    assert nodes[list_id]["hasPart"] == [{"@id": f"{list_id}/1"}, {"@id": f"{list_id}/2"}]
+    page1 = nodes[f"{list_id}/1"]
+    assert (page1["name"], page1["position"]) == ("page_001.tif", 1)
+    assert page1["fileFormat"] == "image/tiff"
+    # a page's download is a single entry — the website collects them into the list's download
+    assert isinstance(page1["clientMedia"]["download"], dict)
+
+
+def test_build_document_without_derivatives_is_just_the_root(item_files):
+    item_files["set_media"]([])
+    document = showcase_index.build_document(ARK)
+    assert [n["@id"] for n in document["@graph"]] == [f"/item/{ARK}"]
+    assert "associatedMedia" not in document["@graph"][0]
+
+
+def test_build_page_documents_covers_pdf_pages(monkeypatch):
+    monkeypatch.setattr(showcase_index.fs, "read", lambda path: b"<OBJECT/>")
+    pdf_id = f"{ITEM_ID}/doc.pdf"
+    document = {"@id": ITEM_ID, "roles": ["public"], "@graph": [
+        {"@id": ITEM_ID},
+        {"@id": pdf_id, "fileFormatSimple": "pdf", "clientMedia": {"pages": [
+            {"page": 1, "@id": f"{pdf_id}:0", "ocr": {"url": DJVU_URL, "size": {"width": "10", "height": "20"}}},
+            {"page": 2, "@id": f"{pdf_id}:1"},  # no OCR layer: skipped
+        ]}},
+    ]}
+
+    pages = showcase_index.build_page_documents(document)
+
+    assert [p["@graph"][0]["@id"] for p in pages] == [f"{pdf_id}:0"]
+    assert pages[0]["@graph"][0]["encodesCreativeWork"] == pdf_id
+    assert pages[0]["@graph"][0]["position"] == 1
