@@ -142,7 +142,7 @@ def _rescale_bbox(bbox, scale_factor):
     return [round(v / scale_factor) for v in bbox]
 
 
-def build_djvu_xml(page_structure, *, scale_factor, dpi=None, confidence_threshold=None):
+def build_djvu_xml(page_structure, *, scale_factor, dpi=None, confidence_threshold=None, page_size=None):
     """Build a djvu-text-layer XML document from a parsed hOCR structure,
     matching legacy image-utils' OBJECT/PARAM/HIDDENTEXT/PAGECOLUMN/REGION/
     PARAGRAPH/LINE/WORD schema. Words below `confidence_threshold` are
@@ -167,6 +167,10 @@ def build_djvu_xml(page_structure, *, scale_factor, dpi=None, confidence_thresho
         own dpi config, which is also 300 by default.
     :param float confidence_threshold: Words below this are omitted (default
         CONFIG["ocr"]["orientation_word_confidence_threshold"]).
+    :param dict page_size: {"width", "height"} of the image the word coordinates
+        are in (the "large" image), written as OBJECT's width/height attributes
+        like legacy's -- readers use them to scale word boxes (e.g. dams' page
+        search highlight boxes). Omitted when None.
     :returns: Serialized XML document (unicode string, no XML declaration).
     :rtype: str
     """
@@ -177,7 +181,10 @@ def build_djvu_xml(page_structure, *, scale_factor, dpi=None, confidence_thresho
         else CONFIG["ocr"]["orientation_word_confidence_threshold"]
     )
 
-    object_el = ET.Element("OBJECT")
+    object_attrs = {}
+    if page_size:
+        object_attrs = {"width": str(page_size["width"]), "height": str(page_size["height"])}
+    object_el = ET.Element("OBJECT", object_attrs)
     ET.SubElement(object_el, "PARAM", {"name": "DPI", "value": str(dpi)})
     hiddentext_el = ET.SubElement(object_el, "HIDDENTEXT")
     pagecolumn_el = ET.SubElement(hiddentext_el, "PAGECOLUMN")

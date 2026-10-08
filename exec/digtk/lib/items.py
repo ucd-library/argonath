@@ -207,6 +207,57 @@ def resolve(ark, opts={}):
     )
 
 
+# Standalone item sidecar name (see resolve()'s 'item.jsonld.json' exception) —
+# the file a tree/ item folder is identified by when addressed by path.
+ITEM_SIDECAR_FILENAME = f"{_STANDALONE_SIDECAR_FILENAME}{SIDECAR_SUFFIX}"
+
+
+def normalize_bronze_path(path):
+    """A bronze path in the canonical '/bronze/...' form, with no 'cask:' prefix
+    or trailing slash — accepts 'cask:/bronze/...', '/bronze/...' or 'bronze/...'.
+
+    :param str path: Bronze path in any of the accepted forms.
+    :returns: e.g. '/bronze/preservica/haeger/latest/tree/quarter-mile'.
+    :rtype: str
+    :raises ValueError: If the path isn't under /bronze/, or is missing its
+        group/collection/time segments.
+    """
+    raw = path[len("cask:"):] if path.startswith("cask:") else path
+    raw = "/" + raw.strip().strip("/")
+    if not raw.startswith(BRONZE_PREFIX):
+        raise ValueError(f"not a bronze path: {path}")
+    if len(raw[len(BRONZE_PREFIX):].split("/")) < 3:
+        raise ValueError(f"bronze path needs at least /bronze/[group]/[collection]/[time]: {path}")
+    return raw
+
+
+def ark_for_path(path):
+    """Look up the ARK of the item whose folder is `path` — read from the
+    folder's own 'item.jsonld.json' sidecar (its 'ark', falling back to '@id'),
+    the same fields digtk.models.collection.list_item_arks() reads.
+
+    Lets a caller address an item by its bronze folder (e.g. Dagster's
+    process_item_job, keyed by the tree/ path rather than the ARK) and then go
+    through resolve() like every other ARK-based command.
+
+    :param str path: Item folder, e.g. 'bronze/preservica/haeger/latest/tree/quarter-mile'
+        (any form normalize_bronze_path() accepts).
+    :returns: The item's ARK, e.g. 'ark:/87287/d7abc1234'.
+    :rtype: str
+    :raises ValueError: If `path` isn't a bronze path.
+    :raises LookupError: If the folder has no item.jsonld.json, or it carries no ARK.
+    """
+    folder = normalize_bronze_path(path)
+    sidecar = f"cask:{folder}/{ITEM_SIDECAR_FILENAME}"
+    if not fs.exists(sidecar):
+        raise LookupError(f"MISSING ARK: no {ITEM_SIDECAR_FILENAME} in {folder}/")
+    doc = json.loads(fs.read(sidecar))
+    ark = doc.get("ark") or doc.get("@id")
+    if not ark or not str(ark).startswith("ark:"):
+        raise LookupError(f"MISSING ARK: {folder}/{ITEM_SIDECAR_FILENAME} has no ark")
+    return ark
+
+
 def metadata(ark, opts={}):
     """Read an item's existing bronze descriptive metadata.
 

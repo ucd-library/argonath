@@ -238,9 +238,20 @@ The Dagster UI is at http://localhost:3000 in local dev.
    ```
 
    - **One step per file.** OCR, alt text, and PDF tagging run as one Dagster step per
-     file, e.g. `process_workspace_file[i3_d3bv7b33r__page_004_tif]`. A folder with 10
-     TIFFs and a PDF gives 11 file steps, and each can be retried on its own. PDF
-     tagging only runs for PDFs.
+     file, named by the file's path in the collection, e.g.
+     `process_workspace_file[source_d3bv7b33r_page_004_tif]`. A folder with 10 TIFFs
+     and a PDF gives 11 file steps, and each can be retried on its own. PDF tagging
+     only runs for PDFs.
+   - **Batching (`max_steps`).** No fan-out produces more than `max_steps` steps
+     (launchpad config; `0` turns batching off). Past that, several files or folders
+     share one step and run one after another inside it.
+     - **Step name:** the files' paths joined with `__`, cut off before 200
+       characters with `__and_N_more__<hash>`. Dagster stores each step's input in a
+       file named after the step, so names must fit the filesystem's limit.
+     - **Events:** the step's Events start with `batch of N: <paths>`, and every file
+       still gets its own result event.
+     - **Decision:** the fan-out logs it, e.g.
+       `files: 361 task(s) > max_steps 30 -> batched into 28 step(s) of up to 13`.
    - **One step per folder.** Split-spreads detect/apply runs as one step per item
      folder (`process_workspace_folder[...]`), because `gutters.json` and the contact
      sheets cover the whole folder.
@@ -285,12 +296,23 @@ The Dagster UI is at http://localhost:3000 in local dev.
   records reporting under the Dagster run ID.
 - **Webapp derivatives for a whole collection:** `process_collection_job` (derivatives
   only).
-  - **Steps:** one step per image and per PDF file (`process_derivative_task[...]`),
+  - **Steps:** one step per image and per PDF file (`process_derivative_batch[...]`),
     each running `digtk showcase image|pdf derivatives <ark> --file <bronze path>`.
     Video and audio stay one step per item.
-  - **Finalize:** after every derivative step, a `finalize_item[...]` step per item
+  - **Finalize:** after every derivative step, a `finalize_batch[...]` step per item
     (`digtk showcase finalize <ark>`) writes what combines all of an item's files: an
     image item's `ocr/manifest.json` and the item's `associatedMedia`.
+  - **Source files:** each item's files come only from its own bronze `tree/` folder
+    (there's no fallback to `by-ref/`). An item whose folder has no media is reported
+    as an error, `[latest/tree/<item>] MISSING MEDIA: no image/PDF/video/audio files in
+    bronze latest/tree/<item>/`, and that item isn't finalized. Every other item still
+    processes, and the run ends failed.
+  - **Naming:** steps and Events use the file's (or item's) bronze path relative to the
+    partition, e.g. `latest/tree/mv-rapleytrail-formatted/Preservation/page_003.tif`.
+    Step names show it with `_` in place of `/` and `.`.
+  - **Batching:** `max_steps` (on `fan_out_derivative_tasks`; `0` turns batching off)
+    caps both the derivative and finalize fan-outs, the same way as in the workspace job
+    above.
   - **Failures:** an item with a failed file step isn't finalized. Every other item
     still is, and `check_derivative_failures` marks the run failed. Re-run the
     partition, or the failed file by hand, then finalize that item:

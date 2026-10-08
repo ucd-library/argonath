@@ -54,8 +54,47 @@ PUBLIC_FRONTEND_DIR = "public-frontend-derivatives"
 THUMBNAIL_SIZE_LABELS = ["small", "medium", "large"]
 
 
+# Preservica tree/ items can hold the same page twice: an access copy (e.g.
+# Access/page_001.jpg) and its preservation master (Preservation/page_001.tif).
+# The showcase uses the master — see drop_access_duplicates().
+ACCESS_DIR = "Access"
+PRESERVATION_DIR = "Preservation"
+
+
+def drop_access_duplicates(bronze_binary_paths):
+    """Drop access copies that have a preservation master: a file in an item's
+    Access/ folder is left out when the same item's Preservation/ folder has a
+    file with the same name stem (page_001.jpg vs page_001.tif). Access files
+    without a master (e.g. a compiled PDF only supplied as an access copy) are
+    kept, as is everything outside those two folders.
+
+    :param list[str] bronze_binary_paths: CaskFS paths ('cask:/'-prefixed).
+    :returns: The paths to use, in original order.
+    :rtype: list[str]
+    """
+    masters = set()
+    for path in bronze_binary_paths:
+        parent, _, filename = path.rpartition("/")
+        item_dir, _, folder = parent.rpartition("/")
+        if folder == PRESERVATION_DIR:
+            masters.add((item_dir, os.path.splitext(filename)[0]))
+
+    kept = []
+    for path in bronze_binary_paths:
+        parent, _, filename = path.rpartition("/")
+        item_dir, _, folder = parent.rpartition("/")
+        if folder == ACCESS_DIR and (item_dir, os.path.splitext(filename)[0]) in masters:
+            continue
+        kept.append(path)
+    return kept
+
+
 def filter_binaries_by_format(bronze_binary_paths, media_types):
     """Filter an item's bronze binaries down to just the ones matching a media format.
+
+    Access copies that have a preservation master are left out first (see
+    drop_access_duplicates()), so a page supplied as both Access/page_001.jpg
+    and Preservation/page_001.tif is processed and shown once, from the master.
 
     :param list[str] bronze_binary_paths: CaskFS paths ('cask:/'-prefixed).
     :param str|set[str] media_types: A single format ("image", "pdf", "video", "audio")
@@ -69,7 +108,7 @@ def filter_binaries_by_format(bronze_binary_paths, media_types):
     """
     wanted = {media_types} if isinstance(media_types, str) else set(media_types)
     matches = []
-    for path in bronze_binary_paths:
+    for path in drop_access_duplicates(bronze_binary_paths):
         ext = os.path.splitext(path)[1].lower()
         fmt = FORMAT_BY_EXTENSION.get(ext)
         if fmt is None:
@@ -336,7 +375,7 @@ def update_associated_media(item, media_objects, source_files, source_group):
     Merges only the associatedMedia array — never the top-level DC-metadata fields
     (name/description/creator/dateCreated/license/publisher/about/identifier)
     merge_dc_metadata() below owns, so a DC-metadata run and a derivative run can
-    update the same gold sidecar independently, in either order, without clobbering
+    update the same silver sidecar independently, in either order, without clobbering
     each other.
 
     Uses a plain dict read/merge/write rather than digtk.lib.schema.ItemMetadata
@@ -380,7 +419,7 @@ def update_associated_media(item, media_objects, source_files, source_group):
     return doc
 
 
-# DC-metadata top-level keys merge_dc_metadata() owns in gold's item.jsonld.json —
+# DC-metadata top-level keys merge_dc_metadata() owns in the silver item.jsonld.json —
 # kept disjoint from update_associated_media()'s associatedMedia array (see above)
 # so the two writers never clobber each other regardless of run order.
 _DC_METADATA_KEYS = ("name", "description", "creator", "dateCreated", "license", "publisher", "about", "identifier")
@@ -506,6 +545,7 @@ def build_ocr_products(orientation, tmp_dir, stem, multi, large_size, opts={}):
     djvu_xml = djvu.build_djvu_xml(
         page_structures[selected], scale_factor=scale_factor,
         dpi=opts.get("dpi"), confidence_threshold=opts.get("confidence_threshold"),
+        page_size=large_size,
     )
     stats = djvu.compute_ocr_stats(page_structures, selected=selected, opts={**opts, "angle": orientation["angle"]})
 

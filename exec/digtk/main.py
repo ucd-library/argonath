@@ -23,6 +23,8 @@ Subcommands mirror the pipeline phases:
   digtk preservica  — pull a collection out of Preservica into bronze (import/tree)
   digtk reporting     — admin commands for the reporting Postgres schema
                           (see digtk.lib.reporting)
+  digtk state         — collection_state queue and job results, used by Dagster
+                          (see digtk.models.collection_state)
   digtk workspace     — stage local folders into CaskFS workspace, run ocr/
                           accessibility/split-spreads on them, pull outputs,
                           promote them to silver (see digtk.models.workspace)
@@ -39,7 +41,7 @@ import typer
 
 from digtk.commands import (
     accessibility, ai, auth, collection, config, ocr, metadata, ingest, preservica, reporting, showcase, search, split,
-    workspace,
+    state, workspace,
 )
 from digtk.lib import utils
 from digtk.lib.banner import print_banner
@@ -64,6 +66,7 @@ app.add_typer(ingest.app,        name="ingest")
 app.add_typer(collection.app,    name="collection")
 app.add_typer(search.app,        name="search")
 app.add_typer(reporting.app,     name="reporting")
+app.add_typer(state.app,         name="state")
 app.add_typer(workspace.app,     name="workspace")
 
 class OutputMode(str, Enum):

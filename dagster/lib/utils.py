@@ -124,6 +124,25 @@ def load_celery_run_config():
         return yaml.safe_load(f)
 
 
+def default_run_config(op_configs, opts={}):
+    """A job's default run config: the celery execution block plus each listed
+    op's config filled with its Config class defaults — so the launchpad opens
+    with every option (e.g. max_steps) visible, and a backfill (which never
+    sees launchpad edits) runs with the same values.
+
+    :param dict op_configs: {op name: dagster Config class}.
+    :param dict opts: 'celery' (bool, default True) — include load_celery_run_config().
+    :returns: Run config dict.
+    :rtype: dict
+    """
+    config = dict(load_celery_run_config()) if opts.get("celery", True) else {}
+    config["ops"] = {
+        op_name: {"config": {field: getattr(cls(), field) for field in cls.model_fields}}
+        for op_name, cls in op_configs.items()
+    }
+    return config
+
+
 # ---------------------------------------------------------------------------
 # Manifest writer
 # ---------------------------------------------------------------------------

@@ -44,7 +44,7 @@ def test_tree_full_rebuild_merge_failure_is_logged_not_raised(monkeypatch, capsy
     result = runner.invoke(preservica.app, ["tree", "--collection", "my-collection"])
 
     assert result.exit_code == 0
-    assert "could not merge gold metadata for ark:/x/1" in result.output
+    assert "could not merge DC metadata for ark:/x/1" in result.output
     assert last_json_line(result.output) == {"status": "success", "collection": "my-collection", "items": 1}
 
 

@@ -477,6 +477,26 @@ def test_list_item_arks_queries_medallion_bronze_and_collection_name(monkeypatch
     assert seen["keys"] == ["medallion-bronze", "collection-my-collection"]
 
 
+def test_list_item_folders_keeps_each_items_folder_and_ark(monkeypatch):
+    monkeypatch.setattr(collection.fs, "find_by_partition_keys", lambda keys, opts={}: [
+        "/bronze/preservica/my-collection/latest/tree/box-1/item-2/item.jsonld.json",
+        "/bronze/preservica/my-collection/latest/tree/box-1/metadata.json",
+        "/bronze/preservica/my-collection/latest/tree/box-1/item-1/item.jsonld.json",
+        "/bronze/preservica/my-collection/latest/tree/no-ark/item.jsonld.json",
+    ])
+    docs = {
+        "cask:/bronze/preservica/my-collection/latest/tree/box-1/item-1/item.jsonld.json": {"ark": "ark:/1/one"},
+        "cask:/bronze/preservica/my-collection/latest/tree/box-1/item-2/item.jsonld.json": {"@id": "ark:/1/two"},
+        "cask:/bronze/preservica/my-collection/latest/tree/no-ark/item.jsonld.json": {},
+    }
+    monkeypatch.setattr(collection.fs, "read", lambda path: json.dumps(docs[path]))
+
+    assert collection.list_item_folders("my-collection") == [
+        {"path": "/bronze/preservica/my-collection/latest/tree/box-1/item-1", "ark": "ark:/1/one"},
+        {"path": "/bronze/preservica/my-collection/latest/tree/box-1/item-2", "ark": "ark:/1/two"},
+    ]
+
+
 # --- helpers: _slugify / _is_ark / _resolve_identifier_key / _unique_tree_slug ---
 
 def test_slugify_lowercases_and_collapses_non_alnum():
