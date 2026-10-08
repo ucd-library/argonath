@@ -3,7 +3,10 @@ digtk.lib.derivative — write silver/gold/workspace derivative files into CaskF
 
 A thin wrapper around digtk.lib.fs: builds the CaskFS destination path for a
 derivative artifact (silver mirrors bronze's [group]/[collection]/[time]/ shape;
-gold is a flattened [app]/[collection]/ current-state view with no time dimension;
+gold is a flattened [app]/[collection]/ current-state view with no time dimension —
+reserved for access-controlled preservation/download products, nothing writes
+there yet, and its [app] segment predates docs/cask-conventions.md's current
+non-app-scoped Gold Layout;
 workspace is a per-user [group]/[collection]/ view — same 'group' opt as silver,
 just no time dimension, since 'group' there is really the user's username — see
 docs/cask-conventions.md), writes its bytes, then records CaskFS derivative-link

@@ -36,23 +36,41 @@ _ERRORS = (LookupError, OSError, RuntimeError, ValueError)
 
 @app.command()
 def formats(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    ark: Annotated[str | None, typer.Argument(help="Item ARK identifier (or use --path).")] = None,
+    path: Annotated[str | None, typer.Option(
+        "--path", help="Address the item by its bronze folder instead of its ARK (e.g. "
+                       "bronze/preservica/haeger/latest/tree/quarter-mile); its ARK is read "
+                       "from the folder's item.jsonld.json.",
+    )] = None,
     files: Annotated[bool, typer.Option(
-        "--files", help="Also list the item's binaries per format (full bronze paths).",
+        "--files", help="Also list the item's binaries per format (full bronze paths), and "
+                        "the item's own bronze directory.",
     )] = False,
 ):
     """Report which media-type formats (image/pdf/video/audio) an item's bronze
     binaries span, without generating anything — used by
-    dagster/lib/pipeline_fanout.py to decide which `digtk showcase <format>
-    derivatives` steps apply to an item (with --files, one step per image/PDF)."""
+    dagster/lib/pipeline_fanout.py and dagster/lib/pipeline_item.py to decide
+    which `digtk showcase <format> derivatives` steps apply to an item (with
+    --files, one step per image/PDF). With --path, fails with "MISSING ARK"
+    if the folder's item.jsonld.json is missing or has no ARK."""
     try:
+        if bool(ark) == bool(path):
+            raise ValueError("give exactly one of an ARK or --path")
+        folder = None
+        if path:
+            folder = items.normalize_bronze_path(path)
+            ark = items.ark_for_path(folder)
         item = items.resolve(ark)
+        item_dir = f"{items.BRONZE_PREFIX}{item.group}/{item.collection}/{item.time}/{item.item_path}".rstrip("/")
+        if folder and item_dir != folder:
+            raise LookupError(f"{ark} (from {folder}/{items.ITEM_SIDECAR_FILENAME}) resolves to {item_dir}, not {folder}")
         found = sorted(pipeline.detect_formats(item.bronze_binary_paths))
         result = {"ark": ark, "formats": found}
         if files:
             result["files"] = {
                 fmt: pipeline.filter_binaries_by_format(item.bronze_binary_paths, fmt) for fmt in found
             }
+            result["dir"] = f"cask:{item_dir}"
         utils.result(result)
     except _ERRORS as e:
         utils.error(str(e))

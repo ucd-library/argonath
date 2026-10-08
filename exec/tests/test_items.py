@@ -417,3 +417,65 @@ def test_workspace_listings_request_one_large_page(monkeypatch):
     items.list_workspace_items("cask:/workspace/jdoe/box-12")
 
     assert seen == [{"limit": 10000}, {"limit": 10000}]
+
+
+def test_resolve_tree_item_without_media_has_no_binaries(monkeypatch):
+    """A tree/ item whose media were removed resolves with an empty binary list
+    (no fallback to by-ref/) — callers report it as missing media."""
+    tree = "/bronze/preservica/haeger/latest/tree/quarter-mile"
+    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [f"{tree}/item.jsonld.json"])
+    listing = {tree: [
+        _entry("item.jsonld.json", f"{tree}/item.jsonld.json", "file"),
+        _entry("metadata.json", f"{tree}/metadata.json", "file"),
+        _entry("identifiers.json", f"{tree}/identifiers.json", "file"),
+    ]}
+
+    def fake_ls(path, opts={}):
+        raw = path[len("cask:"):]
+        if raw not in listing:
+            raise AssertionError(f"unexpected ls() path: {path}")
+        return listing[raw]
+    monkeypatch.setattr(fs, "ls", fake_ls)
+
+    location = items.resolve(ARK)
+
+    assert location.bronze_binary_paths == []
+    assert location.item_path == "tree/quarter-mile"
+
+
+@pytest.mark.parametrize("path", [
+    "bronze/preservica/haeger/latest/tree/quarter-mile",
+    "/bronze/preservica/haeger/latest/tree/quarter-mile/",
+    "cask:/bronze/preservica/haeger/latest/tree/quarter-mile",
+])
+def test_normalize_bronze_path_accepts_every_form(path):
+    assert items.normalize_bronze_path(path) == "/bronze/preservica/haeger/latest/tree/quarter-mile"
+
+
+@pytest.mark.parametrize("path", ["workspace/jdoe/box-12", "bronze/preservica/haeger"])
+def test_normalize_bronze_path_rejects_non_item_paths(path):
+    with pytest.raises(ValueError):
+        items.normalize_bronze_path(path)
+
+
+def test_ark_for_path_reads_item_sidecar(monkeypatch):
+    sidecar = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/item.jsonld.json"
+    monkeypatch.setattr(fs, "exists", lambda path: path == sidecar)
+    monkeypatch.setattr(fs, "read", lambda path: json.dumps({"ark": ARK}))
+
+    assert items.ark_for_path("bronze/preservica/haeger/latest/tree/quarter-mile") == ARK
+
+
+def test_ark_for_path_missing_sidecar_is_missing_ark(monkeypatch):
+    monkeypatch.setattr(fs, "exists", lambda path: False)
+
+    with pytest.raises(LookupError, match="MISSING ARK"):
+        items.ark_for_path("bronze/preservica/haeger/latest/tree/quarter-mile")
+
+
+def test_ark_for_path_sidecar_without_ark_is_missing_ark(monkeypatch):
+    monkeypatch.setattr(fs, "exists", lambda path: True)
+    monkeypatch.setattr(fs, "read", lambda path: json.dumps({"name": "Quarter Mile"}))
+
+    with pytest.raises(LookupError, match="MISSING ARK"):
+        items.ark_for_path("bronze/preservica/haeger/latest/tree/quarter-mile")

@@ -11,6 +11,8 @@ from dagster import Config
 from pydantic import Field
 from typing import Literal
 
+from lib.fanout_batching import DEFAULT_MAX_STEPS
+
 
 # ---------------------------------------------------------------------------
 # Partition definitions
@@ -170,6 +172,42 @@ class DerivativesConfig(Config):
     widths: str = Field("256,512,1024", description="Thumbnail widths in pixels.")
 
 
+class CollectionDerivativesConfig(DerivativesConfig):
+    """Config for lib.pipeline_fanout.process_collection_job — DerivativesConfig
+    plus the fan-out's step cap.
+
+    :param str widths: Comma-separated thumbnail widths.
+    :param int max_steps: Most steps each fan-out (per-file derivatives,
+        per-item finalize) may produce; past that, several files/items share a
+        step (see lib.fanout_batching). 0 = never batch.
+    """
+    max_steps: int = Field(
+        DEFAULT_MAX_STEPS, description="Most steps per fan-out; more files are batched into shared steps. 0 = never batch.",
+    )
+
+
+class ItemRunConfig(CollectionDerivativesConfig):
+    """Config for lib.pipeline_item.process_item_job — one item, addressed by
+    its bronze tree folder, plus CollectionDerivativesConfig's widths/max_steps.
+
+    `item` defaults to "" only because lib.utils.default_run_config() builds
+    the launchpad defaults with `cls()`; plan_item rejects an empty value.
+
+    :param str widths: Comma-separated thumbnail widths.
+    :param int max_steps: Most derivative steps the item's files may produce;
+        past that, several files share a step (see lib.fanout_batching). 0 = never batch.
+    :param str item: The item's bronze folder, e.g.
+        "bronze/preservica/haeger/latest/tree/quarter-mile" ('cask:/' and a
+        leading '/' are accepted too).
+    :param bool index_es: Index the item into the DAMS Elasticsearch index
+        (`digtk showcase es upsert`) once it's finalized.
+    """
+    item: str = Field(
+        "", description="Bronze folder of the item, e.g. bronze/preservica/haeger/latest/tree/quarter-mile.",
+    )
+    index_es: bool = Field(True, description="Index the item into the DAMS Elasticsearch index afterwards.")
+
+
 class OcrConfig(Config):
     """Config for the run_ocr asset.
 
@@ -263,6 +301,8 @@ class WorkspaceRunConfig(Config):
     :param bool tables: tag-pdf vision layout pass for tables.
     :param float min_conf: tag-pdf minimum hOCR word confidence (0-100).
     :param bool validate: Run veraPDF on each tagged PDF.
+    :param int max_steps: Most steps each fan-out (files, folders) may produce;
+        past that, several share a step (see lib.fanout_batching). 0 = never batch.
     """
     split_detect: bool = Field(True, description="Run split-spreads detect.")
     split_apply: bool = Field(True, description="Run split-spreads apply (re-run alone after correcting gutters.json).")
@@ -281,6 +321,9 @@ class WorkspaceRunConfig(Config):
     tables: bool = Field(False, description="tag-pdf: vision layout pass for Table/TR/TD structure.")
     min_conf: float = Field(0.0, description="tag-pdf: drop hOCR words below this confidence (0-100).")
     validate: bool = Field(True, description="tag-pdf: run veraPDF on the tagged PDF.")
+    max_steps: int = Field(
+        DEFAULT_MAX_STEPS, description="Most steps per fan-out; more files/folders are batched into shared steps. 0 = never batch.",
+    )
 
 
 class PromoteItemConfig(Config):

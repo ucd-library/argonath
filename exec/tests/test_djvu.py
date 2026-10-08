@@ -267,3 +267,15 @@ def test_compute_ocr_stats_includes_threshold_config_and_angle():
         "angleThreshold": 1.1,
         "deskewAngle": -2.4,
     }
+
+
+def test_build_djvu_xml_writes_page_size_on_object_when_given():
+    structure = {"careas": [{"paragraphs": [{"lines": [{
+        "words": [{"bbox": [100, 200, 300, 240], "confidence": 96.0, "text": "Hello"}],
+    }]}]}]}
+
+    xml_out = djvu.build_djvu_xml(
+        structure, scale_factor=1.0, confidence_threshold=50, page_size={"width": 1024, "height": 1325},
+    )
+
+    assert xml_out.startswith('<OBJECT width="1024" height="1325">')

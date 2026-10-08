@@ -19,9 +19,14 @@ then fans out two ways from the one WorkspaceRunConfig:
   - one step per folder for split-spreads detect/apply, which keeps a single
     gutters.json and set of contact sheets per folder.
 
-Dagster can't nest fan-outs, so the per-file steps are one flat list, keyed
-"<folder>__<file>". Every step passes this run's id as --reporting-job-id, so
-each folder/file and step gets its own digtk.lib.reporting row.
+Dagster can't nest fan-outs, so the per-file steps are one flat list. Steps
+and events are named by the file's (or folder's) path relative to the
+partition, e.g. "source/d3bv7b33r/page_001.tif". Each fan-out is capped at
+WorkspaceRunConfig.max_steps steps: past that, several files (or folders) share
+one step and run one after another, each still reporting its own result events
+(see lib.fanout_batching). Every task passes this run's id as
+--reporting-job-id, so each folder/file and step gets its own
+digtk.lib.reporting row.
 
 Getting files in is a separate, earlier step — Dagster's containers only reach
 CaskFS over HTTP and can't see a host folder, so a folder is staged with
@@ -47,8 +52,9 @@ from dagster import (
 from dagster_celery import celery_executor
 
 from lib.configs import workspace_partitions, PromoteWorkspaceConfig, WorkspaceRunConfig
+from lib.fanout_batching import batches, log_batch, log_batching, relative_id, step_key
 from lib.pipeline_fanout import _emit
-from lib.utils import exec, load_celery_run_config
+from lib.utils import default_run_config, exec
 
 # WorkspaceRunConfig checkbox -> `digtk workspace run --steps` name, split by
 # whether the step runs once per folder or once per file.
@@ -69,20 +75,6 @@ def _workspace_path(partition_key):
     if not key.startswith("workspace/"):
         key = f"workspace/{key}"
     return f"cask:/{key}"
-
-
-def _mapping_key(index, *parts):
-    """DynamicOutput mapping keys are restricted to ``^[A-Za-z0-9_]+$`` — a
-    workspace path or filename is full of '/', '-' and '.', so sanitize it, and
-    prefix the position so two names that sanitize alike (e.g. 'a-b' and 'a_b')
-    still get distinct keys.
-
-    :param int index: Position in the fan-out.
-    :param str parts: Name segments, e.g. the folder and the file; joined with '__'.
-    :rtype: str
-    """
-    name = "__".join(re.sub(r"[^A-Za-z0-9_]", "_", p) for p in parts)
-    return f"i{index}_{name}"[:255]
 
 
 def _folder_name(item_dir):
@@ -129,20 +121,23 @@ def _ticked(config, fields):
 
 
 @op(out={
-    "folders": DynamicOut(dict, is_required=False),
-    "files": DynamicOut(dict, is_required=False),
+    "folders": DynamicOut(list, is_required=False),
+    "files": DynamicOut(list, is_required=False),
 })
 def fan_out_workspace(context: OpExecutionContext, config: WorkspaceRunConfig):
-    """Fan out the partition's workspace collection: one "folders" task per item
-    folder (when a split-spreads step is ticked) and one "files" task per
-    image/PDF that a ticked OCR/alt-text/tag-pdf step applies to.
+    """Fan out the partition's workspace collection: "folders" tasks (one per
+    item folder, when a split-spreads step is ticked) and "files" tasks (one
+    per image/PDF that a ticked OCR/alt-text/tag-pdf step applies to), each
+    batched so there are at most config.max_steps steps (see lib.fanout_batching).
 
-    Each task is {"item_dir": str, "file": str|None, "steps": [str], "args": [str]}
-    — everything process_workspace_folder/process_workspace_file need, so they
-    take no config of their own and the launchpad has one place for options.
+    Each task is {"item_dir": str, "file": str|None, "id": str (its path
+    relative to the partition, e.g. "source/d3bv7b33r/page_001.tif"),
+    "steps": [str], "args": [str]}; each DynamicOutput is a list of tasks, its
+    mapping key every task id joined with '__'. The process ops take no config
+    of their own, so the launchpad has one place for options.
 
     :param context: Dagster op execution context; partitioned by workspace collection.
-    :param config: WorkspaceRunConfig — which steps, plus their options.
+    :param config: WorkspaceRunConfig — which steps, their options, and max_steps.
     :raises ValueError: If no step is ticked.
     """
     folder_steps = _ticked(config, _FOLDER_STEP_FIELDS)
@@ -158,25 +153,31 @@ def fan_out_workspace(context: OpExecutionContext, config: WorkspaceRunConfig):
         f"steps per folder: {folder_steps or 'none'}, per file: {file_steps or 'none'}"
     )
 
-    file_index = 0
-    for i, entry in enumerate(listing):
+    folder_tasks, file_tasks = [], []
+    for entry in listing:
         item_dir = entry["item"]
-        folder = _folder_name(item_dir)
+        folder_id = relative_id(item_dir, context.partition_key)
         if folder_steps:
-            yield DynamicOutput(
-                {"item_dir": item_dir, "file": None, "steps": folder_steps, "args": args},
-                output_name="folders", mapping_key=_mapping_key(i, folder),
-            )
+            folder_tasks.append({"item_dir": item_dir, "file": None, "id": folder_id, "steps": folder_steps, "args": args})
         for filename in entry["files"]:
             is_pdf = filename.lower().endswith(".pdf")
             steps = [s for s in file_steps if is_pdf or s not in _PDF_ONLY_STEPS]
-            if not steps:
-                continue
+            if steps:
+                file_tasks.append({
+                    "item_dir": item_dir, "file": filename, "id": f"{folder_id}/{filename}",
+                    "steps": steps, "args": args,
+                })
+
+    used = set()
+    for output_name, tasks in (("folders", folder_tasks), ("files", file_tasks)):
+        if not tasks:
+            continue
+        grouped = batches(tasks, config.max_steps)
+        log_batching(context, output_name, len(tasks), grouped, config.max_steps)
+        for group in grouped:
             yield DynamicOutput(
-                {"item_dir": item_dir, "file": filename, "steps": steps, "args": args},
-                output_name="files", mapping_key=_mapping_key(file_index, folder, filename),
+                group, output_name=output_name, mapping_key=step_key([t["id"] for t in group], used),
             )
-            file_index += 1
 
 
 def _report_run_result(context, label, result):
@@ -206,12 +207,15 @@ def _report_run_result(context, label, result):
 
 
 def _run_task(context, task):
-    """Run one fanned-out task's `digtk workspace run` and report its result.
+    """Run one fanned-out task's `digtk workspace run` and report its result as
+    events labelled with the task's path id.
 
     :param context: Dagster op execution context; partitioned by workspace collection.
     :param dict task: A fan_out_workspace task.
+    :returns: True if the command ran (even with some steps/pages failed), False
+        if it failed outright.
+    :rtype: bool
     """
-    label = f"{task['item_dir']}#{task['file']}" if task["file"] else task["item_dir"]
     cmd = ["digtk", "workspace", "run", task["item_dir"], "--steps", ",".join(task["steps"])]
     if task["file"]:
         cmd += ["--file", task["file"]]
@@ -221,29 +225,44 @@ def _run_task(context, task):
     try:
         result = exec(cmd)
     except Exception as e:
-        _emit(context, "workspace", label, None, status="failed", error=str(e))
-        raise
-    _report_run_result(context, label, result)
+        _emit(context, "workspace", task["id"], None, status="failed", error=str(e))
+        return False
+    _report_run_result(context, task["id"], result)
+    return True
 
 
-@op(ins={"task": In(dict)})
-def process_workspace_folder(context: OpExecutionContext, task: dict):
-    """Run the ticked split-spreads step(s) for one item folder.
-
-    :param context: Dagster op execution context; partitioned by workspace collection.
-    :param dict task: A fan_out_workspace "folders" task.
-    """
-    _run_task(context, task)
-
-
-@op(ins={"task": In(dict)})
-def process_workspace_file(context: OpExecutionContext, task: dict):
-    """Run the ticked OCR / alt-text / tag-pdf step(s) for one file of an item folder.
+def _run_batch(context, tasks):
+    """Run one step's tasks (a single one, or a batch) one after another; a
+    failed task doesn't stop the rest, but fails the step at the end.
 
     :param context: Dagster op execution context; partitioned by workspace collection.
-    :param dict task: A fan_out_workspace "files" task.
+    :param list[dict] tasks: fan_out_workspace tasks.
+    :raises RuntimeError: If any task's command failed outright.
     """
-    _run_task(context, task)
+    log_batch(context, [t["id"] for t in tasks])
+    failed = [t["id"] for t in tasks if not _run_task(context, t)]
+    if failed:
+        raise RuntimeError(f"{len(failed)} of {len(tasks)} task(s) failed: {', '.join(failed)}")
+
+
+@op(ins={"tasks": In(list)})
+def process_workspace_folder(context: OpExecutionContext, tasks: list):
+    """Run the ticked split-spreads step(s) for one step's item folder(s).
+
+    :param context: Dagster op execution context; partitioned by workspace collection.
+    :param list[dict] tasks: fan_out_workspace "folders" tasks.
+    """
+    _run_batch(context, tasks)
+
+
+@op(ins={"tasks": In(list)})
+def process_workspace_file(context: OpExecutionContext, tasks: list):
+    """Run the ticked OCR / alt-text / tag-pdf step(s) for one step's file(s).
+
+    :param context: Dagster op execution context; partitioned by workspace collection.
+    :param list[dict] tasks: fan_out_workspace "files" tasks.
+    """
+    _run_batch(context, tasks)
 
 
 @job(
@@ -252,7 +271,7 @@ def process_workspace_file(context: OpExecutionContext, task: dict):
     # workspace collection, so its duration has no sane fixed ceiling.
     tags={"group": "workspace", "dagster/max_runtime": "0"},
     executor_def=celery_executor,
-    config=load_celery_run_config(),
+    config=default_run_config({"fan_out_workspace": WorkspaceRunConfig}),
 )
 def process_workspace_job():
     """Workspace-collection-partitioned fan-out: one step per folder for

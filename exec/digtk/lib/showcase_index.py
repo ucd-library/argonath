@@ -20,6 +20,7 @@ this needs settles.
 """
 import json
 import os
+import re
 import urllib.parse
 
 import httpx
@@ -38,6 +39,17 @@ ES_HOST = os.environ.get(ES_HOST_ENV, "http://elasticsearch:9200")
 # during a reindex/mapping-change cutover (see fin's es-index-management service).
 # This indexer is a write path, so it targets item-write, matching dbsync.
 ES_INDEX = os.environ.get(ES_INDEX_ENV, "item-write")
+
+# The website's page-level full-text index — one document per page of an image
+# list, holding that page's DjVu text layer — which its BookReader search
+# (/api/page-search/ia) queries. Same "-write" alias convention as ES_INDEX.
+PAGE_SEARCH_INDEX_ENV = "DAMS_ES_PAGE_SEARCH_INDEX"
+PAGE_SEARCH_INDEX = os.environ.get(PAGE_SEARCH_INDEX_ENV, "page-search-write")
+
+# URL prefix the dc-showcase gateway serves CaskFS files under: a request for
+# /cask/file/silver/... is proxied to the caskfs file API's /fs/silver/...
+# (see dc-showcase/services/gateway/index.js). Replaces the old /svc:cask/.
+CASK_FILE_PREFIX = "/cask/file/"
 
 # custom DAMS vocabulary type (dams/services/fin/ucd-lib-client/client/public/lib/
 # utils/client-media/definition.js:25) marking a multi-page/scanned item - triggers
@@ -101,6 +113,27 @@ def _normalize_type(type_value, default):
     if isinstance(type_value, list):
         return type_value
     return [type_value]
+
+
+def _normalize_creator(creator):
+    """Shapes a bronze sidecar's creator value as the node(s) the DAMS index
+    expects.
+
+    The item index maps @graph.creator as an object ({"@id", "name"}), so a
+    bare string is rejected with a 400 (mapper_parsing_exception), and the
+    website reads it as `root.creator?.name` (RecordVcModel.js). A single
+    creator stays a single object, since that's what the website reads; several
+    become a list of them.
+
+    :param creator: Raw creator value — str, dict, a list of either, or None.
+    :returns: {"name": ...} (or the dict as given), a list of those, or None.
+    :rtype: dict | list | None
+    """
+    values = creator if isinstance(creator, list) else [creator]
+    nodes = [v if isinstance(v, dict) else {"name": v} for v in values if v]
+    if not nodes:
+        return None
+    return nodes[0] if len(nodes) == 1 else nodes
 
 
 # An item can legitimately have both a compiled PDF and individual page
@@ -214,7 +247,7 @@ def build_document(ark):
         "@type": base_type,
         "name": name,
         "description": bronze_sidecar.get("description"),
-        "creator": bronze_sidecar.get("creator"),
+        "creator": _normalize_creator(bronze_sidecar.get("creator")),
         "subjects": bronze_sidecar.get("about"),
         "identifier": ark,
         "fileFormat": bronze_sidecar.get("encodingFormat"),
@@ -264,11 +297,11 @@ def build_document(ark):
 def _build_client_media(location, page_media, filename=None):
     """Builds the clientMedia urls the dams webapp reads off a node (the root
     node for a single-binary item, or one page node for a multi-binary item),
-    pointing at the argonath-adapter's /svc:cask/ prefix (see
-    dams/services/router and dams/services/argonath-adapter) for images,
-    instead of fin's /svc:gcs/ - the adapter resolves that prefix straight to
-    a caskfs path, so this can point directly at wherever generate_derivatives
-    wrote silver outputs, with no ark lookup needed at request time. The IIIF
+    pointing at the dc-showcase gateway's /cask/file/ prefix (CASK_FILE_PREFIX
+    — see dc-showcase/services/gateway/index.js) for images, instead of fin's
+    /svc:gcs/ - the gateway proxies that prefix straight to the caskfs file
+    API, so this can point directly at wherever generate_derivatives wrote
+    silver outputs, with no ark lookup needed at request time. The IIIF
     deep-zoom viewer url uses a separate /svc:cask-iiif/ prefix instead,
     which the dams-router forwards to the new argonath-iiif (Cantaloupe)
     service rather than the argonath-adapter - see _tiled_iiif_url_for_filename().
@@ -288,53 +321,89 @@ def _build_client_media(location, page_media, filename=None):
         if name in ("small", "medium", "large"):
             # cask_public_ref() produces "cask://silver/..." - strip the full
             # "cask://" scheme (not just "cask:/") so the result doesn't carry
-            # a leading slash into the /svc:cask/ prefix and create a
-            # "/svc:cask//silver/..." double-slash.
-            images[name] = {"url": "/svc:cask/" + content_url.removeprefix("cask://")}
+            # a leading slash into the prefix and create a
+            # "/cask/file//silver/..." double-slash.
+            image = {"url": CASK_FILE_PREFIX + content_url.removeprefix("cask://")}
+            # the record page's viewer builds its srcset from size.width and
+            # crashes without it (app-image-viewer.js _renderImg())
+            if candidate.get("width") and candidate.get("height"):
+                image["size"] = {"width": str(candidate["width"]), "height": str(candidate["height"])}
+            images[name] = image
 
     client_media = {}
     if images:
         client_media["images"] = images
 
     if filename:
-        tiled_iiif_url = _tiled_iiif_url_for_filename(location, filename)
+        manifest = _image_manifest(location, filename)
+        tiled_iiif_url = _tiled_iiif_url_for_filename(location, filename, manifest)
         if tiled_iiif_url:
             client_media["tiled"] = {"iiif": tiled_iiif_url}
+        ocr = _ocr_from_manifest(manifest)
+        if ocr and images:
+            images["ocr"] = ocr
 
     return client_media
 
 
-def _tiled_iiif_url_for_filename(location, filename):
-    """Finds one page's tiled/deep-zoom derivative and returns its IIIF
-    viewer base url, or None if it hasn't been generated.
+def _image_manifest(location, filename):
+    """Reads one page's per-image derivative manifest.json — where the tiled
+    and OCR outputs are recorded (they aren't part of associatedMedia the way
+    small/medium/large are; see image.py's generate()). The path is rebuilt
+    the same way generate() builds it, via pipeline.derivative_dir().
 
-    The tiled derivative is deliberately not part of associatedMedia the way
-    small/medium/large are (see image.py's generate() - only the thumbnail
-    set becomes ImageObject entries) - it only exists in the per-image
-    manifest.json written alongside those thumbnails. This reconstructs that
-    manifest's path the same way generate() does, via pipeline.derivative_dir(),
-    rather than duplicating the path convention here, and reads it directly.
-
-    ASSUMPTION, same caveat as build_document()'s multi-page composition: not
-    yet checked against a real generate_derivatives run end to end.
+    utils.write_manifest() merges its "extra" content into the manifest's top
+    level (no nested "extra" key), so "tiled" and "ocr" sit right alongside
+    small/medium/large.
 
     :param digtk.lib.items.ItemLocation location:
     :param str filename: This page's source filename (the {filename} segment
         of its images/{filename}/images/ derivative directory).
-    :returns: "/svc:cask-iiif/{percent-encoded tiled.tif caskfs path}", or None.
-    :rtype: str|None
+    :returns: The parsed manifest, or None if derivatives were never generated.
+    :rtype: dict|None
     """
     images_dir = pipeline.derivative_dir(location, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images")
-
     try:
-        raw = fs.read(f"{images_dir}/manifest.json")
+        return json.loads(fs.read(f"{images_dir}/manifest.json"))
     except FileNotFoundError:
         return None
 
-    # utils.write_manifest() merges its "extra" content into the manifest's top
-    # level (no nested "extra" key), so "tiled" sits right alongside
-    # small/medium/large.
-    tiled = json.loads(raw).get("tiled")
+
+def _ocr_from_manifest(manifest):
+    """One page's OCR text layer as the record page's BookReader expects it
+    on each page's clientMedia images: {"url", "size", "imageSize"} (see
+    dc-showcase BookReaderModel._isValidPage() — a page without it is dropped,
+    so an image list with no OCR shows no pages at all).
+
+    :param dict|None manifest: _image_manifest()'s result.
+    :returns: {"url": "/cask/file/...-ocr.djvu", "size": {...}, "imageSize": "large"}, or None.
+    :rtype: dict|None
+    """
+    ocr = (manifest or {}).get("ocr")
+    if not ocr or not ocr.get("url") or not ocr.get("size"):
+        return None
+    return {
+        "url": CASK_FILE_PREFIX + ocr["url"].removeprefix("cask://"),
+        "size": ocr["size"],
+        "imageSize": ocr.get("imageSize", "large"),
+    }
+
+
+def _tiled_iiif_url_for_filename(location, filename, manifest=None):
+    """Finds one page's tiled/deep-zoom derivative and returns its IIIF
+    viewer base url, or None if it hasn't been generated.
+
+    :param digtk.lib.items.ItemLocation location:
+    :param str filename: This page's source filename (the {filename} segment
+        of its images/{filename}/images/ derivative directory).
+    :param dict|None manifest: The page's manifest, if already read (see
+        _image_manifest()) — read here otherwise.
+    :returns: "/svc:cask-iiif/{percent-encoded tiled.tif caskfs path}", or None.
+    :rtype: str|None
+    """
+    if manifest is None:
+        manifest = _image_manifest(location, filename)
+    tiled = (manifest or {}).get("tiled")
     if not tiled:
         return None
 
@@ -343,12 +412,13 @@ def _tiled_iiif_url_for_filename(location, filename):
 
 
 def index_item(ark):
-    """Builds an item's ES document and writes it to the DAMS index.
+    """Builds an item's ES document and writes it to the DAMS index, then
+    replaces its page-search documents (see index_pages()).
 
     :param str ark: Item ARK to index.
-    :returns: {"ark": ..., "esId": ..., "index": ..., "status": "indexed"}
+    :returns: {"ark": ..., "esId": ..., "index": ..., "status": "indexed", "pages": int}
     :rtype: dict
-    :raises httpx.HTTPStatusError: If the ES write fails.
+    :raises httpx.HTTPStatusError: If an ES write fails.
     """
     document = build_document(ark)
     es_id = document["@id"]
@@ -357,4 +427,104 @@ def index_item(ark):
     resp = httpx.put(url, json=document)
     resp.raise_for_status()
 
-    return {"ark": ark, "esId": es_id, "index": ES_INDEX, "status": "indexed"}
+    pages = index_pages(document)
+    return {"ark": ark, "esId": es_id, "index": ES_INDEX, "status": "indexed", "pages": pages}
+
+
+def _with_page_size(djvu_xml, size):
+    """Adds width/height attributes to a DjVu XML document's OBJECT element
+    when it doesn't have them — page search reads them to scale its highlight
+    boxes (dc-showcase models/page-search iaSearchResultTransform()). OCR
+    written before digtk.lib.djvu.build_djvu_xml() took page_size lacks them.
+
+    :param str djvu_xml: The page's DjVu XML.
+    :param dict size: {"width", "height"} of the image the word coordinates are in.
+    :returns: The XML, with OBJECT's width/height set.
+    :rtype: str
+    """
+    if re.match(r"<OBJECT\b[^>]*\bwidth=", djvu_xml):
+        return djvu_xml
+    return re.sub(
+        r"^<OBJECT\b", f'<OBJECT width="{size["width"]}" height="{size["height"]}"', djvu_xml, count=1,
+    )
+
+
+def build_page_documents(document):
+    """Builds an item's page-search documents from its ES document: one per
+    image-list page that has an OCR text layer, shaped like fin's page-search
+    transform produced them — {"@id": item, "@graph": [{"@id": page,
+    "encodesCreativeWork": image list, "position", "content": DjVu XML}]}.
+    The page search matches on encodesCreativeWork (the BookReader searches
+    by its image list's @id) and full-text searches content.
+
+    A single-image item has no image list (and no BookReader), so it gets no
+    page documents. A page whose DjVu file is missing is skipped.
+
+    :param dict document: build_document()'s result.
+    :returns: Page documents, in page order.
+    :rtype: list[dict]
+    """
+    graph = document["@graph"]
+    image_list = next((n for n in graph if IMAGE_LIST_TYPE in (n.get("@type") or [])), None)
+    if not image_list:
+        return []
+
+    pages = []
+    for node in graph:
+        ocr = ((node.get("clientMedia") or {}).get("images") or {}).get("ocr")
+        if "position" not in node or not ocr:
+            continue
+        try:
+            raw = fs.read(f"cask:/{ocr['url'].removeprefix(CASK_FILE_PREFIX)}")
+        except FileNotFoundError:
+            continue
+        content = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+        pages.append({
+            "@id": document["@id"],
+            "@graph": [{
+                "@id": node["@id"],
+                "encodesCreativeWork": image_list["@id"],
+                "position": node["position"],
+                "content": _with_page_size(content, ocr["size"]),
+            }],
+            "roles": document.get("roles", ["public"]),
+        })
+    return pages
+
+
+def _delete_pages(item_id):
+    """Removes every page-search document belonging to an item (matched on the
+    item's top-level @id) — so a re-index with fewer pages leaves none behind.
+
+    :param str item_id: The item's ES @id, "/item/<ark>".
+    :returns: How many documents were deleted (0 if the index doesn't exist).
+    :rtype: int
+    :raises httpx.HTTPStatusError: If the delete fails for any other reason.
+    """
+    resp = httpx.post(
+        f"{ES_HOST}/{PAGE_SEARCH_INDEX}/_delete_by_query",
+        params={"refresh": "true", "conflicts": "proceed"},
+        json={"query": {"term": {"@id": item_id}}},
+    )
+    if resp.status_code == 404:
+        return 0
+    resp.raise_for_status()
+    return resp.json().get("deleted", 0)
+
+
+def index_pages(document):
+    """Replaces an item's page-search documents with ones built from its ES
+    document (see build_page_documents()).
+
+    :param dict document: build_document()'s result.
+    :returns: How many page documents were written.
+    :rtype: int
+    :raises httpx.HTTPStatusError: If an ES write fails.
+    """
+    _delete_pages(document["@id"])
+    pages = build_page_documents(document)
+    for page in pages:
+        page_id = page["@graph"][0]["@id"]
+        resp = httpx.put(f"{ES_HOST}/{PAGE_SEARCH_INDEX}/_doc/{urllib.parse.quote(page_id, safe='')}", json=page)
+        resp.raise_for_status()
+    return len(pages)

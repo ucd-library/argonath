@@ -480,3 +480,33 @@ def test_pdf_ocr_prefix_bare_for_a_lone_pdf_and_namespaced_otherwise():
     assert pipeline.pdf_ocr_prefix(lone, lone[0]) == ""
     assert pipeline.pdf_ocr_prefix(two_pdfs, two_pdfs[1]) == "b/"
     assert pipeline.pdf_ocr_prefix(with_image, with_image[0]) == "doc/"
+
+
+ITEM_DIR = "cask:/bronze/preservica/c/latest/tree/item"
+
+
+def test_drop_access_duplicates_prefers_the_preservation_master():
+    paths = [
+        f"{ITEM_DIR}/Access/item.pdf",
+        f"{ITEM_DIR}/Access/page_001.jpg",
+        f"{ITEM_DIR}/Access/page_002.jpg",
+        f"{ITEM_DIR}/Preservation/page_001.tif",
+    ]
+    assert pipeline.drop_access_duplicates(paths) == [
+        f"{ITEM_DIR}/Access/item.pdf",
+        f"{ITEM_DIR}/Access/page_002.jpg",  # no master for page 2
+        f"{ITEM_DIR}/Preservation/page_001.tif",
+    ]
+
+
+def test_drop_access_duplicates_only_matches_within_the_same_item():
+    paths = [
+        "cask:/bronze/g/c/latest/tree/a/Access/page_001.jpg",
+        "cask:/bronze/g/c/latest/tree/b/Preservation/page_001.tif",
+    ]
+    assert pipeline.drop_access_duplicates(paths) == paths
+
+
+def test_filter_binaries_by_format_uses_masters_over_access_copies():
+    paths = [f"{ITEM_DIR}/Access/page_001.jpg", f"{ITEM_DIR}/Preservation/page_001.tif"]
+    assert pipeline.filter_binaries_by_format(paths, "image") == [f"{ITEM_DIR}/Preservation/page_001.tif"]

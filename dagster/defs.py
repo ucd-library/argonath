@@ -17,6 +17,18 @@ Submodule layout (all files live alongside this one in dagster/):
                             before they have an ARK), and promote_workspace_job,
                             which copies reviewed items into silver (see its
                             own docstring)
+  lib/pipeline_item.py   — process_item_job, an unpartitioned run of one item's
+                            derivatives (addressed by its bronze tree folder),
+                            finalize and Elasticsearch upsert, plus
+                            process_item_failure_sensor
+                            (see its own docstring)
+  lib/pipeline_collection.py — collection_launch_job (queues one item run per
+                            item of a collection), item_queue_sensor (launches
+                            them with backpressure), collection_rollup_job and
+                            collection_rollup_sensor (item count + failed items
+                            once a collection's runs finish)
+  lib/collection_state.py — the collection_state queue/results store, via
+                            `digtk state` (see digtk.models.collection_state)
 
 Note: Dagster inserts this file's parent directory into sys.path when loading
 via python_file in workspace.yaml, so sibling-module imports work without
@@ -68,6 +80,13 @@ from lib.schedules import (
 )
 from lib.pipeline_fanout import process_collection_job
 from lib.pipeline_workspace import process_workspace_job, promote_workspace_job
+from lib.pipeline_item import process_item_job, process_item_failure_sensor
+from lib.pipeline_collection import (
+    collection_launch_job,
+    collection_rollup_job,
+    item_queue_sensor,
+    collection_rollup_sensor,
+)
 
 defs = dg.Definitions(
     assets=[
@@ -100,6 +119,9 @@ defs = dg.Definitions(
         process_collection_job,
         process_workspace_job,
         promote_workspace_job,
+        process_item_job,
+        collection_launch_job,
+        collection_rollup_job,
     ],
     sensors=[
         preservica_auto_sync_sensor,
@@ -110,6 +132,9 @@ defs = dg.Definitions(
         metadata_on_ocr,
         rag_on_metadata,
         dams_search_on_derivatives,
+        process_item_failure_sensor,
+        item_queue_sensor,
+        collection_rollup_sensor,
     ],
     schedules=[
         nightly_arda_index,

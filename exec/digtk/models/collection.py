@@ -503,16 +503,35 @@ def list_item_arks(collection, opts={}):
     :returns: Item ARKs currently in the collection's tree/, sorted.
     :rtype: list[str]
     """
+    return sorted({folder["ark"] for folder in list_item_folders(collection, opts)})
+
+
+def list_item_folders(collection, opts={}):
+    """List every item folder currently in a collection's tree/ layout, with
+    its ARK — list_item_arks()'s lookup, keeping each item.jsonld.json's
+    folder too. Used by digtk.models.collection_state.enqueue_collection(),
+    which keys items by their bronze folder path rather than their ARK.
+
+    Same coverage caveats as list_item_arks(): CaskFS collections only, and a
+    folder whose item.jsonld.json has no ARK isn't listed.
+
+    :param str collection: Collection name.
+    :param dict opts: Forwarded to fs.find_by_partition_keys() (currently unused there).
+    :returns: [{"path": "/bronze/[group]/[collection]/[time]/tree/...", "ark": str}, ...],
+        sorted by path.
+    :rtype: list[dict]
+    """
+    suffix = "/item.jsonld.json"
     paths = fs.find_by_partition_keys(["medallion-bronze", f"collection-{collection}"], opts)
-    arks = set()
+    folders = {}
     for path in paths:
-        if not path.endswith("/item.jsonld.json"):
+        if not path.endswith(suffix):
             continue
         doc = json.loads(fs.read(f"cask:{path}"))
         ark = doc.get("ark") or doc.get("@id")
         if ark:
-            arks.add(ark)
-    return sorted(arks)
+            folders[path[:-len(suffix)]] = ark
+    return [{"path": path, "ark": folders[path]} for path in sorted(folders)]
 
 
 def _get_active_registration_by_name(name, group, opts={}):
@@ -1329,7 +1348,7 @@ def _write_tree_item_jsonld(root, entity_dir, dest_rel, ref, collection, identif
     concept.
 
     IO entities only — a folder (SO) doesn't reliably carry an ARK (see
-    _resolve_identifier_key()) and has no clear gold-merge destination the way
+    _resolve_identifier_key()) and has no clear item-sidecar merge destination the way
     an item's ark does, so collection-level (schema:Collection) metadata
     mapping is out of scope here. Returns None (writes nothing) if the entity
     has no ARK-shaped identifier yet, or no descriptive metadata fragment at
@@ -1430,7 +1449,7 @@ def _write_tree_child(child, child_identifiers, root, dest_rel, collection):
         under `dest_rel`, and any digtk.lib.schema.ItemMetadata written along
         the way (IO entities with an ARK and descriptive metadata — see
         _write_tree_item_jsonld() — empty for a folder, or an item with
-        neither) for a caller to merge into gold (see
+        neither) for a caller to merge into the item's silver sidecar (see
         digtk.models.digital_website.pipeline.merge_dc_metadata()).
     :rtype: tuple[int, list[digtk.lib.schema.ItemMetadata]]
     """
@@ -1530,7 +1549,7 @@ def preservica_tree(collection, group, opts={}):
         root's own metadata.json isn't counted, matching that it was never a
         tree/ entry before), and every digtk.lib.schema.ItemMetadata written
         along the way (see _write_tree_child()) for a caller to merge into
-        gold (see digtk.models.digital_website.pipeline.merge_dc_metadata()).
+        the item's silver sidecar (see digtk.models.digital_website.pipeline.merge_dc_metadata()).
     :rtype: tuple[int, list[digtk.lib.schema.ItemMetadata]]
     :raises FileNotFoundError: If preservica_import() has not been run yet for
         this collection (no collection-level manifest.json / preservicaRootRef).
@@ -1656,7 +1675,7 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
         'unresolved': [...], 'item_metadata': [...]} — every list but the last
         is a list of Preservica refs; 'item_metadata' is every
         digtk.lib.schema.ItemMetadata written for an 'added' entity (see
-        _write_tree_child()), for a caller to merge into gold (see
+        _write_tree_child()), for a caller to merge into the item's silver sidecar (see
         digtk.models.digital_website.pipeline.merge_dc_metadata()) — 'moved'/
         'removed' entities don't get fresh metadata (this patches structural
         placement only, matching _copy_metadata_to_tree()'s own non-refresh

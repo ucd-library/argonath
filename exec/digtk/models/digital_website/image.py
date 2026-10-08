@@ -243,10 +243,10 @@ def generate(ark, opts={}):
     multi-level pyramid — stringified via pipeline.size_as_strings() to match the legacy
     manifest's own convention) — simulating the equivalent content the legacy
     DAMS/Fedora manifest carried, but with cask:// reference URIs in place of
-    Fin-proxy/GCS/IIIF-server paths (argonath has no serving-side equivalent of
-    those yet) and "ocr" pointing at this run's real OCR-prep JPEG rather than a
-    .djvu file argonath never produces (see docs/cask-conventions.md's
-    manifest.json section).
+    Fin-proxy/GCS/IIIF-server paths (serving URLs are derived from them when the
+    item is indexed — see digtk.lib.showcase_index) and "ocr" pointing at the
+    page's DjVu text layer, with "imageSize": "large" like legacy's (see
+    docs/cask-conventions.md's "Image Manifest Content").
 
     :param str ark: Item ARK identifier.
     Per-file mode (opts['files']) — one Dagster step per image, see

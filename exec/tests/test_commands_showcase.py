@@ -64,7 +64,49 @@ def test_formats_files_lists_each_formats_binaries(monkeypatch):
             "image": ["cask:/bronze/g/c/latest/item/page.tif"],
             "pdf": ["cask:/bronze/g/c/latest/item/document.pdf"],
         },
+        "dir": "cask:/bronze/g/c/latest/item",
     }
+
+
+def test_formats_path_resolves_ark_from_item_folder(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(items_lib, "ark_for_path", lambda path: seen.update(path=path) or ARK)
+    monkeypatch.setattr(items_lib, "resolve", lambda ark: ITEM)
+
+    result = runner.invoke(app, ["showcase", "formats", "--path", "bronze/g/c/latest/item/", "--files"])
+
+    assert result.exit_code == 0
+    assert seen["path"] == "/bronze/g/c/latest/item"
+    out = last_json_line(result.output)
+    assert out["ark"] == ARK
+    assert out["dir"] == "cask:/bronze/g/c/latest/item"
+
+
+def test_formats_path_reports_missing_ark(monkeypatch):
+    def raises(path):
+        raise LookupError("MISSING ARK: no item.jsonld.json in /bronze/g/c/latest/item/")
+    monkeypatch.setattr(items_lib, "ark_for_path", raises)
+
+    result = runner.invoke(app, ["showcase", "formats", "--path", "bronze/g/c/latest/item"])
+
+    assert result.exit_code == 1
+    assert last_json_line(result.output)["error"].startswith("MISSING ARK")
+
+
+def test_formats_path_rejects_ark_resolving_elsewhere(monkeypatch):
+    monkeypatch.setattr(items_lib, "ark_for_path", lambda path: ARK)
+    monkeypatch.setattr(items_lib, "resolve", lambda ark: ITEM)
+
+    result = runner.invoke(app, ["showcase", "formats", "--path", "bronze/g/c/latest/other"])
+
+    assert result.exit_code == 1
+    assert "resolves to /bronze/g/c/latest/item" in last_json_line(result.output)["error"]
+
+
+def test_formats_needs_exactly_one_of_ark_or_path():
+    result = runner.invoke(app, ["showcase", "formats"])
+
+    assert result.exit_code == 1
 
 
 def test_finalize_calls_the_finalize_model(monkeypatch):
