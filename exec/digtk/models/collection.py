@@ -46,7 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from digtk.lib import db, dc_mapping, fs, preservica, schema
+from digtk.lib import db, dc_mapping, fs, items, preservica, schema, utils
 from digtk.lib.config import CONFIG
 
 CURRENT_TIME = "CURRENT_TIME"
@@ -474,64 +474,87 @@ def list_active_collections(source_type=None, opts={}):
     return db.query(sql, params, opts)
 
 
-def list_item_arks(collection, opts={}):
-    """List every item ARK currently in a collection's tree/ layout.
+def _group_for_collection(name, opts={}):
+    """Resolve a collection's bronze group from its name via the registry — collection
+    names are unique among active registrations (see register_collection()'s
+    collection_registry_active_name_uq), so no group needs to be given.
 
-    Reuses the 'collection-<name>' partition key preservica_tree()/
-    preservica_tree_partial() already tag each tree/.../item.jsonld.json
-    write with (see _tree_partition_keys(), applied in
-    _write_tree_item_jsonld()) — a plain CaskFS Layer-2 partition-key query
-    (fs.find_by_partition_keys()), no new bronze bookkeeping needed. Built
-    for Dagster's collection-level fan-out (one run per collection, mapping
-    over every item in it — see dagster/lib/pipeline_fanout.py), which needs
-    a collection's current item roster without registering a Dagster
-    partition per item the way items_partitions-based assets do.
-
-    `group` isn't part of the lookup key: collection names are unique among
-    active registrations regardless of group (see register_collection()'s
-    collection_registry_active_name_uq), so the partition key tagged at
-    write time is scoped by name alone and that's enough here too.
-
-    Local (non-CaskFS) collections built via local_to_bronze_tree() aren't
-    covered — _write_tree_item_jsonld() only applies partition_keys when
-    writing to real CaskFS ('cask:' root), and local_to_bronze_tree() also
-    doesn't call it at all today (no Dublin-Core-sourced item.jsonld.json
-    for a manual disk collection).
-
-    :param str collection: Collection name.
-    :param dict opts: Forwarded to fs.find_by_partition_keys() (currently unused there).
-    :returns: Item ARKs currently in the collection's tree/, sorted.
-    :rtype: list[str]
+    :param str name: Collection name.
+    :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
+    :returns: Bronze group namespace.
+    :rtype: str
+    :raises ValueError: If there's no active registration for `name`.
     """
-    return sorted({folder["ark"] for folder in list_item_folders(collection, opts)})
+    rows = db.query(
+        "SELECT group_name FROM argonath.collection_registry WHERE name = %s AND status = 'active'",
+        (name,), opts,
+    )
+    if not rows:
+        raise ValueError(f"no active registration for collection {name!r}")
+    return rows[0]["group_name"]
 
 
 def list_item_folders(collection, opts={}):
-    """List every item folder currently in a collection's tree/ layout, with
-    its ARK — list_item_arks()'s lookup, keeping each item.jsonld.json's
-    folder too. Used by digtk.models.collection_state.enqueue_collection(),
-    which keys items by their bronze folder path rather than their ARK.
+    """List every item folder currently in a collection, using its collection-root
+    manifest.json's 'itemsRoot' to know which folder's immediate children are items
+    (e.g. 'tree' for a Preservica collection, '' for a flat/manual one whose items
+    sit directly under latest/).
 
-    Same coverage caveats as list_item_arks(): CaskFS collections only, and a
-    folder whose item.jsonld.json has no ARK isn't listed.
+    No file content is read and no CaskFS-wide search is run — just one manifest.json
+    read and one directory listing of the items root, so cost scales with the
+    collection's item count, not its total file count. Unlike the old
+    item.jsonld.json-based lookup, this makes no assumption that bronze items carry
+    any particular sidecar file.
+
+    If the collection has no manifest.json, or one with no 'itemsRoot' key, this
+    falls back to '' (flat) and logs a warning (see utils.warn()) — so that's visible
+    rather than silent.
 
     :param str collection: Collection name.
-    :param dict opts: Forwarded to fs.find_by_partition_keys() (currently unused there).
-    :returns: [{"path": "/bronze/[group]/[collection]/[time]/tree/...", "ark": str}, ...],
-        sorted by path.
-    :rtype: list[dict]
+    :param dict opts: 'group' (str, optional — skips the registry lookup in
+        _group_for_collection() when already known), 'conn' (injectable psycopg2
+        connection, forwarded to the group lookup), 'dest_root' (see
+        _bronze_collection_root(), for tests).
+    :returns: Item folder paths, e.g. "/bronze/[group]/[collection]/latest/tree/...",
+        sorted.
+    :rtype: list[str]
     """
-    suffix = "/item.jsonld.json"
-    paths = fs.find_by_partition_keys(["medallion-bronze", f"collection-{collection}"], opts)
-    folders = {}
-    for path in paths:
-        if not path.endswith(suffix):
+    group = opts.get("group") or _group_for_collection(collection, opts)
+    collection_root = _bronze_collection_root(collection, group, opts)
+    manifest = _read_bronze_json(collection_root, "manifest.json")
+    if manifest is None:
+        utils.warn(f"no manifest.json for collection {collection!r} at {collection_root} — assuming a flat item layout")
+        items_root = ""
+    elif "itemsRoot" not in manifest:
+        utils.warn(f"manifest.json for collection {collection!r} has no itemsRoot — assuming a flat item layout")
+        items_root = ""
+    else:
+        items_root = manifest["itemsRoot"]
+
+    latest_root = _bronze_latest_root(collection, group, opts)
+    list_root = f"{latest_root}/{items_root}" if items_root else latest_root
+    entries = fs.ls(list_root)
+    paths = [entry.path[len("cask:"):] if entry.path.startswith("cask:") else entry.path
+             for entry in entries if entry.kind == "directory"]
+    return sorted(paths)
+
+
+def list_item_arks(collection, opts={}):
+    """List every item ARK currently in a collection, skipping items that don't
+    have one — not every collection's items carry an ark.
+
+    :param str collection: Collection name.
+    :param dict opts: See list_item_folders().
+    :returns: Item ARKs, sorted.
+    :rtype: list[str]
+    """
+    arks = []
+    for path in list_item_folders(collection, opts):
+        try:
+            arks.append(items.ark_for_path(path))
+        except LookupError:
             continue
-        doc = json.loads(fs.read(f"cask:{path}"))
-        ark = doc.get("ark") or doc.get("@id")
-        if ark:
-            folders[path[:-len(suffix)]] = ark
-    return [{"path": path, "ark": folders[path]} for path in sorted(folders)]
+    return sorted(set(arks))
 
 
 def _get_active_registration_by_name(name, group, opts={}):
@@ -1125,6 +1148,7 @@ def preservica_import(ref, collection=None, group="preservica", opts={}):
         "sourceType": "preservica",
         "timeFormat": "latest",
         "preservicaRootRef": ref,
+        "itemsRoot": "tree",
     })
     _write_bronze_json(root, "manifest.json", {
         "walkedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),

@@ -91,9 +91,11 @@ def resolve_targets(target, opts={}):
     """Resolve any accepted target to the item(s) it covers.
 
     :param str|digtk.lib.items.ItemLocation target: An ARK (one bronze item), a
-        'cask:/workspace/...' path (every item at or under it — see
-        items.list_workspace_items()), a local directory (staged first, see
-        stage(), then treated like its workspace path), or an ItemLocation.
+        bronze item folder (one bronze item, resolved by path — see
+        items.resolve_path()), a 'cask:/workspace/...' path (every item at or
+        under it — see items.list_workspace_items()), a local directory
+        (staged first, see stage(), then treated like its workspace path), or
+        an ItemLocation.
     :param dict opts: Forwarded to stage() for a local directory.
     :returns: Items, in path order.
     :rtype: list[digtk.lib.items.ItemLocation]
@@ -105,9 +107,16 @@ def resolve_targets(target, opts={}):
     if target.startswith("ark:/"):
         return [items.resolve(target)]
     if not target.startswith("cask:"):
-        if not os.path.isdir(target):
-            raise ValueError(f"expected an ARK, a cask:/workspace/... path, or an existing local folder, got {target!r}")
-        target = stage(target, opts)
+        if os.path.isdir(target):
+            target = stage(target, opts)
+        else:
+            try:
+                return [items.resolve_path(target)]
+            except ValueError:
+                raise ValueError(
+                    f"expected an ARK, a bronze path, a cask:/workspace/... path, or an "
+                    f"existing local folder, got {target!r}"
+                )
     item_dirs = items.list_workspace_items(target)
     if not item_dirs:
         raise LookupError(f"no files found at or under {target}")

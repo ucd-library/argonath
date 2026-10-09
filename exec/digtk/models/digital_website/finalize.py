@@ -14,23 +14,27 @@ from digtk.lib import items
 from digtk.models.digital_website import image, pdf, pipeline
 
 
-def finalize(ark, opts={}):
+def finalize(target, opts={}):
     """Finalize every format of an item that has a finalize step (image, PDF).
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: Forwarded to each format's finalize().
-    :returns: {"status": "success", "ark": str, "image": {...}|absent, "pdf": {...}|absent}
+    :returns: {"status": "success", "ark": str|None, "image": {...}|absent, "pdf": {...}|absent}
         — one entry per format finalized.
     :rtype: dict
     :raises ValueError: If the item has neither image nor PDF binaries.
     :raises FileNotFoundError: If a file's per-file derivatives haven't been published.
     """
-    formats = pipeline.detect_formats(items.resolve(ark).bronze_binary_paths)
-    result = {"status": "success", "ark": ark}
+    item = items.resolve_target(target)
+    formats = pipeline.detect_formats(item.bronze_binary_paths)
+    result = {"status": "success", "ark": item.ark}
     if "image" in formats:
-        result["image"] = image.finalize(ark, opts)
+        result["image"] = image.finalize(item, opts)
     if "pdf" in formats:
-        result["pdf"] = pdf.finalize(ark, opts)
+        result["pdf"] = pdf.finalize(item, opts)
     if len(result) == 2:
-        raise ValueError(f"{ark} has no image or PDF binaries to finalize (formats: {sorted(formats)})")
+        raise ValueError(
+            f"{items.item_id(item)} has no image or PDF binaries to finalize (formats: {sorted(formats)})"
+        )
     return result

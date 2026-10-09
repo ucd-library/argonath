@@ -44,39 +44,41 @@ def _parse_resolutions(resolutions):
     return resolutions
 
 
-def probe(ark, opts={}):
+def probe(target, opts={}):
     """Report ffprobe metadata for every source video in the item — ad hoc/debug,
     no derivatives generated.
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: Unused.
-    :returns: {"status": "success", "ark": str, "streams": {stem: ffmpeg_utils.probe() result}}
+    :returns: {"status": "success", "ark": str|None, "streams": {stem: ffmpeg_utils.probe() result}}
     :rtype: dict
     """
-    item = items.resolve(ark)
+    item = items.resolve_target(target)
     video_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "video")
     with tempfile.TemporaryDirectory() as tmp_dir:
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": video_paths})
         streams = {src["stem"]: ffmpeg_utils.probe(src["local_path"], opts) for src in sources}
-    return {"status": "success", "ark": ark, "streams": streams}
+    return {"status": "success", "ark": item.ark, "streams": streams}
 
 
-def hls(ark, opts={}):
+def hls(target, opts={}):
     """Generate the HLS adaptive-bitrate stream for every source video in the item.
 
     Ad hoc/manual use, mirroring digtk.models.digital_website.image.thumbnails(); derivatives()
     is what Dagster's derivatives_job actually calls. Publishes into the same location
     derivatives() would: `public-frontend-derivatives/<video-filename>/streaming/`.
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'resolutions' (comma-separated str, default
         CONFIG["video"]["resolutions"]); forwarded to ffmpeg_utils.hls_ladder().
-    :returns: {"status": "success", "ark": str, "videos": {filename: {"dir": str,
+    :returns: {"status": "success", "ark": str|None, "videos": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
     resolutions = _parse_resolutions(opts.get("resolutions", CONFIG["video"]["resolutions"]))
-    item = items.resolve(ark)
+    item = items.resolve_target(target)
     video_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "video")
     start = time.monotonic()
 
@@ -97,7 +99,7 @@ def hls(ark, opts={}):
 
             videos[filename] = pipeline.publish(
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}/streaming", local_outputs,
-                command=["digtk", "video", "hls", ark, "--resolutions", ",".join(resolutions)],
+                command=["digtk", "video", "hls", items.item_id(item), "--resolutions", ",".join(resolutions)],
                 params={"resolutions": resolutions},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
@@ -105,10 +107,10 @@ def hls(ark, opts={}):
                 },
             )
 
-    return {"status": "success", "ark": ark, "videos": videos}
+    return {"status": "success", "ark": item.ark, "videos": videos}
 
 
-def derivatives(ark, opts={}):
+def derivatives(target, opts={}):
     """Generate the full derivative set for every source video in the item — the
     umbrella `digtk showcase video derivatives` calls.
 
@@ -122,16 +124,17 @@ def derivatives(ark, opts={}):
     generation happens before anything is published to CaskFS, so a failure at any
     step leaves no partial derivative set behind.
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'resolutions' (comma-separated str, default
         CONFIG["video"]["resolutions"]); 'language'/'model' for the caption step (see
         captions.transcribe_sources()); forwarded to ffmpeg_utils.
-    :returns: {"status": "success", "ark": str, "stream": {filename: {"dir": str,
+    :returns: {"status": "success", "ark": str|None, "stream": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}, "captions": {...}}
     :rtype: dict
     """
     resolutions = _parse_resolutions(opts.get("resolutions", CONFIG["video"]["resolutions"]))
-    item = items.resolve(ark)
+    item = items.resolve_target(target)
     video_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "video")
     start = time.monotonic()
 
@@ -155,7 +158,7 @@ def derivatives(ark, opts={}):
 
             stream_results[filename] = pipeline.publish(
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}/streaming", stream_outputs,
-                command=["digtk", "video", "derivatives", ark, "--resolutions", ",".join(resolutions)],
+                command=["digtk", "video", "derivatives", items.item_id(item), "--resolutions", ",".join(resolutions)],
                 params={"resolutions": resolutions},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
@@ -180,8 +183,8 @@ def derivatives(ark, opts={}):
         utils.log("Transcribing captions...")
         captions_result = captions.transcribe_sources(
             item, sources, tmp_dir,
-            command=["digtk", "video", "derivatives", ark, "--resolutions", ",".join(resolutions)],
+            command=["digtk", "video", "derivatives", items.item_id(item), "--resolutions", ",".join(resolutions)],
             opts=opts,
         )
 
-    return {"status": "success", "ark": ark, "stream": stream_results, "captions": captions_result}
+    return {"status": "success", "ark": item.ark, "stream": stream_results, "captions": captions_result}

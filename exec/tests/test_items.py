@@ -157,6 +157,53 @@ def test_resolve_standalone_sidecar_does_not_trigger_for_a_binary_literally_name
     assert location.bronze_binary_paths == ["cask:/bronze/g/c/latest/i1/item"]
 
 
+# --- resolve_path ---------------------------------------------------------------
+
+def test_resolve_path_lists_binaries_with_no_ark_lookup(monkeypatch):
+    def no_rdf_search(subject, opts={}):
+        raise AssertionError("resolve_path() must not search by subject/ark")
+    monkeypatch.setattr(fs, "find_by_subject", no_rdf_search)
+    monkeypatch.setattr(fs, "exists", lambda path: False)
+    monkeypatch.setattr(fs, "ls", lambda path, opts={}: [
+        _entry("photo.tiff", "/bronze/digital-collections/my-coll/latest/box-1/photo.tiff", "file"),
+    ] if path == "cask:/bronze/digital-collections/my-coll/latest/box-1" else [])
+
+    location = items.resolve_path("bronze/digital-collections/my-coll/latest/box-1")
+
+    assert location.ark is None
+    assert location.sidecar_path is None
+    assert location.group == "digital-collections"
+    assert location.collection == "my-coll"
+    assert location.time == "latest"
+    assert location.item_path == "box-1"
+    assert location.bronze_binary_paths == ["cask:/bronze/digital-collections/my-coll/latest/box-1/photo.tiff"]
+
+
+def test_resolve_path_attaches_ark_when_the_folder_has_one(monkeypatch):
+    monkeypatch.setattr(fs, "ls", lambda path, opts={}: [
+        _entry("item.jsonld.json", "/bronze/preservica/haeger/latest/tree/quarter-mile/item.jsonld.json", "file"),
+        _entry("page_001.tif", "/bronze/preservica/haeger/latest/tree/quarter-mile/page_001.tif", "file"),
+    ])
+    monkeypatch.setattr(fs, "exists", lambda path: path == "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/item.jsonld.json")
+    monkeypatch.setattr(fs, "read", lambda path: json.dumps({"ark": ARK}))
+
+    location = items.resolve_path("bronze/preservica/haeger/latest/tree/quarter-mile")
+
+    assert location.ark == ARK
+    assert location.sidecar_path == "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/item.jsonld.json"
+
+
+def test_resolve_path_raises_when_folder_has_no_binaries(monkeypatch):
+    monkeypatch.setattr(fs, "ls", lambda path, opts={}: [])
+    with pytest.raises(LookupError):
+        items.resolve_path("bronze/g/c/latest/empty-folder")
+
+
+def test_resolve_path_rejects_non_bronze_paths():
+    with pytest.raises(ValueError):
+        items.resolve_path("/workspace/jdoe/box-12")
+
+
 def test_metadata_reads_standalone_sidecar_directly(monkeypatch):
     monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [
         "/bronze/preservica/haeger/latest/tree/calera-formatted/item.jsonld.json",
@@ -339,8 +386,10 @@ def test_list_workspace_items_starts_from_a_subdirectory(monkeypatch):
 def test_resolve_target_dispatches_by_prefix(monkeypatch):
     monkeypatch.setattr(items, "resolve", lambda ark, opts={}: ("bronze", ark))
     monkeypatch.setattr(items, "resolve_workspace", lambda path: ("workspace", path))
+    monkeypatch.setattr(items, "resolve_path", lambda path, opts={}: ("path", path))
     assert items.resolve_target(ARK) == ("bronze", ARK)
     assert items.resolve_target("cask:/workspace/jdoe/box-12") == ("workspace", "cask:/workspace/jdoe/box-12")
+    assert items.resolve_target("bronze/g/c/latest/x") == ("path", "bronze/g/c/latest/x")
 
 
 def test_resolve_target_passes_a_location_through():
@@ -350,7 +399,7 @@ def test_resolve_target_passes_a_location_through():
     assert items.resolve_target(location) is location
 
 
-@pytest.mark.parametrize("target", ["./scans/box-12", "/tmp/box-12", "cask:/bronze/g/c/latest/x.tiff"])
+@pytest.mark.parametrize("target", ["./scans/box-12", "/tmp/box-12"])
 def test_resolve_target_rejects_anything_else(target):
     with pytest.raises(ValueError, match="expected an ARK"):
         items.resolve_target(target)

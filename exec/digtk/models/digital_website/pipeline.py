@@ -250,8 +250,7 @@ def publish(item, subdir, local_outputs, command, params, *, type="silver", type
 def pdf_ocr_prefix(bronze_binary_paths, pdf_path):
     """The directory prefix a PDF's per-page ocr/ output lives under within its
     item — the one place this rule lives, so the code that writes it
-    (pdf.derivatives()) and the code that reads it back (digtk.lib.gcs_sync)
-    can't disagree.
+    (pdf.derivatives()) and any code that reads it back can't disagree.
 
     A PDF's OCR output is namespaced by its own filename stem ("<stem>/ocr/...")
     whenever anything else in the item could also write to the bare "ocr/"
@@ -507,12 +506,11 @@ def generate_thumbnail_set(local_src, tmp_dir, widths, stem, opts={}):
 
 def build_ocr_products(orientation, tmp_dir, stem, multi, large_size, opts={}):
     """Build the real djvu OCR text-layer + stats.json for one source, out of
-    the hOCR select_orientation() already produced deciding orientation —
-    this is the "for now, replicate legacy" OCR feature (see
-    digtk.lib.gcs_sync.py's module docstring); it deliberately reuses that
-    already-run Tesseract pass rather than running OCR a third time, which is
-    why this only works when called right after select_orientation() in the
-    same tmp_dir/process.
+    the hOCR select_orientation() already produced deciding orientation — a
+    legacy-DAMS-compatible OCR product (see digtk.lib.djvu's module
+    docstring); it deliberately reuses that already-run Tesseract pass rather
+    than running OCR a third time, which is why this only works when called
+    right after select_orientation() in the same tmp_dir/process.
 
     :param dict orientation: select_orientation()'s return -- {"deskew": bool,
         "angle": float, "stats": {"original": {..., "hocr_path": str},

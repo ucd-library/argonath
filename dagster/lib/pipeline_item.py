@@ -2,8 +2,10 @@
 process_item_job: run one item's showcase derivatives on demand. The job is
 manual and unpartitioned, and the item is addressed by its bronze tree folder
 (ItemRunConfig.item, e.g. "bronze/preservica/haeger/latest/tree/quarter-mile")
-rather than by its ARK. The ARK is read from the folder's item.jsonld.json by
-`digtk showcase formats --path <folder> --files`.
+throughout — an ARK is read from the folder's item.jsonld.json by
+`digtk showcase formats <folder> --files` if one exists, but is never required
+to generate derivatives or finalize the item; only index_item's Elasticsearch
+upsert genuinely needs one (see below).
 
 It works like one item's slice of lib/pipeline_fanout.py's
 process_collection_job and reuses that module's pieces: item_tasks() builds
@@ -15,16 +17,18 @@ item-level outputs. The graph:
 
 finalize_item fails the run if any file failed, and only finalizes items with
 image or PDF outputs. index_item then runs `digtk showcase es upsert <ark>`
-(ItemRunConfig.index_es). An item with no ARK (MISSING ARK) or whose listing
-fails becomes a single error task, so the run reports it and fails like any
-other failed step.
+(ItemRunConfig.index_es) — the one step that still hard-requires an ark, since
+the ES document's own id is ark-shaped; an item with no ark fails here
+(after derivatives/finalize have already succeeded), not earlier. An item
+whose formats listing itself fails (not just a missing ark) becomes a single
+error task, so the run reports it and fails like any other failed step.
 
 Task ids, events and digtk reporting rows use the item's collection key (the
 first three path segments, "bronze/[group]/[collection]"), the same as
 process_collection_job. Runs are tagged argonath/item, argonath/collection and
-argonath/ark, so they're searchable in the Runs screen. Queued runs (see
-lib.pipeline_collection.item_queue_sensor) already have argonath/item and
-argonath/collection at launch.
+(when the item has one) argonath/ark, so they're searchable in the Runs
+screen. Queued runs (see lib.pipeline_collection.item_queue_sensor) already
+have argonath/item and argonath/collection at launch.
 
 Each run's outcome is recorded as the item's process_item_job result in
 collection_state (see lib.collection_state): "success" after index_item, and
@@ -86,8 +90,10 @@ def plan_item(context: OpExecutionContext, config: ItemRunConfig):
     """List the item's files and fan out its derivative tasks, batched so there
     are at most config.max_steps steps (see lib.fanout_batching).
 
-    An item that can't be listed (e.g. MISSING ARK: no item.jsonld.json in its
-    folder) becomes a single error task, so the run reports it and fails.
+    An item that can't be listed at all (e.g. its bronze folder has no media)
+    becomes a single error task, so the run reports it and fails. A missing
+    ARK is not by itself a listing failure — not every item has one, and
+    derivative generation/finalize don't need one (see module docstring).
 
     :param context: Dagster op execution context (unpartitioned).
     :param config: ItemRunConfig: the item folder, widths, max_steps, index_es.
@@ -100,15 +106,17 @@ def plan_item(context: OpExecutionContext, config: ItemRunConfig):
 
     context.instance.add_run_tags(context.run_id, {"argonath/item": item, "argonath/collection": collection_key})
 
-    listing = exec(["digtk", "showcase", "formats", "--path", item, "--files"], {"check": False})
-    ark = listing.get("ark")
-    if listing.get("status") == "error" or listing.get("error") or not ark:
+    listing = exec(["digtk", "showcase", "formats", item, "--files"], {"check": False})
+    if listing.get("status") == "error" or listing.get("error"):
         error = listing.get("error") or f"listing formats failed: {listing}"
         context.log.error(f"[{item_id}] {error}")
-        tasks = [_error_task(ark or item, item_id, item_id, error, collection_key, config)]
+        tasks = [_error_task(item, item_id, item_id, error, collection_key, config)]
+        ark = None
     else:
-        context.instance.add_run_tags(context.run_id, {"argonath/ark": ark})
-        tasks = item_tasks(ark, listing, collection_key, config)
+        ark = listing.get("ark")
+        if ark:
+            context.instance.add_run_tags(context.run_id, {"argonath/ark": ark})
+        tasks = item_tasks(item, listing, collection_key, config)
         for task in tasks:
             if task["error"]:
                 context.log.error(f"[{task['item_id']}] {task['error']}")
@@ -157,7 +165,7 @@ def finalize_item(context: OpExecutionContext, results: list, item: dict) -> dic
         context.log.info(f"[{item['id']}] no image/PDF outputs, nothing to finalize")
         return item
 
-    error = finalize_one_item(context, item["ark"], item["id"], item["collection_key"])
+    error = finalize_one_item(context, item["item"], item["ark"], item["id"], item["collection_key"])
     if error is not None:
         error = f"{item['id']} failed to finalize: {error}"
         _record(context, item, "failed", {"error": error})
@@ -170,11 +178,20 @@ def index_item(context: OpExecutionContext, item: dict):
     """Index the item into the DAMS Elasticsearch index (`digtk showcase es
     upsert`) if ItemRunConfig.index_es is set, then record the job as a success.
 
+    This is the one step in the job that genuinely requires an ark (the ES
+    document's own id is ark-shaped) — an item with no ark fails here, after
+    its derivatives and finalize have already succeeded, rather than earlier.
+
     :param context: Dagster op execution context.
     :param dict item: finalize_item's item dict.
+    :raises RuntimeError: If index_es is set and the item has no ark.
     :raises Exception: If indexing failed (after recording "failed").
     """
     if item["index_es"]:
+        if not item["ark"]:
+            error = f"{item['id']} has no ark, cannot index"
+            _record(context, item, "failed", {"error": error})
+            raise RuntimeError(error)
         try:
             result = exec(["digtk", "showcase", "es", "upsert", item["ark"]])
         except Exception as e:

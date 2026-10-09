@@ -10,7 +10,6 @@ Subcommands mirror the pipeline phases:
                           pdf (per-page thumbnails, conversion, deskew, OCR prep),
                           video (HLS stream, captions via local Whisper),
                           audio (transcode, waveform, captions via local Whisper),
-                          gcs (sync derivatives into the legacy DAMS/fin GCS bucket layout),
                           es (index items into the DAMS website's Elasticsearch index)
   digtk ocr           — Tesseract word geometry + Qwen vision transcript
   digtk metadata      — AI and human metadata generation

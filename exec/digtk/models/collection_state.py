@@ -248,11 +248,11 @@ def _enqueue(cur, job_name, requests):
 
 def enqueue_collection(key, opts={}):
     """Queue an ITEM_JOB run for every item currently in a collection's bronze
-    tree/.
+    items root (see digtk.models.collection.list_item_folders()).
 
     Upserts the collection and its items and links new items — all in one
     transaction. A pending row for the same item is replaced, so enqueuing
-    twice doesn't run an item twice. Items no longer in tree/ are left as they
+    twice doesn't run an item twice. Items no longer present are left as they
     are (item removal isn't implemented yet).
 
     :param str key: Collection key, e.g. "bronze/preservica/haeger".
@@ -263,12 +263,16 @@ def enqueue_collection(key, opts={}):
     :rtype: dict
     """
     key = collection_key(key)
-    _, _, name = key.split("/")
+    _, group, name = key.split("/")
     current = []
-    for folder in collection_model.list_item_folders(name):
-        path = item_name(folder["path"])
+    for folder_path in collection_model.list_item_folders(name, {"group": group}):
+        path = item_name(folder_path)
         if path.startswith(f"{key}/"):
-            current.append((path, folder["ark"]))
+            try:
+                ark = items.ark_for_path(folder_path)
+            except LookupError:
+                ark = None
+            current.append((path, ark))
 
     info = registry_info(key)
     extra = {"trigger": opts.get("trigger", "collection")}

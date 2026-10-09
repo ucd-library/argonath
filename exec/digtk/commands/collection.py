@@ -13,8 +13,8 @@ Subcommands:
   list       — list registered collections (see digtk.models.collection.register_collection) —
                used by Dagster's collection_partition_sync_sensor to keep its
                'collections' dynamic partition in sync with the registry.
-  items      — list a collection's current item ARKs (see
-               digtk.models.collection.list_item_arks) — used by Dagster's
+  items      — list a collection's current item folders (see
+               digtk.models.collection.list_item_folders) — used by Dagster's
                collection-level fan-out (dagster/lib/pipeline_fanout.py).
   init-pg    — apply the collection registry's Postgres schema (see
                digtk.models.collection.init_pg / collection_registry.sql). Safe
@@ -148,18 +148,19 @@ def list_registered(
 def items(
     collection: Annotated[str, typer.Option(help="Collection name.")],
 ):
-    """List every item ARK currently in a collection's tree/ layout — see
-    digtk.models.collection.list_item_arks(). Used by Dagster's collection-
+    """List every item folder currently in a collection — see
+    digtk.models.collection.list_item_folders(). Used by Dagster's collection-
     level fan-out (dagster/lib/pipeline_fanout.py) to enumerate a partition's
-    items without a per-item Dagster partition."""
-    arks = collection_model.list_item_arks(collection)
+    items without a per-item Dagster partition. Bronze paths, not ARKs — not
+    every item has one (see digtk.lib.items.resolve_target())."""
+    paths = collection_model.list_item_folders(collection)
 
-    for ark in arks:
-        utils.log(ark)
-    if not arks:
+    for path in paths:
+        utils.log(path)
+    if not paths:
         utils.log("(no items)")
 
-    utils.result({"status": "success", "collection": collection, "arks": arks})
+    utils.result({"status": "success", "collection": collection, "items": paths})
 
 
 @app.command("init-pg")

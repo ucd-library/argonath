@@ -28,6 +28,7 @@ from digtk.lib.config import (
     ImageThumbnailWidthsOption,
     ReportingCollectionOption,
     ReportingJobIdOption,
+    TargetArgument,
 )
 from digtk.models.digital_website import pdf
 
@@ -39,61 +40,61 @@ PageOption = Annotated[int, typer.Option("--page", help="0-indexed page number."
 
 
 @app.command(name="page-count")
-def page_count(ark: Annotated[str, typer.Argument(help="Item ARK identifier.")]):
+def page_count(target: TargetArgument):
     """Report each source PDF's page count."""
     try:
-        utils.result(pdf.page_count(ark))
+        utils.result(pdf.page_count(target))
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command()
 def thumbnail(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     page: PageOption = 0,
     widths: ImageThumbnailWidthsOption = CONFIG["image"]["thumbnail_widths"],
     quality: ImageThumbnailQualityOption = CONFIG["image"]["thumbnail_quality"],
 ):
     """Generate thumbnail JPEGs at each requested width, for one page."""
     try:
-        utils.log(f"Generating thumbnails for {ark} page {page} at widths {widths}")
-        utils.result(pdf.thumbnail(ark, opts={"page": page, "widths": widths, "quality": quality}))
+        utils.log(f"Generating thumbnails for {target} page {page} at widths {widths}")
+        utils.result(pdf.thumbnail(target, opts={"page": page, "widths": widths, "quality": quality}))
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command()
 def convert(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     page: PageOption = 0,
     format: ImageConvertFormatOption = CONFIG["image"]["convert_format"],
 ):
     """Convert one page's rasterized image to the specified format."""
     try:
-        utils.log(f"Converting {ark} page {page} to {format}")
-        utils.result(pdf.convert(ark, opts={"page": page, "format": format}))
+        utils.log(f"Converting {target} page {page} to {format}")
+        utils.result(pdf.convert(target, opts={"page": page, "format": format}))
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command()
 def deskew(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     page: PageOption = 0,
     threshold: ImageDeskewThresholdOption = CONFIG["image"]["deskew_threshold"],
     quality: ImageThumbnailQualityOption = CONFIG["image"]["thumbnail_quality"],
 ):
     """Correct skew in one rasterized page."""
     try:
-        utils.log(f"Deskewing {ark} page {page} (threshold {threshold}%)")
-        utils.result(pdf.deskew(ark, opts={"page": page, "threshold": threshold, "quality": quality}))
+        utils.log(f"Deskewing {target} page {page} (threshold {threshold}%)")
+        utils.result(pdf.deskew(target, opts={"page": page, "threshold": threshold, "quality": quality}))
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command(name="prep-ocr")
 def prep_ocr(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     page: PageOption = 0,
     dpi: ImageDpiOption = CONFIG["image"]["dpi"],
     fuzz_threshold: ImageFuzzThresholdOption = CONFIG["image"]["fuzz_threshold"],
@@ -101,15 +102,15 @@ def prep_ocr(
 ):
     """Prepare one rasterized page for OCR: 2048px long edge, 300 DPI, fuzz whiten background."""
     try:
-        utils.log(f"Preparing {ark} page {page} for OCR (dpi={dpi}, deskew={deskew})")
-        utils.result(pdf.prep_ocr(ark, opts={"page": page, "dpi": dpi, "fuzz": fuzz_threshold, "deskew": deskew}))
+        utils.log(f"Preparing {target} page {page} for OCR (dpi={dpi}, deskew={deskew})")
+        utils.result(pdf.prep_ocr(target, opts={"page": page, "dpi": dpi, "fuzz": fuzz_threshold, "deskew": deskew}))
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command()
 def derivatives(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     widths: ImageThumbnailWidthsOption = CONFIG["image"]["thumbnail_widths"],
     deskew_threshold: ImageDeskewThresholdOption = CONFIG["image"]["deskew_threshold"],
     fuzz_threshold: ImageFuzzThresholdOption = CONFIG["image"]["fuzz_threshold"],
@@ -132,13 +133,13 @@ def derivatives(
     derivatives.
     """
     try:
-        utils.log(f"Generating derivatives for {ark} at widths {widths}")
-        item_label = f"{ark}#{','.join(file)}" if file else ark
+        utils.log(f"Generating derivatives for {target} at widths {widths}")
+        item_label = f"{target}#{','.join(file)}" if file else target
         with reporting.track(
             reporting_job_id, stage="derivatives", item_id=item_label, collection=reporting_collection,
             options={"widths": widths, "deskew_threshold": deskew_threshold, "fuzz_threshold": fuzz_threshold},
         ):
-            result = pdf.derivatives(ark, opts={
+            result = pdf.derivatives(target, opts={
                 "widths": widths,
                 "threshold": deskew_threshold,
                 "fuzz": fuzz_threshold,

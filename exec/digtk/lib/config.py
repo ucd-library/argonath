@@ -185,8 +185,6 @@ CAPTIONS_MODEL_ENV = "DIGTK_CAPTIONS_MODEL"
 CAPTIONS_WHISPER_BIN_ENV = "DIGTK_CAPTIONS_WHISPER_BIN"
 CAPTIONS_TIMEOUT_S_ENV = "DIGTK_CAPTIONS_TIMEOUT_S"
 
-GCS_BUCKET_ENV = "DIGTK_GCS_BUCKET"
-
 # The shared postgres instance's default 'postgres' database — same one
 # cask/anduin-gateway connect to (distinct from CONFIG["postgres"]'s own
 # dedicated 'argonath' database above, and from Dagster's own run/event
@@ -297,7 +295,6 @@ SETTINGS = [
     {"dotpath": "ocr.orientation_word_count_threshold", "env": OCR_ORIENTATION_WORD_COUNT_THRESHOLD_ENV, "cast": int, "secret": False},
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_angle_threshold", "env": OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, "cast": float, "secret": False},
-    {"dotpath": "gcs.bucket", "env": GCS_BUCKET_ENV, "cast": str, "secret": False},
     {"dotpath": "postgres.host", "env": POSTGRES_HOST_ENV, "cast": str, "secret": False},
     {"dotpath": "postgres.port", "env": POSTGRES_PORT_ENV, "cast": int, "secret": False},
     {"dotpath": "postgres.database", "env": POSTGRES_DATABASE_ENV, "cast": str, "secret": False},
@@ -595,13 +592,6 @@ CONFIG = {
         "whisper_bin": _env(CAPTIONS_WHISPER_BIN_ENV, "whisper"),
         "timeout_s": _env(CAPTIONS_TIMEOUT_S_ENV, 3600.0, float),
     },
-    "gcs": {
-        # Legacy DAMS/fin's GCS_CLIENT_MEDIA_BUCKET default is dams-client-media-prod
-        # (dams/services/fin/Dockerfile) -- this is argonath's own parallel bucket,
-        # kept separate so a sync never touches production derivative data. See
-        # digtk.lib.gcs_sync's module docstring.
-        "bucket": _env(GCS_BUCKET_ENV, "dams-client-media-argonath"),
-    },
     "postgres": {
         # argonath's own app-level schema (collection registry, etc.) — the shared
         # Postgres/pgvector instance project-anduin provisions, not Dagster's own
@@ -791,16 +781,13 @@ SearchEmbedModelOption = Annotated[str | None, typer.Option(
     help=f"Embedding model to chunk with. Env: {SEARCH_EMBED_MODEL_ENV}.",
 )]
 
-GcsBucketOption = Annotated[str, typer.Option(
-    "--bucket", envvar=GCS_BUCKET_ENV,
-    help=f"Target GCS bucket for the derivative sync. Env: {GCS_BUCKET_ENV}.",
-)]
-
 # Positional target for every root-level tool command (see
 # digtk.models.workspace.resolve_targets()).
 TargetArgument = Annotated[str, typer.Argument(
-    help="An item ARK, a cask:/workspace/... path, or a local folder (staged into "
-         "workspace first). A folder or workspace path covers every item under it.",
+    help="An item ARK, a bronze item folder (e.g. "
+         "bronze/preservica/haeger/latest/tree/quarter-mile), a cask:/workspace/... "
+         "path, or a local folder (staged into workspace first). A workspace or local "
+         "folder target covers every item under it; a bronze folder is one item.",
 )]
 
 # Shared by every root-level tool command that accepts a local folder target

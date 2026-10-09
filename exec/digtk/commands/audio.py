@@ -24,6 +24,7 @@ from digtk.lib.config import (
     CaptionsModelOption,
     ReportingCollectionOption,
     ReportingJobIdOption,
+    TargetArgument,
 )
 from digtk.models.digital_website import audio
 
@@ -33,45 +34,45 @@ _ERRORS = (LookupError, OSError, RuntimeError, ValueError)
 
 
 @app.command()
-def probe(ark: Annotated[str, typer.Argument(help="Item ARK identifier.")]):
+def probe(target: TargetArgument):
     """Report ffprobe metadata for every source audio file."""
     try:
-        utils.result(audio.probe(ark))
+        utils.result(audio.probe(target))
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command()
 def transcode(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     format: AudioTranscodeFormatOption = CONFIG["audio"]["transcode_format"],
     bitrate: AudioTranscodeBitrateOption = CONFIG["audio"]["transcode_bitrate"],
 ):
     """Convert source audio to the specified format."""
     try:
-        utils.log(f"Transcoding {ark} to {format} @ {bitrate}")
-        utils.result(audio.transcode(ark, opts={"format": format, "bitrate": bitrate}))
+        utils.log(f"Transcoding {target} to {format} @ {bitrate}")
+        utils.result(audio.transcode(target, opts={"format": format, "bitrate": bitrate}))
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command()
 def waveform(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     width: AudioWaveformWidthOption = CONFIG["audio"]["waveform_width"],
     height: AudioWaveformHeightOption = CONFIG["audio"]["waveform_height"],
 ):
     """Generate a waveform image."""
     try:
-        utils.log(f"Generating waveform for {ark} ({width}x{height})")
-        utils.result(audio.waveform(ark, opts={"width": width, "height": height}))
+        utils.log(f"Generating waveform for {target} ({width}x{height})")
+        utils.result(audio.waveform(target, opts={"width": width, "height": height}))
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command()
 def derivatives(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     format: AudioTranscodeFormatOption = CONFIG["audio"]["transcode_format"],
     language: CaptionsLanguageOption = CONFIG["captions"]["language"],
     model: CaptionsModelOption = CONFIG["captions"]["model"],
@@ -84,12 +85,12 @@ def derivatives(
     an audio-bearing item — passing its own run id as --reporting-job-id, same
     as image derivatives."""
     try:
-        utils.log(f"Generating derivatives for {ark}")
+        utils.log(f"Generating derivatives for {target}")
         with reporting.track(
-            reporting_job_id, stage="derivatives", item_id=ark, collection=reporting_collection,
+            reporting_job_id, stage="derivatives", item_id=target, collection=reporting_collection,
             options={"format": format, "language": language, "model": model},
         ):
-            result = audio.derivatives(ark, opts={"format": format, "language": language, "model": model})
+            result = audio.derivatives(target, opts={"format": format, "language": language, "model": model})
         utils.result(result)
     except _ERRORS as e:
         utils.error(str(e))

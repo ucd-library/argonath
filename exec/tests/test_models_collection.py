@@ -420,81 +420,106 @@ def test_list_active_collections_filters_by_source_type(fake_registry):
     assert {c["name"] for c in preservica_only} == {"preservica-col"}
 
 
+# --- list_item_folders ---------------------------------------------------------
+
+def _write_collection_manifest(tmp_path, group, name, manifest):
+    root = tmp_path / "bronze" / group / name
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "manifest.json").write_text(json.dumps(manifest))
+
+
+def test_list_item_folders_lists_items_root_children(tmp_path):
+    _write_collection_manifest(tmp_path, "preservica", "my-collection", {"itemsRoot": "tree"})
+    tree = tmp_path / "bronze" / "preservica" / "my-collection" / "latest" / "tree"
+    (tree / "item-1").mkdir(parents=True)
+    (tree / "item-2").mkdir(parents=True)
+    (tree / "metadata.json").write_text("{}")  # a file alongside items -- must be excluded
+
+    paths = collection.list_item_folders(
+        "my-collection", {"group": "preservica", "dest_root": str(tmp_path)},
+    )
+
+    assert paths == [str(tree / "item-1"), str(tree / "item-2")]
+
+
+def test_list_item_folders_flat_when_no_manifest(tmp_path, capsys):
+    latest = tmp_path / "bronze" / "manual-group" / "my-collection" / "latest"
+    (latest / "item-1").mkdir(parents=True)
+
+    paths = collection.list_item_folders(
+        "my-collection", {"group": "manual-group", "dest_root": str(tmp_path)},
+    )
+
+    assert paths == [str(latest / "item-1")]
+    assert "no manifest.json" in capsys.readouterr().err
+
+
+def test_list_item_folders_flat_when_manifest_missing_items_root(tmp_path, capsys):
+    _write_collection_manifest(tmp_path, "preservica", "my-collection", {"sourceType": "preservica"})
+    latest = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    (latest / "item-1").mkdir(parents=True)
+
+    paths = collection.list_item_folders(
+        "my-collection", {"group": "preservica", "dest_root": str(tmp_path)},
+    )
+
+    assert paths == [str(latest / "item-1")]
+    assert "no itemsRoot" in capsys.readouterr().err
+
+
+def test_list_item_folders_resolves_group_via_registry(tmp_path, fake_registry):
+    fake_registry.rows[1] = {
+        "id": 1, "name": "my-collection", "group_name": "preservica",
+        "source_type": "preservica", "workflow_tags": [], "status": "active",
+    }
+    latest = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    (latest / "item-1").mkdir(parents=True)
+
+    paths = collection.list_item_folders("my-collection", {"dest_root": str(tmp_path)})
+
+    assert paths == [str(latest / "item-1")]
+
+
+def test_list_item_folders_raises_when_collection_not_registered(fake_registry):
+    with pytest.raises(ValueError, match="no active registration"):
+        collection.list_item_folders("ghost-collection")
+
+
 # --- list_item_arks -----------------------------------------------------------
 
-def test_list_item_arks_reads_ark_from_each_matching_item_jsonld(monkeypatch):
-    monkeypatch.setattr(collection.fs, "find_by_partition_keys", lambda keys, opts={}: [
-        "/bronze/preservica/my-collection/latest/tree/box-1/item-1/item.jsonld.json",
-        "/bronze/preservica/my-collection/latest/tree/box-1/item-2/item.jsonld.json",
+def test_list_item_arks_resolves_ark_for_each_item(monkeypatch):
+    monkeypatch.setattr(collection, "list_item_folders", lambda name, opts={}: [
+        "/bronze/preservica/my-collection/latest/tree/item-1",
+        "/bronze/preservica/my-collection/latest/tree/item-2",
     ])
-    docs = {
-        "cask:/bronze/preservica/my-collection/latest/tree/box-1/item-1/item.jsonld.json":
-            json.dumps({"ark": "ark:/1/one"}),
-        "cask:/bronze/preservica/my-collection/latest/tree/box-1/item-2/item.jsonld.json":
-            json.dumps({"ark": "ark:/1/two"}),
+    arks = {
+        "/bronze/preservica/my-collection/latest/tree/item-1": "ark:/1/one",
+        "/bronze/preservica/my-collection/latest/tree/item-2": "ark:/1/two",
     }
-    monkeypatch.setattr(collection.fs, "read", lambda path: docs[path])
+    monkeypatch.setattr(collection.items, "ark_for_path", lambda path: arks[path])
 
     assert collection.list_item_arks("my-collection") == ["ark:/1/one", "ark:/1/two"]
 
 
-def test_list_item_arks_falls_back_to_at_id_when_ark_field_missing(monkeypatch):
-    monkeypatch.setattr(collection.fs, "find_by_partition_keys", lambda keys, opts={}: [
-        "/bronze/preservica/my-collection/latest/tree/item-1/item.jsonld.json",
+def test_list_item_arks_skips_items_with_no_ark(monkeypatch):
+    monkeypatch.setattr(collection, "list_item_folders", lambda name, opts={}: [
+        "/bronze/preservica/my-collection/latest/tree/item-1",
+        "/bronze/preservica/my-collection/latest/tree/no-ark",
     ])
-    monkeypatch.setattr(collection.fs, "read", lambda path: json.dumps({"@id": "ark:/1/one"}))
+
+    def fake_ark(path):
+        if path.endswith("no-ark"):
+            raise LookupError("MISSING ARK")
+        return "ark:/1/one"
+
+    monkeypatch.setattr(collection.items, "ark_for_path", fake_ark)
 
     assert collection.list_item_arks("my-collection") == ["ark:/1/one"]
 
 
-def test_list_item_arks_ignores_non_item_jsonld_matches(monkeypatch):
-    # metadata.json/identifiers.json share the same partition keys as
-    # item.jsonld.json (see _tree_partition_keys()) -- only the latter is an
-    # item roster entry.
-    monkeypatch.setattr(collection.fs, "find_by_partition_keys", lambda keys, opts={}: [
-        "/bronze/preservica/my-collection/latest/tree/box-1/metadata.json",
-        "/bronze/preservica/my-collection/latest/tree/box-1/item-1/item.jsonld.json",
-    ])
-    monkeypatch.setattr(collection.fs, "read", lambda path: json.dumps({"ark": "ark:/1/one"}))
-
-    assert collection.list_item_arks("my-collection") == ["ark:/1/one"]
-
-
-def test_list_item_arks_empty_when_no_matches(monkeypatch):
-    monkeypatch.setattr(collection.fs, "find_by_partition_keys", lambda keys, opts={}: [])
+def test_list_item_arks_empty_when_no_items(monkeypatch):
+    monkeypatch.setattr(collection, "list_item_folders", lambda name, opts={}: [])
     assert collection.list_item_arks("my-collection") == []
-
-
-def test_list_item_arks_queries_medallion_bronze_and_collection_name(monkeypatch):
-    seen = {}
-
-    def _find(keys, opts={}):
-        seen["keys"] = keys
-        return []
-
-    monkeypatch.setattr(collection.fs, "find_by_partition_keys", _find)
-    collection.list_item_arks("my-collection")
-    assert seen["keys"] == ["medallion-bronze", "collection-my-collection"]
-
-
-def test_list_item_folders_keeps_each_items_folder_and_ark(monkeypatch):
-    monkeypatch.setattr(collection.fs, "find_by_partition_keys", lambda keys, opts={}: [
-        "/bronze/preservica/my-collection/latest/tree/box-1/item-2/item.jsonld.json",
-        "/bronze/preservica/my-collection/latest/tree/box-1/metadata.json",
-        "/bronze/preservica/my-collection/latest/tree/box-1/item-1/item.jsonld.json",
-        "/bronze/preservica/my-collection/latest/tree/no-ark/item.jsonld.json",
-    ])
-    docs = {
-        "cask:/bronze/preservica/my-collection/latest/tree/box-1/item-1/item.jsonld.json": {"ark": "ark:/1/one"},
-        "cask:/bronze/preservica/my-collection/latest/tree/box-1/item-2/item.jsonld.json": {"@id": "ark:/1/two"},
-        "cask:/bronze/preservica/my-collection/latest/tree/no-ark/item.jsonld.json": {},
-    }
-    monkeypatch.setattr(collection.fs, "read", lambda path: json.dumps(docs[path]))
-
-    assert collection.list_item_folders("my-collection") == [
-        {"path": "/bronze/preservica/my-collection/latest/tree/box-1/item-1", "ark": "ark:/1/one"},
-        {"path": "/bronze/preservica/my-collection/latest/tree/box-1/item-2", "ark": "ark:/1/two"},
-    ]
 
 
 # --- helpers: _slugify / _is_ark / _resolve_identifier_key / _unique_tree_slug ---
@@ -642,6 +667,7 @@ def test_preservica_import_writes_by_ref_layout(tmp_path):
     collection_manifest = _read_json(str(tmp_path / "bronze" / "preservica" / "my-collection" / "manifest.json"))
     assert collection_manifest == {
         "sourceType": "preservica", "timeFormat": "latest", "preservicaRootRef": "root-ref",
+        "itemsRoot": "tree",
     }
 
     assert _read_json(str(root / "by-ref" / "root-ref" / "entity.json")) == {

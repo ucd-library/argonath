@@ -19,12 +19,15 @@ migration; this module only covers derivatives (the `digtk showcase`
 commands the webapp relies on). OCR runs separately via lib.jobs.ocr_job.
 
 Derivatives run one step per IMAGE and per PDF file, not per item: each step
-is `digtk showcase image|pdf derivatives <ark> --file <bronze path>`, its own
-celery task, retryable on its own. Those per-file runs skip the outputs that
-combine every file of an item (an image item's ocr/manifest.json, the item
-sidecar's associatedMedia), so once every step is done a per-item
-`digtk showcase finalize <ark>` step writes them from what the per-file steps
-published (see digtk.models.digital_website.finalize). Video and audio stay one
+is `digtk showcase image|pdf derivatives <item-path> --file <bronze path>`,
+its own celery task, retryable on its own. Those per-file runs skip the
+outputs that combine every file of an item (an image item's ocr/manifest.json,
+the item sidecar's associatedMedia), so once every step is done a per-item
+`digtk showcase finalize <item-path>` step writes them from what the per-file
+steps published (see digtk.models.digital_website.finalize). Every item is
+addressed by its bronze path throughout — an ARK is carried along only as
+metadata (not every item has one) and is never required to run a step. Video
+and audio stay one
 step per item. Dagster can't nest fan-outs, so the graph is flat:
 fan_out_derivative_tasks -> process_derivative_batch (one per image/PDF, or per
 video/audio item) -> collect -> fan_out_finalize -> finalize_batch (one per
@@ -67,10 +70,10 @@ from lib.utils import default_run_config, exec
 
 
 def fetch_items_for_collection(collection_key):
-    """Look up every current item ARK in a collection's tree/ layout.
+    """Look up every current item's bronze folder path in a collection.
 
     Shells out to `digtk collection items` (see
-    digtk.models.collection.list_item_arks()) rather than reading CaskFS
+    digtk.models.collection.list_item_folders()) rather than reading CaskFS
     directly -- same exec()-bridge convention every other Dagster/digtk
     interaction in this codebase uses. `--collection` only: collection names
     are unique among active registrations regardless of group (see
@@ -80,12 +83,12 @@ def fetch_items_for_collection(collection_key):
 
     :param str collection_key: "bronze/[group]/[collection]" partition key (an
         older "[group]/[collection]" key works too — only the last segment is used).
-    :returns: Item ARKs currently in the collection.
+    :returns: Item bronze folder paths currently in the collection.
     :rtype: list[str]
     """
     collection = collection_key.rstrip("/").rsplit("/", 1)[-1]
     result = exec(["digtk", "collection", "items", "--collection", collection])
-    return result["arks"]
+    return result["items"]
 
 
 def _emit(context, stage, ark, result, status="success", partition=None, **extra):
@@ -132,11 +135,12 @@ _PER_FILE_FORMATS = ("image", "pdf")
 _DERIVATIVE_FORMAT_ORDER = ["image", "pdf", "video", "audio"]
 
 
-def _error_task(ark, id, item_id, error, collection_key, config):
+def _error_task(target, id, item_id, error, collection_key, config):
     """A task that only carries an error — reported (and failing the run) by
     _run_derivative_task like any other failed step.
 
-    :param str ark: Item ARK (or whatever identifies the item when there's no ARK).
+    :param str target: Item bronze path (whatever identifies the item — never
+        requires an ARK; an error task never actually runs a digtk command).
     :param str id: Task id (path relative to collection_key).
     :param str item_id: Item folder relative to collection_key.
     :param str error: What went wrong.
@@ -146,32 +150,38 @@ def _error_task(ark, id, item_id, error, collection_key, config):
     :rtype: dict
     """
     return {
-        "ark": ark, "format": None, "file": None, "id": id, "item_id": item_id,
+        "target": target, "ark": None, "format": None, "file": None, "id": id, "item_id": item_id,
         "args": [], "error": error, "max_steps": config.max_steps, "collection_key": collection_key,
     }
 
 
-def item_tasks(ark, listing, collection_key, config):
+def item_tasks(item_path, listing, collection_key, config):
     """One item's derivative tasks — one per image and per PDF file, one per
     item for video/audio — from its `digtk showcase formats --files` listing.
     An item with no media at all becomes a single error task.
 
-    :param str ark: Item ARK.
-    :param dict listing: `digtk showcase formats --files` result ({"files", "dir", ...}).
+    :param str item_path: Item's bronze folder path (also the fallback target
+        if the listing somehow had no "dir").
+    :param dict listing: `digtk showcase formats --files` result ({"files", "dir",
+        "ark", ...}) — "ark" may be None; not every item has one.
     :param str collection_key: "bronze/[group]/[collection]" — task ids are relative to it.
     :param config: CollectionDerivativesConfig (or a subclass) — widths and max_steps.
-    :returns: Fan-out tasks (see fan_out_derivative_tasks), in format order.
+    :returns: Fan-out tasks (see fan_out_derivative_tasks), in format order. Each
+        task's "target" (its bronze path) is what subsequent digtk commands
+        address it by; "ark" is carried along only as metadata.
     :rtype: list[dict]
     """
     files = listing.get("files") or {}
-    item_id = relative_id(listing.get("dir") or ark, collection_key)
+    target = listing.get("dir") or item_path
+    ark = listing.get("ark")
+    item_id = relative_id(target, collection_key)
 
     if not any(files.values()):
         # The item's bronze folder has no media at all (e.g. a tree/ item
         # whose Access/Preservation folders are missing) — report it as a
         # failed task so it's obvious in Events and the run fails.
         error = f"MISSING MEDIA: no image/PDF/video/audio files in bronze {item_id}/"
-        return [_error_task(ark, item_id, item_id, error, collection_key, config)]
+        return [_error_task(target, item_id, item_id, error, collection_key, config)]
 
     tasks = []
     for fmt in _DERIVATIVE_FORMAT_ORDER:
@@ -180,13 +190,13 @@ def item_tasks(ark, listing, collection_key, config):
         if fmt in _PER_FILE_FORMATS:
             for path in files[fmt]:
                 tasks.append({
-                    "ark": ark, "format": fmt, "file": path, "id": relative_id(path, collection_key),
+                    "target": target, "ark": ark, "format": fmt, "file": path, "id": relative_id(path, collection_key),
                     "item_id": item_id, "args": ["--widths", config.widths], "error": None,
                     "max_steps": config.max_steps, "collection_key": collection_key,
                 })
         else:
             tasks.append({
-                "ark": ark, "format": fmt, "file": None, "id": f"{item_id} ({fmt})",
+                "target": target, "ark": ark, "format": fmt, "file": None, "id": f"{item_id} ({fmt})",
                 "item_id": item_id, "args": [], "error": None, "max_steps": config.max_steps,
                 "collection_key": collection_key,
             })
@@ -199,13 +209,14 @@ def fan_out_derivative_tasks(context: OpExecutionContext, config: CollectionDeri
     and per PDF file, and one per item for video/audio — batched so there are at
     most config.max_steps steps (see lib.fanout_batching).
 
-    Each task is {"ark": str, "format": str, "file": str|None (bronze path),
-    "id": str (its path relative to the partition — the file, or the item
-    folder for an item-level task), "item_id": str (the item folder), "args":
-    [str], "error": str|None, "max_steps": int (carried through so
-    fan_out_finalize batches by the same cap without a config of its own),
-    "collection_key": str (the partition; see item_tasks())};
-    each DynamicOutput is a list of tasks, its
+    Each task is {"target": str (bronze path to address the item by), "ark":
+    str|None (metadata only — not every item has one), "format": str, "file":
+    str|None (bronze path), "id": str (its path relative to the partition —
+    the file, or the item folder for an item-level task), "item_id": str (the
+    item folder), "args": [str], "error": str|None, "max_steps": int (carried
+    through so fan_out_finalize batches by the same cap without a config of
+    its own), "collection_key": str (the partition; see item_tasks())}; each
+    DynamicOutput is a list of tasks, its
     mapping key every task id joined with '__'. An item whose formats can't be
     listed becomes a task carrying the error, so it's reported (and fails the
     run) like any other failed step.
@@ -214,16 +225,16 @@ def fan_out_derivative_tasks(context: OpExecutionContext, config: CollectionDeri
     :param config: CollectionDerivativesConfig — thumbnail widths and max_steps.
     """
     collection_key = context.partition_key
-    arks = fetch_items_for_collection(collection_key)
-    context.log.info(f"{collection_key}: listing files for {len(arks)} item(s)")
+    item_paths = fetch_items_for_collection(collection_key)
+    context.log.info(f"{collection_key}: listing files for {len(item_paths)} item(s)")
 
     tasks = []
-    for ark in arks:
+    for item_path in item_paths:
         try:
-            listing = exec(["digtk", "showcase", "formats", ark, "--files"])
-            new_tasks = item_tasks(ark, listing, collection_key, config)
+            listing = exec(["digtk", "showcase", "formats", item_path, "--files"])
+            new_tasks = item_tasks(item_path, listing, collection_key, config)
         except Exception as e:
-            tasks.append(_error_task(ark, ark, ark, f"listing formats failed: {e}", collection_key, config))
+            tasks.append(_error_task(item_path, item_path, item_path, f"listing formats failed: {e}", collection_key, config))
             continue
         for task in new_tasks:
             if task["error"]:
@@ -247,13 +258,13 @@ def _run_derivative_task(context, task):
 
     :param context: Dagster op execution context.
     :param dict task: A fan_out_derivative_tasks / item_tasks() task.
-    :returns: {"ark", "format", "file", "id", "item_id", "max_steps",
+    :returns: {"target", "ark", "format", "file", "id", "item_id", "max_steps",
         "collection_key", "ok": bool, "error": str|None}
     :rtype: dict
     """
     fmt, path, collection_key = task["format"], task["file"], task["collection_key"]
     outcome = {
-        "ark": task["ark"], "format": fmt, "file": path, "id": task["id"],
+        "target": task["target"], "ark": task["ark"], "format": fmt, "file": path, "id": task["id"],
         "item_id": task["item_id"], "max_steps": task["max_steps"], "collection_key": collection_key,
         "ok": False, "error": task.get("error"),
     }
@@ -264,7 +275,7 @@ def _run_derivative_task(context, task):
         )
         return outcome
 
-    cmd = ["digtk", "showcase", fmt, "derivatives", task["ark"]]
+    cmd = ["digtk", "showcase", fmt, "derivatives", task["target"]]
     if path:
         cmd += ["--file", path]
     cmd += task["args"] + [
@@ -317,23 +328,28 @@ def fan_out_finalize(context: OpExecutionContext, results: list):
     """
     outcomes = [o for batch in results for o in batch]
     max_steps = outcomes[0]["max_steps"] if outcomes else 0
-    by_ark = {}
+    # Grouped by item_id, not ark — an item may have no ark, and several
+    # ark-less items in the same batch would otherwise collide under one key.
+    by_item = {}
     for o in outcomes:
-        by_ark.setdefault(o["ark"], []).append(o)
+        by_item.setdefault(o["item_id"], []).append(o)
 
     tasks = []
-    for ark, item_outcomes in by_ark.items():
+    for item_id, item_outcomes in by_item.items():
         per_file = [o for o in item_outcomes if o["format"] in _PER_FILE_FORMATS or o["format"] is None]
         if not per_file:
             continue
         failed = [o for o in per_file if not o["ok"]]
         if failed:
             context.log.warning(
-                f"[{per_file[0]['item_id']}] not finalized: {len(failed)} of {len(per_file)} task(s) failed "
+                f"[{item_id}] not finalized: {len(failed)} of {len(per_file)} task(s) failed "
                 f"({', '.join(o['id'] for o in failed)})"
             )
             continue
-        tasks.append({"ark": ark, "id": per_file[0]["item_id"], "collection_key": per_file[0]["collection_key"]})
+        tasks.append({
+            "target": per_file[0]["target"], "ark": per_file[0]["ark"],
+            "id": item_id, "collection_key": per_file[0]["collection_key"],
+        })
 
     grouped = batches(tasks, max_steps)
     log_batching(context, "finalize", len(tasks), grouped, max_steps)
@@ -346,13 +362,14 @@ def fan_out_finalize(context: OpExecutionContext, results: list):
     yield Output({"steps": len(outcomes), "failed": len(failures)}, output_name="summary")
 
 
-def finalize_one_item(context, ark, id, collection_key):
+def finalize_one_item(context, target, ark, id, collection_key):
     """Write one item's item-level outputs (`digtk showcase finalize`) and
     record the result as an event. Never raises — the caller decides whether a
     failure fails its step.
 
     :param context: Dagster op execution context.
-    :param str ark: Item ARK.
+    :param str target: Item bronze path to finalize.
+    :param str|None ark: The item's ark, if it has one — metadata only.
     :param str id: Item folder relative to collection_key (the event's item_id).
     :param str collection_key: "bronze/[group]/[collection]" — reporting
         collection and event partition.
@@ -360,7 +377,7 @@ def finalize_one_item(context, ark, id, collection_key):
     :rtype: str|None
     """
     cmd = [
-        "digtk", "showcase", "finalize", ark,
+        "digtk", "showcase", "finalize", target,
         "--reporting-job-id", context.run_id, "--reporting-collection", collection_key,
     ]
     try:
@@ -379,13 +396,13 @@ def finalize_batch(context: OpExecutionContext, tasks: list):
     item doesn't stop the rest, but fails the step at the end.
 
     :param context: Dagster op execution context; partitioned by collection.
-    :param list[dict] tasks: fan_out_finalize tasks ({"ark", "id", "collection_key"}).
+    :param list[dict] tasks: fan_out_finalize tasks ({"target", "ark", "id", "collection_key"}).
     :raises RuntimeError: If any item in the batch failed to finalize.
     """
     log_batch(context, [t["id"] for t in tasks])
     failed = [
         t["id"] for t in tasks
-        if finalize_one_item(context, t["ark"], t["id"], t["collection_key"]) is not None
+        if finalize_one_item(context, t["target"], t["ark"], t["id"], t["collection_key"]) is not None
     ]
     if failed:
         raise RuntimeError(f"{len(failed)} of {len(tasks)} item(s) failed to finalize: {', '.join(failed)}")

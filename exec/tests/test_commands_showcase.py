@@ -8,9 +8,15 @@ from digtk.main import app
 runner = CliRunner()
 
 ARK = "ark:/87287/d7abc1234"
+ITEM_PATH = "bronze/g/c/latest/item"
 
 ITEM = items_lib.ItemLocation(
     ark=ARK, group="g", collection="c", time="latest", item_path="item",
+    bronze_binary_paths=["cask:/bronze/g/c/latest/item/document.pdf", "cask:/bronze/g/c/latest/item/page.tif"],
+)
+
+NO_ARK_ITEM = items_lib.ItemLocation(
+    ark=None, group="g", collection="c", time="latest", item_path="item",
     bronze_binary_paths=["cask:/bronze/g/c/latest/item/document.pdf", "cask:/bronze/g/c/latest/item/page.tif"],
 )
 
@@ -20,7 +26,7 @@ def last_json_line(output):
 
 
 def test_formats_reports_every_format_present(monkeypatch):
-    monkeypatch.setattr(items_lib, "resolve", lambda ark: ITEM)
+    monkeypatch.setattr(items_lib, "resolve_target", lambda target, opts={}: ITEM)
 
     result = runner.invoke(app, ["showcase", "formats", ARK])
 
@@ -33,7 +39,7 @@ def test_formats_reports_empty_list_when_nothing_recognized(monkeypatch):
         ark=ARK, group="g", collection="c", time="latest", item_path="item",
         bronze_binary_paths=["cask:/bronze/g/c/latest/item/document.txt"],
     )
-    monkeypatch.setattr(items_lib, "resolve", lambda ark: empty_item)
+    monkeypatch.setattr(items_lib, "resolve_target", lambda target, opts={}: empty_item)
 
     result = runner.invoke(app, ["showcase", "formats", ARK])
 
@@ -42,9 +48,9 @@ def test_formats_reports_empty_list_when_nothing_recognized(monkeypatch):
 
 
 def test_formats_routes_exception_through_utils_error(monkeypatch):
-    def raises(ark):
+    def raises(target, opts={}):
         raise LookupError("no such item")
-    monkeypatch.setattr(items_lib, "resolve", raises)
+    monkeypatch.setattr(items_lib, "resolve_target", raises)
 
     result = runner.invoke(app, ["showcase", "formats", ARK])
 
@@ -53,7 +59,7 @@ def test_formats_routes_exception_through_utils_error(monkeypatch):
 
 
 def test_formats_files_lists_each_formats_binaries(monkeypatch):
-    monkeypatch.setattr(items_lib, "resolve", lambda ark: ITEM)
+    monkeypatch.setattr(items_lib, "resolve_target", lambda target, opts={}: ITEM)
 
     result = runner.invoke(app, ["showcase", "formats", ARK, "--files"])
 
@@ -68,63 +74,57 @@ def test_formats_files_lists_each_formats_binaries(monkeypatch):
     }
 
 
-def test_formats_path_resolves_ark_from_item_folder(monkeypatch):
+def test_formats_accepts_a_bronze_path_target(monkeypatch):
     seen = {}
-    monkeypatch.setattr(items_lib, "ark_for_path", lambda path: seen.update(path=path) or ARK)
-    monkeypatch.setattr(items_lib, "resolve", lambda ark: ITEM)
+    monkeypatch.setattr(items_lib, "resolve_target", lambda target, opts={}: seen.update(target=target) or ITEM)
 
-    result = runner.invoke(app, ["showcase", "formats", "--path", "bronze/g/c/latest/item/", "--files"])
+    result = runner.invoke(app, ["showcase", "formats", ITEM_PATH, "--files"])
 
     assert result.exit_code == 0
-    assert seen["path"] == "/bronze/g/c/latest/item"
+    assert seen["target"] == ITEM_PATH
     out = last_json_line(result.output)
     assert out["ark"] == ARK
     assert out["dir"] == "cask:/bronze/g/c/latest/item"
 
 
-def test_formats_path_reports_missing_ark(monkeypatch):
-    def raises(path):
-        raise LookupError("MISSING ARK: no item.jsonld.json in /bronze/g/c/latest/item/")
-    monkeypatch.setattr(items_lib, "ark_for_path", raises)
+def test_formats_succeeds_with_no_ark_when_item_has_none(monkeypatch):
+    # The core fix: resolving a bronze-path item with no ARK is not an error —
+    # format detection works the same either way.
+    monkeypatch.setattr(items_lib, "resolve_target", lambda target, opts={}: NO_ARK_ITEM)
 
-    result = runner.invoke(app, ["showcase", "formats", "--path", "bronze/g/c/latest/item"])
+    result = runner.invoke(app, ["showcase", "formats", ITEM_PATH])
 
-    assert result.exit_code == 1
-    assert last_json_line(result.output)["error"].startswith("MISSING ARK")
-
-
-def test_formats_path_rejects_ark_resolving_elsewhere(monkeypatch):
-    monkeypatch.setattr(items_lib, "ark_for_path", lambda path: ARK)
-    monkeypatch.setattr(items_lib, "resolve", lambda ark: ITEM)
-
-    result = runner.invoke(app, ["showcase", "formats", "--path", "bronze/g/c/latest/other"])
-
-    assert result.exit_code == 1
-    assert "resolves to /bronze/g/c/latest/item" in last_json_line(result.output)["error"]
+    assert result.exit_code == 0
+    assert last_json_line(result.output) == {"ark": None, "formats": ["image", "pdf"]}
 
 
-def test_formats_needs_exactly_one_of_ark_or_path():
+def test_formats_requires_a_target():
     result = runner.invoke(app, ["showcase", "formats"])
 
-    assert result.exit_code == 1
+    assert result.exit_code != 0
 
 
 def test_finalize_calls_the_finalize_model(monkeypatch):
     from digtk.models.digital_website import finalize as finalize_model
+    monkeypatch.setattr(items_lib, "resolve_target", lambda target, opts={}: ITEM)
     seen = {}
-    monkeypatch.setattr(finalize_model, "finalize", lambda ark, opts={}: seen.update(ark=ark) or {"status": "success", "ark": ark})
+    monkeypatch.setattr(
+        finalize_model, "finalize",
+        lambda item, opts={}: seen.update(item=item) or {"status": "success", "ark": item.ark},
+    )
 
     result = runner.invoke(app, ["showcase", "finalize", ARK])
 
     assert result.exit_code == 0
-    assert seen == {"ark": ARK}
+    assert seen["item"] is ITEM
     assert last_json_line(result.output) == {"status": "success", "ark": ARK}
 
 
 def test_finalize_routes_missing_derivatives_through_utils_error(monkeypatch):
     from digtk.models.digital_website import finalize as finalize_model
+    monkeypatch.setattr(items_lib, "resolve_target", lambda target, opts={}: ITEM)
 
-    def raises(ark, opts={}):
+    def raises(item, opts={}):
         raise FileNotFoundError("no derivatives published yet for 1 image(s)")
     monkeypatch.setattr(finalize_model, "finalize", raises)
 

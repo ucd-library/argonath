@@ -28,6 +28,7 @@ from digtk.lib.config import (
     ImageThumbnailWidthsOption,
     ReportingCollectionOption,
     ReportingJobIdOption,
+    TargetArgument,
 )
 from digtk.models.digital_website import image
 
@@ -38,63 +39,63 @@ _ERRORS = (LookupError, OSError, RuntimeError, ValueError)
 
 @app.command()
 def thumbnail(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     widths: ImageThumbnailWidthsOption = CONFIG["image"]["thumbnail_widths"],
     quality: ImageThumbnailQualityOption = CONFIG["image"]["thumbnail_quality"],
 ):
     """Generate thumbnail JPEGs at each requested width."""
     try:
-        utils.log(f"Generating thumbnails for {ark} at widths {widths}")
-        utils.result(image.thumbnails(ark, opts={"widths": widths, "quality": quality}))
+        utils.log(f"Generating thumbnails for {target} at widths {widths}")
+        utils.result(image.thumbnails(target, opts={"widths": widths, "quality": quality}))
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command()
 def convert(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     format: ImageConvertFormatOption = CONFIG["image"]["convert_format"],
 ):
     """Convert source binary to the specified format."""
     try:
-        utils.log(f"Converting {ark} to {format}")
-        utils.result(image.convert(ark, opts={"format": format}))
+        utils.log(f"Converting {target} to {format}")
+        utils.result(image.convert(target, opts={"format": format}))
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command()
 def deskew(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     threshold: ImageDeskewThresholdOption = CONFIG["image"]["deskew_threshold"],
     quality: ImageThumbnailQualityOption = CONFIG["image"]["thumbnail_quality"],
 ):
     """Correct skew in a scanned image."""
     try:
-        utils.log(f"Deskewing {ark} (threshold {threshold}%)")
-        utils.result(image.deskew(ark, opts={"threshold": threshold, "quality": quality}))
+        utils.log(f"Deskewing {target} (threshold {threshold}%)")
+        utils.result(image.deskew(target, opts={"threshold": threshold, "quality": quality}))
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command(name="prep-ocr")
 def prep_ocr(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     dpi: ImageDpiOption = CONFIG["image"]["dpi"],
     fuzz_threshold: ImageFuzzThresholdOption = CONFIG["image"]["fuzz_threshold"],
     deskew: Annotated[bool, typer.Option(help="Apply a deskew pass before OCR-prep.")] = False,
 ):
     """Prepare image for OCR: 2048px long edge, 300 DPI, fuzz whiten background."""
     try:
-        utils.log(f"Preparing {ark} for OCR (dpi={dpi}, deskew={deskew})")
-        utils.result(image.prep_ocr(ark, opts={"dpi": dpi, "fuzz": fuzz_threshold, "deskew": deskew}))
+        utils.log(f"Preparing {target} for OCR (dpi={dpi}, deskew={deskew})")
+        utils.result(image.prep_ocr(target, opts={"dpi": dpi, "fuzz": fuzz_threshold, "deskew": deskew}))
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command()
 def derivatives(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     widths: ImageThumbnailWidthsOption = CONFIG["image"]["thumbnail_widths"],
     deskew_threshold: ImageDeskewThresholdOption = CONFIG["image"]["deskew_threshold"],
     fuzz_threshold: ImageFuzzThresholdOption = CONFIG["image"]["fuzz_threshold"],
@@ -116,13 +117,13 @@ def derivatives(
     latter passing its own run id as --reporting-job-id.
     """
     try:
-        utils.log(f"Generating derivatives for {ark} at widths {widths}")
-        item_label = f"{ark}#{','.join(file)}" if file else ark
+        utils.log(f"Generating derivatives for {target} at widths {widths}")
+        item_label = f"{target}#{','.join(file)}" if file else target
         with reporting.track(
             reporting_job_id, stage="derivatives", item_id=item_label, collection=reporting_collection,
             options={"widths": widths, "deskew_threshold": deskew_threshold, "fuzz_threshold": fuzz_threshold},
         ):
-            result = image.generate(ark, opts={
+            result = image.generate(target, opts={
                 "widths": widths,
                 "threshold": deskew_threshold,
                 "fuzz": fuzz_threshold,

@@ -108,12 +108,23 @@ def pg(monkeypatch):
 
 @pytest.fixture
 def folders(monkeypatch):
-    """Set the item folders list_item_folders() reports, as {path: ark}."""
+    """Set the item folders list_item_folders() reports, and each one's ark (as
+    resolved via items.ark_for_path()), as {path: ark|None}. A None value means
+    the item has no ark, same as items.ark_for_path() raising LookupError."""
     current = {}
 
     def list_item_folders(collection, opts={}):
-        return [{"path": f"/{path}", "ark": ark} for path, ark in sorted(current.items())]
+        return [f"/{path}" for path in sorted(current)]
+
+    def ark_for_path(path):
+        key = path.lstrip("/")
+        ark = current.get(key)
+        if not ark:
+            raise LookupError(f"MISSING ARK: {path}")
+        return ark
+
     monkeypatch.setattr(collection_model, "list_item_folders", list_item_folders)
+    monkeypatch.setattr(collection_state.items, "ark_for_path", ark_for_path)
     return current
 
 
@@ -137,6 +148,21 @@ def test_enqueue_collection_tracks_links_and_queues_every_item(pg, folders):
     rows = collection_state.pending("process_item_job", 10)
     assert [r["item"] for r in rows] == [ITEM_A, ITEM_B]
     assert rows[0]["config"] == {"item": ITEM_A, "trigger": "collection", "batch": "run-1"}
+
+
+@needs_pg
+def test_enqueue_collection_still_queues_items_with_no_ark(pg, folders):
+    # Not every collection's items carry an ark -- a missing one shouldn't
+    # drop the item from the queue, just leave item_ark() with nothing to report.
+    folders.update({ITEM_A: "ark:/1/a", ITEM_B: None})
+
+    result = collection_state.enqueue_collection(KEY)
+
+    assert result == {"collection": KEY, "items": 2, "added": 2, "enqueued": 2}
+    assert collection_state.item_ark(ITEM_A) == "ark:/1/a"
+    assert collection_state.item_ark(ITEM_B) is None
+    rows = collection_state.pending("process_item_job", 10)
+    assert [r["item"] for r in rows] == [ITEM_A, ITEM_B]
 
 
 @needs_pg

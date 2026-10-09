@@ -23,7 +23,7 @@ def finalizers(monkeypatch):
 
 
 def test_finalize_runs_each_format_present(monkeypatch, finalizers):
-    monkeypatch.setattr(fz.items, "resolve", lambda ark: _item("a.tif", "doc.pdf", "clip.mp4"))
+    monkeypatch.setattr(fz.items, "resolve_target", lambda target, opts={}: _item("a.tif", "doc.pdf", "clip.mp4"))
 
     result = fz.finalize(ARK)
 
@@ -32,14 +32,14 @@ def test_finalize_runs_each_format_present(monkeypatch, finalizers):
 
 
 def test_finalize_only_images(monkeypatch, finalizers):
-    monkeypatch.setattr(fz.items, "resolve", lambda ark: _item("a.tif"))
+    monkeypatch.setattr(fz.items, "resolve_target", lambda target, opts={}: _item("a.tif"))
 
     assert "pdf" not in fz.finalize(ARK)
     assert finalizers == ["image"]
 
 
 def test_finalize_rejects_items_with_nothing_to_finalize(monkeypatch, finalizers):
-    monkeypatch.setattr(fz.items, "resolve", lambda ark: _item("clip.mp4"))
+    monkeypatch.setattr(fz.items, "resolve_target", lambda target, opts={}: _item("clip.mp4"))
 
     with pytest.raises(ValueError, match="no image or PDF binaries"):
         fz.finalize(ARK)

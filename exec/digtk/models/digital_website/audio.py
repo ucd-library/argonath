@@ -28,24 +28,25 @@ from digtk.models.digital_website import captions, pipeline
 _LINK_RELATION = f"{ARGONATH_NS}derivativeOf"
 
 
-def probe(ark, opts={}):
+def probe(target, opts={}):
     """Report ffprobe metadata for every source audio file in the item — ad hoc/debug,
     no derivatives generated.
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: Unused.
-    :returns: {"status": "success", "ark": str, "streams": {stem: ffmpeg_utils.probe() result}}
+    :returns: {"status": "success", "ark": str|None, "streams": {stem: ffmpeg_utils.probe() result}}
     :rtype: dict
     """
-    item = items.resolve(ark)
+    item = items.resolve_target(target)
     audio_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "audio")
     with tempfile.TemporaryDirectory() as tmp_dir:
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": audio_paths})
         streams = {src["stem"]: ffmpeg_utils.probe(src["local_path"], opts) for src in sources}
-    return {"status": "success", "ark": ark, "streams": streams}
+    return {"status": "success", "ark": item.ark, "streams": streams}
 
 
-def transcode(ark, opts={}):
+def transcode(target, opts={}):
     """Transcode every source audio file to another format.
 
     Ad hoc/manual use, mirroring digtk.models.digital_website.image.convert(); derivatives()
@@ -54,15 +55,16 @@ def transcode(ark, opts={}):
     that directory's manifest with one describing only the converted file — run
     derivatives() afterward to restore a manifest covering the full set if that matters.
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'format' (str, default CONFIG["audio"]["transcode_format"]),
         'bitrate' (str, default CONFIG["audio"]["transcode_bitrate"]).
-    :returns: {"status": "success", "ark": str, "audios": {filename: {"dir": str,
+    :returns: {"status": "success", "ark": str|None, "audios": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
     fmt = opts.get("format", CONFIG["audio"]["transcode_format"])
-    item = items.resolve(ark)
+    item = items.resolve_target(target)
     audio_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "audio")
     start = time.monotonic()
 
@@ -78,7 +80,7 @@ def transcode(ark, opts={}):
 
             audios[filename] = pipeline.publish(
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}", local_outputs,
-                command=["digtk", "audio", "transcode", ark, "--format", fmt],
+                command=["digtk", "audio", "transcode", items.item_id(item), "--format", fmt],
                 params={"format": fmt},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
@@ -86,10 +88,10 @@ def transcode(ark, opts={}):
                 },
             )
 
-    return {"status": "success", "ark": ark, "audios": audios}
+    return {"status": "success", "ark": item.ark, "audios": audios}
 
 
-def waveform(ark, opts={}):
+def waveform(target, opts={}):
     """Generate a waveform image for every source audio file in the item.
 
     Ad hoc/manual use. Publishes into the same location derivatives() would:
@@ -97,15 +99,16 @@ def waveform(ark, opts={}):
     manifest with one describing only the waveform — run derivatives() afterward to
     restore a manifest covering the full set if that matters.
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'width' (int, default CONFIG["audio"]["waveform_width"]), 'height'
         (int, default CONFIG["audio"]["waveform_height"]), 'color' (str, default
         CONFIG["audio"]["waveform_color"]).
-    :returns: {"status": "success", "ark": str, "audios": {filename: {"dir": str,
+    :returns: {"status": "success", "ark": str|None, "audios": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
-    item = items.resolve(ark)
+    item = items.resolve_target(target)
     audio_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "audio")
     start = time.monotonic()
 
@@ -123,7 +126,7 @@ def waveform(ark, opts={}):
 
             audios[filename] = pipeline.publish(
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}", local_outputs,
-                command=["digtk", "audio", "waveform", ark],
+                command=["digtk", "audio", "waveform", items.item_id(item)],
                 params={k: v for k, v in opts.items() if k in ("width", "height", "color")},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
@@ -131,10 +134,10 @@ def waveform(ark, opts={}):
                 },
             )
 
-    return {"status": "success", "ark": ark, "audios": audios}
+    return {"status": "success", "ark": item.ark, "audios": audios}
 
 
-def derivatives(ark, opts={}):
+def derivatives(target, opts={}):
     """Generate the full derivative set for every source audio file in the item —
     the umbrella `digtk showcase audio derivatives` calls: transcode + waveform together into
     one directory per source, then transcribes every source to a WebVTT caption via
@@ -144,16 +147,17 @@ def derivatives(ark, opts={}):
     update_associated_media() just wrote. Captions still publish into their own flat,
     shared 'captions/' directory, unaffected by this per-source layout.
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'format' (str, default CONFIG["audio"]["transcode_format"]),
         'width'/'height' (waveform dimensions); 'language'/'model' for the caption
         step (see captions.transcribe_sources()); forwarded to ffmpeg_utils.
-    :returns: {"status": "success", "ark": str, "derivatives": {filename: {"dir": str,
+    :returns: {"status": "success", "ark": str|None, "derivatives": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}, "captions": {...}}
     :rtype: dict
     """
     fmt = opts.get("format", CONFIG["audio"]["transcode_format"])
-    item = items.resolve(ark)
+    item = items.resolve_target(target)
     audio_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "audio")
     start = time.monotonic()
 
@@ -182,7 +186,7 @@ def derivatives(ark, opts={}):
 
             derivatives_results[filename] = pipeline.publish(
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}", local_outputs,
-                command=["digtk", "audio", "derivatives", ark],
+                command=["digtk", "audio", "derivatives", items.item_id(item)],
                 params={"format": fmt},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
@@ -204,8 +208,8 @@ def derivatives(ark, opts={}):
         utils.log("Transcribing captions...")
         captions_result = captions.transcribe_sources(
             item, sources, tmp_dir,
-            command=["digtk", "audio", "derivatives", ark],
+            command=["digtk", "audio", "derivatives", items.item_id(item)],
             opts=opts,
         )
 
-    return {"status": "success", "ark": ark, "derivatives": derivatives_results, "captions": captions_result}
+    return {"status": "success", "ark": item.ark, "derivatives": derivatives_results, "captions": captions_result}

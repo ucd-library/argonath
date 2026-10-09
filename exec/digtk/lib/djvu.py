@@ -6,9 +6,8 @@ Despite the name, the output isn't a real DjVu binary -- it's a hand-built XML
 document mimicking the Internet Archive djvu-text-layer schema
 (OBJECT/PARAM/HIDDENTEXT/PAGECOLUMN/REGION/PARAGRAPH/LINE/WORD) that legacy's
 image-utils service produces and dams/fin's client reads back as `ocr.djvu`.
-This is a deliberate legacy-compatibility feature (see
-digtk/lib/gcs_sync.py's module docstring) -- functional compatibility with
-that schema, not byte-for-byte replication of legacy's exact serializer
+This is a deliberate legacy-compatibility feature -- functional compatibility
+with that schema, not byte-for-byte replication of legacy's exact serializer
 output (same tags/nesting/attributes, not necessarily identical whitespace or
 attribute ordering).
 

@@ -1,11 +1,17 @@
 """
-ARK -> CaskFS bronze location resolution.
+Item resolution: ARK or bronze path -> CaskFS item location.
 
-Item paths in CaskFS are arbitrary (see docs/cask-conventions.md) — the ARK is
-never derived from a path, only from a sidecar's `@id`/`ark` property. This
-module is the single place that turns an ARK into a bronze location, via
-CaskFS's Layer-3 `/cask/find` search (digtk.lib.fs.find_by_subject), so every
-phase (derivatives, OCR, metadata) resolves items the same way.
+An item's bronze folder path (e.g.
+'bronze/preservica/haeger/latest/tree/quarter-mile') is argonath's canonical
+identifier — it always exists. ARK, Preservica ref, and local ID are sidecars:
+useful downstream (silver/gold products, external addressing) when present,
+but never required to resolve or process an item. resolve_path() resolves an
+item directly from its bronze folder, with no ARK lookup at all; resolve()
+resolves from an ARK instead, via CaskFS's Layer-3 `/cask/find` search
+(digtk.lib.fs.find_by_subject) — useful when that's the only identifier in
+hand (e.g. a caller addressing an item by ARK alone). Both return the same
+ItemLocation shape, so every phase (derivatives, OCR, metadata) resolves items
+the same way regardless of which identifier it started from.
 
 Resolves to group/collection/time/item_path components (not a pre-built path
 string) because that's what digtk.lib.derivative.write()'s
@@ -42,7 +48,7 @@ WORKSPACE_SOURCE_DIR = "source"
 WORKSPACE_DERIVATIVES_DIR = "derivatives"
 # CaskFS's /dir endpoint pages directories+files together (server default 100);
 # a staged folder of scans can easily exceed that, so workspace listings ask for
-# one large page instead — same workaround digtk.lib.gcs_sync uses.
+# one large page instead.
 _WORKSPACE_LS_OPTS = {"limit": 10000}
 
 
@@ -53,23 +59,27 @@ class ItemLocation:
     e.g. an archival box/folder containing several photographs. All binaries
     sharing an ARK are treated as one item.
 
-    :param str ark: The item's ARK identifier.
+    :param str|None ark: The item's ARK identifier, if it has one. A sidecar
+        identifier, not a resolution requirement — None for a workspace item
+        (never has one yet) and for a bronze item resolved by path
+        (resolve_path()) whose folder has no ARK.
     :param str group: Group namespace segment of the bronze path.
     :param str collection: Collection name segment.
     :param str time: Time-folder segment (e.g. 'latest', a date, a year-week).
     :param str item_path: Item's internal path relative to the collection/time root
         (e.g. 'box-1/folder-3'), possibly '' if binaries sit directly under time/.
     :param list[str] bronze_binary_paths: CaskFS paths ('cask:/...') to the item's one
-        or more source binaries, sorted — bronze binaries for a resolve()'d item,
-        workspace source/ binaries for a resolve_workspace()'d one.
+        or more source binaries, sorted — bronze binaries for a resolve()'d/
+        resolve_path()'d item, workspace source/ binaries for a resolve_workspace()'d one.
     :param str sidecar_path: CaskFS path ('cask:/....jsonld.json') to the item's
         canonical bronze sidecar. Usually bronze_binary_paths[0] + '.jsonld.json',
         but not for a standalone 'item.jsonld.json' sidecar (see resolve()) — a
         fixed name describing every binary under item_path, not one co-located
         binary of the same name — so callers that need the sidecar itself
         should read this field rather than reconstructing it from
-        bronze_binary_paths. None for a workspace item (no sidecar yet) and for
-        test fixtures built by hand; resolve() always sets a real value.
+        bronze_binary_paths. None for a workspace item (no sidecar yet), a
+        bronze item with no sidecar at all, and for test fixtures built by
+        hand; resolve() always sets a real value.
     :param str dest_type: digtk.lib.derivative type this item's outputs are
         written as — 'silver' (default, a bronze item) or 'workspace'.
     :param str dest_prefix: Path segment placed before item_path in every
@@ -258,6 +268,54 @@ def ark_for_path(path):
     return ark
 
 
+def _parse_bronze_folder(path):
+    """Split a bronze item folder into its group/collection/time/item_path components
+    (no filename — unlike _parse_bronze_path(), which expects one).
+
+    :param str path: Any form normalize_bronze_path() accepts.
+    :returns: (group, collection, time, item_path).
+    :rtype: tuple
+    :raises ValueError: If path doesn't have at least group/collection/time segments.
+    """
+    segments = normalize_bronze_path(path)[len(BRONZE_PREFIX):].split("/")
+    if len(segments) < 3:
+        raise ValueError(f"bronze path needs at least /bronze/[group]/[collection]/[time]: {path}")
+    group, collection, time = segments[0], segments[1], segments[2]
+    return group, collection, time, "/".join(segments[3:])
+
+
+def resolve_path(path, opts={}):
+    """Resolve a bronze item folder directly to its item location — no ARK lookup.
+
+    The item's ARK is attached if one happens to resolve (via ark_for_path()), but
+    resolution itself depends only on the path — unlike resolve(), this never
+    requires an ARK to find the item at all.
+
+    :param str path: Bronze item folder, e.g.
+        'bronze/preservica/haeger/latest/tree/quarter-mile' (any form
+        normalize_bronze_path() accepts).
+    :param dict opts: Unused; kept for signature symmetry with resolve().
+    :returns: Resolved item location (ark=None if the folder has no resolvable ARK).
+    :rtype: ItemLocation
+    :raises ValueError: If path isn't a bronze path.
+    :raises LookupError: If the folder has no binaries under it.
+    """
+    group, collection, time, item_path = _parse_bronze_folder(path)
+    bronze_binary_paths = _list_item_binaries(group, collection, time, item_path)
+    if not bronze_binary_paths:
+        raise LookupError(f"no binaries found under {normalize_bronze_path(path)}")
+    try:
+        ark = ark_for_path(path)
+    except LookupError:
+        ark = None
+    sidecar = f"cask:{normalize_bronze_path(path)}/{ITEM_SIDECAR_FILENAME}"
+    return ItemLocation(
+        ark=ark, group=group, collection=collection, time=time, item_path=item_path,
+        bronze_binary_paths=bronze_binary_paths,
+        sidecar_path=sidecar if fs.exists(sidecar) else None,
+    )
+
+
 def metadata(ark, opts={}):
     """Read an item's existing bronze descriptive metadata.
 
@@ -400,18 +458,21 @@ def list_workspace_items(path):
 
 
 def resolve_target(target, opts={}):
-    """Resolve an ARK, a workspace item path, or an already-resolved location.
+    """Resolve an ARK, a bronze item folder, a workspace item path, or an
+    already-resolved location.
 
     The single entry point the root-level tools (ocr, accessibility,
-    split-spreads) resolve their input through. A local folder isn't accepted
-    here — staging one into workspace first is digtk.models.workspace's job.
+    split-spreads, showcase derivatives) resolve their input through. A local
+    folder isn't accepted here — staging one into workspace first is
+    digtk.models.workspace's job.
 
-    :param str|ItemLocation target: 'ark:/...', 'cask:/workspace/...', or an
-        ItemLocation (returned unchanged).
+    :param str|ItemLocation target: 'ark:/...', a bronze item folder (any form
+        normalize_bronze_path() accepts — see resolve_path()),
+        'cask:/workspace/...', or an ItemLocation (returned unchanged).
     :param dict opts: Forwarded to resolve() for an ARK.
     :rtype: ItemLocation
     :raises ValueError: If `target` is none of the above.
-    :raises LookupError: See resolve()/resolve_workspace().
+    :raises LookupError: See resolve()/resolve_path()/resolve_workspace().
     """
     if isinstance(target, ItemLocation):
         return target
@@ -419,20 +480,28 @@ def resolve_target(target, opts={}):
         return resolve(target, opts)
     if target.startswith(f"cask:{WORKSPACE_PREFIX}"):
         return resolve_workspace(target)
-    raise ValueError(f"expected an ARK or a cask:/workspace/... path, got {target!r}")
+    try:
+        return resolve_path(target)
+    except ValueError:
+        pass
+    raise ValueError(f"expected an ARK, a bronze path, or a cask:/workspace/... path, got {target!r}")
 
 
 def item_id(item):
     """Human-readable identifier for an item, for results and logs.
 
     :param ItemLocation item: Resolved item location.
-    :returns: The ARK, or for a workspace item its source directory path.
+    :returns: The ARK if the item has one; otherwise its workspace source
+        directory path (a workspace item never has an ark) or, for a bronze
+        item resolved with no ark, its bronze folder path.
     :rtype: str
     """
     if item.ark:
         return item.ark
-    root = workspace_source_root(item.group, item.collection)
-    return f"{root}/{item.item_path}" if item.item_path else root
+    if item.dest_type == "workspace":
+        root = workspace_source_root(item.group, item.collection)
+        return f"{root}/{item.item_path}" if item.item_path else root
+    return f"{BRONZE_PREFIX}{item.group}/{item.collection}/{item.time}/{item.item_path}".rstrip("/")
 
 
 # --- Output destination ------------------------------------------------------

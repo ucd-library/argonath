@@ -21,6 +21,7 @@ from digtk.lib.config import (
     CaptionsModelOption,
     ReportingCollectionOption,
     ReportingJobIdOption,
+    TargetArgument,
     VideoResolutionsOption,
 )
 from digtk.models.digital_website import video
@@ -31,30 +32,30 @@ _ERRORS = (LookupError, OSError, RuntimeError, ValueError)
 
 
 @app.command()
-def probe(ark: Annotated[str, typer.Argument(help="Item ARK identifier.")]):
+def probe(target: TargetArgument):
     """Report ffprobe metadata for every source video."""
     try:
-        utils.result(video.probe(ark))
+        utils.result(video.probe(target))
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command()
 def hls(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     resolutions: VideoResolutionsOption = CONFIG["video"]["resolutions"],
 ):
     """Generate the HLS adaptive-bitrate stream."""
     try:
-        utils.log(f"Generating HLS stream for {ark} at resolutions {resolutions}")
-        utils.result(video.hls(ark, opts={"resolutions": resolutions}))
+        utils.log(f"Generating HLS stream for {target} at resolutions {resolutions}")
+        utils.result(video.hls(target, opts={"resolutions": resolutions}))
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command()
 def derivatives(
-    ark: Annotated[str, typer.Argument(help="Item ARK identifier.")],
+    target: TargetArgument,
     resolutions: VideoResolutionsOption = CONFIG["video"]["resolutions"],
     language: CaptionsLanguageOption = CONFIG["captions"]["language"],
     model: CaptionsModelOption = CONFIG["captions"]["model"],
@@ -67,12 +68,12 @@ def derivatives(
     video-bearing item — passing its own run id as --reporting-job-id, same as
     image derivatives."""
     try:
-        utils.log(f"Generating derivatives for {ark} at resolutions {resolutions}")
+        utils.log(f"Generating derivatives for {target} at resolutions {resolutions}")
         with reporting.track(
-            reporting_job_id, stage="derivatives", item_id=ark, collection=reporting_collection,
+            reporting_job_id, stage="derivatives", item_id=target, collection=reporting_collection,
             options={"resolutions": resolutions, "language": language, "model": model},
         ):
-            result = video.derivatives(ark, opts={
+            result = video.derivatives(target, opts={
                 "resolutions": resolutions, "language": language, "model": model,
             })
         utils.result(result)

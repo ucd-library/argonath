@@ -49,7 +49,7 @@ _LINK_RELATION_BY_SUBDIR = {
 }
 
 
-def thumbnails(ark, opts={}):
+def thumbnails(target, opts={}):
     """Generate small/medium/large JPEGs, for every source image in the item.
 
     Standalone, deterministic — no orientation comparison. For ad-hoc/manual
@@ -59,16 +59,17 @@ def thumbnails(ark, opts={}):
     filename (see PUBLIC_FRONTEND_DIR and docs/cask-conventions.md's Silver Layout
     section) — e.g. `public-frontend-derivatives/images/page_100.tif/images/`.
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'widths' (comma-separated str, default
         CONFIG["image"]["thumbnail_widths"]) — must resolve to exactly 3 widths
         (small/medium/large), 'quality' (int).
-    :returns: {"status": "success", "ark": str, "images": {filename: {"dir": str,
+    :returns: {"status": "success", "ark": str|None, "images": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
     widths = pipeline.parse_widths(opts.get("widths", CONFIG["image"]["thumbnail_widths"]))
-    item = items.resolve(ark)
+    item = items.resolve_target(target)
     image_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "image")
     start = time.monotonic()
 
@@ -84,7 +85,7 @@ def thumbnails(ark, opts={}):
 
             images[filename] = pipeline.publish(
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images", local_outputs,
-                command=["digtk", "image", "thumbnail", ark, "--widths", ",".join(map(str, widths))],
+                command=["digtk", "image", "thumbnail", items.item_id(item), "--widths", ",".join(map(str, widths))],
                 params={"widths": widths},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
@@ -92,24 +93,25 @@ def thumbnails(ark, opts={}):
                 },
             )
 
-    return {"status": "success", "ark": ark, "images": images}
+    return {"status": "success", "ark": item.ark, "images": images}
 
 
-def convert(ark, opts={}):
+def convert(target, opts={}):
     """Convert every source image's binary to another format.
 
     Ad hoc — writes standalone `public-frontend-derivatives/converted.<ext>` file(s),
     not part of generate()'s standard derivative set.
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'format' (str, default CONFIG["image"]["convert_format"]),
         'quality' (int).
-    :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
+    :returns: {"status": "success", "ark": str|None, "dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
     """
     fmt = opts.get("format", CONFIG["image"]["convert_format"])
     ext = pipeline.EXTENSION_BY_FORMAT.get(fmt.lower(), f".{fmt.lower()}")
-    item = items.resolve(ark)
+    item = items.resolve_target(target)
     image_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "image")
     start = time.monotonic()
     multi = len(image_paths) > 1
@@ -127,7 +129,7 @@ def convert(ark, opts={}):
 
         result = pipeline.publish(
             item, pipeline.PUBLIC_FRONTEND_DIR, local_outputs,
-            command=["digtk", "image", "convert", ark, "--format", fmt],
+            command=["digtk", "image", "convert", items.item_id(item), "--format", fmt],
             params={"format": fmt},
             opts={
                 "manifest_opts": {"duration_s": time.monotonic() - start},
@@ -135,22 +137,23 @@ def convert(ark, opts={}):
             },
         )
 
-    return {"status": "success", "ark": ark, **result}
+    return {"status": "success", "ark": item.ark, **result}
 
 
-def deskew(ark, opts={}):
+def deskew(target, opts={}):
     """Apply a single deterministic deskew pass to every source image.
 
     Ad hoc — generate()'s OCR comparison is what actually decides deskew for
     the published derivative set; this is a fixed single pass for manual testing.
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: Forwarded to image_magick.deskew() (threshold, working_width,
         output_width, quality).
-    :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
+    :returns: {"status": "success", "ark": str|None, "dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
     """
-    item = items.resolve(ark)
+    item = items.resolve_target(target)
     image_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "image")
     start = time.monotonic()
     multi = len(image_paths) > 1
@@ -168,7 +171,7 @@ def deskew(ark, opts={}):
 
         result = pipeline.publish(
             item, pipeline.PUBLIC_FRONTEND_DIR, local_outputs,
-            command=["digtk", "image", "deskew", ark],
+            command=["digtk", "image", "deskew", items.item_id(item)],
             params={k: v for k, v in opts.items() if k in ("threshold", "working_width", "output_width", "quality")},
             opts={
                 "manifest_opts": {"duration_s": time.monotonic() - start},
@@ -176,23 +179,24 @@ def deskew(ark, opts={}):
             },
         )
 
-    return {"status": "success", "ark": ark, **result}
+    return {"status": "success", "ark": item.ark, **result}
 
 
-def prep_ocr(ark, opts={}):
+def prep_ocr(target, opts={}):
     """Generate a single OCR-prep image for every source image in the item.
 
     Ad hoc — generate()'s orientation comparison produces the actual published
     prep image(s); this is a fixed single pass (deskewed or not, per opts) for
     manual testing.
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: Forwarded to image_magick.prep_ocr() (size, dpi, fuzz, quality,
         deskew, threshold).
-    :returns: {"status": "success", "ark": str, "dir": str, "outputs": [...], "manifest": {...}}
+    :returns: {"status": "success", "ark": str|None, "dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
     """
-    item = items.resolve(ark)
+    item = items.resolve_target(target)
     image_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "image")
     start = time.monotonic()
     multi = len(image_paths) > 1
@@ -211,7 +215,7 @@ def prep_ocr(ark, opts={}):
 
         result = pipeline.publish(
             item, "ocr", local_outputs,
-            command=["digtk", "image", "prep-ocr", ark],
+            command=["digtk", "image", "prep-ocr", items.item_id(item)],
             params={k: v for k, v in opts.items() if k in ("deskew", "dpi", "fuzz", "quality", "size", "threshold")},
             opts={
                 "manifest_opts": {"duration_s": time.monotonic() - start},
@@ -219,10 +223,10 @@ def prep_ocr(ark, opts={}):
             },
         )
 
-    return {"status": "success", "ark": ark, **result}
+    return {"status": "success", "ark": item.ark, **result}
 
 
-def generate(ark, opts={}):
+def generate(target, opts={}):
     """Generate the full derivative set for an item — the Dagster-facing umbrella.
 
     Stages every source image once, decides scan orientation independently per
@@ -248,7 +252,8 @@ def generate(ark, opts={}):
     page's DjVu text layer, with "imageSize": "large" like legacy's (see
     docs/cask-conventions.md's "Image Manifest Content").
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
     Per-file mode (opts['files']) — one Dagster step per image, see
     dagster/lib/pipeline_fanout.py — processes only the named image(s) and
     writes only what belongs to them: their own images/ set and manifest, and
@@ -258,13 +263,12 @@ def generate(ark, opts={}):
     naming still follows the whole item (e.g. the multi-image stem prefix), so a
     per-file run writes exactly the paths a whole-item run would.
 
-    :param str ark: Item ARK identifier.
     :param dict opts: 'widths' (comma-separated str, default
         CONFIG["image"]["thumbnail_widths"]) — must resolve to exactly 3 widths
         (small/medium/large); 'files' (iterable of bronze paths or filenames,
         optional — per-file mode, see above; see pipeline.select_binaries());
         forwarded to image_magick/ocr_utils: 'quality', 'dpi', 'fuzz', 'threshold', etc.
-    :returns: {"status": "success", "ark": str, "derivatives": {filename: {"dir": str,
+    :returns: {"status": "success", "ark": str|None, "derivatives": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}, "ocr": {...} ("manifest" None in
         per-file mode), "orientation": {stem: {"deskew": bool, "stats": {...}}, ...},
         "finalized": bool (False in per-file mode — run finalize())}
@@ -272,7 +276,7 @@ def generate(ark, opts={}):
     :raises ValueError: If a 'files' selector matches no image, or is ambiguous.
     """
     widths = pipeline.parse_widths(opts.get("widths", CONFIG["image"]["thumbnail_widths"]))
-    item = items.resolve(ark)
+    item = items.resolve_target(target)
     image_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "image")
     files = opts.get("files")
     selected = pipeline.select_binaries(image_paths, files) if files else image_paths
@@ -287,7 +291,7 @@ def generate(ark, opts={}):
         ocr_outputs = []
         orientations = {}
         image_objects = []
-        command = ["digtk", "image", "derivatives", ark, "--widths", ",".join(map(str, widths))]
+        command = ["digtk", "image", "derivatives", items.item_id(item), "--widths", ",".join(map(str, widths))]
         for path in (selected if files else []):
             command += ["--file", path]
 
@@ -402,7 +406,7 @@ def generate(ark, opts={}):
 
     return {
         "status": "success",
-        "ark": ark,
+        "ark": item.ark,
         "derivatives": derivatives_results,
         "ocr": ocr_result,
         "orientation": orientations,
@@ -410,7 +414,7 @@ def generate(ark, opts={}):
     }
 
 
-def finalize(ark, opts={}):
+def finalize(target, opts={}):
     """Write an image item's item-level outputs from its already-published
     per-image derivatives — the step after one-per-image generate() runs (see
     its 'files' opt).
@@ -422,15 +426,16 @@ def finalize(ark, opts={}):
     item sidecar's "image" associatedMedia entries — the same content a
     whole-item generate() writes.
 
-    :param str ark: Item ARK identifier.
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: Unused; present for signature symmetry.
-    :returns: {"status": "success", "ark": str, "images": int, "ocr_manifest": {...},
+    :returns: {"status": "success", "ark": str|None, "images": int, "ocr_manifest": {...},
         "associated_media": int (entries written)}
     :rtype: dict
     :raises FileNotFoundError: If any image's derivatives manifest is missing
         (its per-image run hasn't completed) — nothing is written in that case.
     """
-    item = items.resolve(ark)
+    item = items.resolve_target(target)
     image_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "image")
     multi = len(image_paths) > 1
 
@@ -443,7 +448,9 @@ def finalize(ark, opts={}):
         except FileNotFoundError:
             missing.append(filename)
     if missing:
-        raise FileNotFoundError(f"no derivatives published yet for {len(missing)} image(s) of {ark}: {missing}")
+        raise FileNotFoundError(
+            f"no derivatives published yet for {len(missing)} image(s) of {items.item_id(item)}: {missing}"
+        )
 
     orientation, outputs, image_objects = {}, [], []
     for path in image_paths:
@@ -461,7 +468,7 @@ def finalize(ark, opts={}):
     utils.log(f"Writing ocr/manifest.json for {len(image_paths)} image(s)...")
     ocr_rel_path = f"{item.item_path}/ocr" if item.item_path else "ocr"
     ocr_manifest = utils.write_manifest(
-        item.collection, ocr_rel_path, ["digtk", "showcase", "finalize", ark],
+        item.collection, ocr_rel_path, ["digtk", "showcase", "finalize", items.item_id(item)],
         {"orientation": orientation}, outputs, source_files=image_paths,
         opts={"group": item.group, "time": item.time},
     )
@@ -469,6 +476,6 @@ def finalize(ark, opts={}):
     utils.log("Updating associated-media sidecar...")
     pipeline.update_associated_media(item, image_objects, image_paths, "image")
     return {
-        "status": "success", "ark": ark, "images": len(image_paths),
+        "status": "success", "ark": item.ark, "images": len(image_paths),
         "ocr_manifest": ocr_manifest, "associated_media": len(image_objects),
     }
