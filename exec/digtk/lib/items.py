@@ -34,6 +34,7 @@ instead of silver — every ItemLocation carries its own destination
 tools write wherever their item came from without branching on it themselves.
 """
 import json
+import re
 from dataclasses import dataclass
 
 from digtk.lib import derivative, fs
@@ -41,6 +42,10 @@ from digtk.lib import derivative, fs
 BRONZE_PREFIX = "/bronze/"
 SIDECAR_SUFFIX = ".jsonld.json"
 WORKSPACE_PREFIX = "/workspace/"
+# Mirrors digtk.models.collection's _is_ark() — this module already has source-
+# convention awareness for item.jsonld.json/tree (see ark_for_path()), so knowing
+# an ark's shape here too is the same category of knowledge, not new layering.
+_ARK_RE = re.compile(r"^ark:/")
 # Fixed subdirectories under a workspace collection: staged source binaries go in
 # source/, every derivative written for them goes in derivatives/ (mirroring
 # source/'s item paths), so outputs never mix with the inputs they came from.
@@ -242,9 +247,15 @@ def normalize_bronze_path(path):
 
 
 def ark_for_path(path):
-    """Look up the ARK of the item whose folder is `path` — read from the
-    folder's own 'item.jsonld.json' sidecar (its 'ark', falling back to '@id'),
-    the same fields digtk.models.collection.list_item_arks() reads.
+    """Look up the ARK of the item whose folder is `path`.
+
+    Reads the folder's own 'item.jsonld.json' sidecar first (its 'ark', falling
+    back to '@id'), the same fields digtk.models.collection.list_item_arks()
+    reads. Falls back to 'identifiers.json' (unconditionally written for every
+    Preservica tree item — see digtk.models.collection._write_tree_child() —
+    whereas item.jsonld.json is only written when a descriptive metadata
+    fragment was *also* found, a separate, independent condition from whether
+    the entity has an ark at all) when item.jsonld.json is absent or has none.
 
     Lets a caller address an item by its bronze folder (e.g. Dagster's
     process_item_job, keyed by the tree/ path rather than the ARK) and then go
@@ -255,17 +266,24 @@ def ark_for_path(path):
     :returns: The item's ARK, e.g. 'ark:/87287/d7abc1234'.
     :rtype: str
     :raises ValueError: If `path` isn't a bronze path.
-    :raises LookupError: If the folder has no item.jsonld.json, or it carries no ARK.
+    :raises LookupError: If neither item.jsonld.json nor identifiers.json carries an ARK.
     """
     folder = normalize_bronze_path(path)
     sidecar = f"cask:{folder}/{ITEM_SIDECAR_FILENAME}"
-    if not fs.exists(sidecar):
-        raise LookupError(f"MISSING ARK: no {ITEM_SIDECAR_FILENAME} in {folder}/")
-    doc = json.loads(fs.read(sidecar))
-    ark = doc.get("ark") or doc.get("@id")
-    if not ark or not str(ark).startswith("ark:"):
-        raise LookupError(f"MISSING ARK: {folder}/{ITEM_SIDECAR_FILENAME} has no ark")
-    return ark
+    if fs.exists(sidecar):
+        doc = json.loads(fs.read(sidecar))
+        ark = doc.get("ark") or doc.get("@id")
+        if ark and _ARK_RE.match(str(ark)):
+            return ark
+
+    identifiers_path = f"cask:{folder}/identifiers.json"
+    if fs.exists(identifiers_path):
+        for entry in json.loads(fs.read(identifiers_path)):
+            value = entry.get("value") or ""
+            if _ARK_RE.match(value):
+                return value
+
+    raise LookupError(f"MISSING ARK: no ark in {folder}/{ITEM_SIDECAR_FILENAME} or identifiers.json")
 
 
 def _parse_bronze_folder(path):

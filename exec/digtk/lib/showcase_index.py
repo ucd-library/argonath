@@ -166,50 +166,11 @@ def _mime(filename, default):
     return mimetypes.guess_type(filename)[0] or default
 
 
-def _source_filename(content_url):
-    """The bronze source filename an associatedMedia entry was derived from,
-    read from its contentUrl's public-frontend-derivatives/ segment:
-    images/<file>/images/... for an image, <file>/... for a PDF, video or
-    audio source (see pipeline.PUBLIC_FRONTEND_DIR).
-
-    :param str content_url: The entry's contentUrl.
-    :returns: The source filename, or None for a URL outside that layout.
-    :rtype: str|None
-    """
-    marker = f"/{pipeline.PUBLIC_FRONTEND_DIR}/"
-    if marker not in content_url:
-        return None
-    rest = content_url.split(marker, 1)[1]
-    parts = rest.split("/")
-    if parts[0] == "images" and len(parts) > 1:
-        return parts[1]
-    return parts[0] or None
-
-
-def _group_media_by_source(associated_media):
-    """Groups a flat associatedMedia list by source group and source file.
-
-    Every media-generation pipeline stamps "argonath:sourceGroup" (image, pdf,
-    video, audio) on the entries it writes, and they all accumulate in one
-    flat list on the item's silver sidecar (pipeline.update_associated_media()).
-    Every source file of every group is kept — the website decides what to
-    show.
-
-    ASSUMPTION: page order within an image list is the filenames' sort order —
-    nothing records an explicit order. Correct for zero-padded sequential scan
-    names (page_001.tif, page_002.tif).
-
-    :param list associated_media: Flat associatedMedia list.
-    :returns: {source group: {filename: [entries]}}, filenames sorted.
-    :rtype: dict
-    """
-    groups = {}
-    for entry in associated_media:
-        group = entry.get("argonath:sourceGroup")
-        filename = _source_filename(entry.get("contentUrl", ""))
-        if group and filename:
-            groups.setdefault(group, {}).setdefault(filename, []).append(entry)
-    return {group: {f: files[f] for f in sorted(files)} for group, files in groups.items()}
+# source_filename()/group_media_by_source() moved to
+# digtk.models.digital_website.pipeline (shared with item_record.py) — kept as
+# module-level aliases here so existing call sites below don't need touching.
+_source_filename = pipeline.source_filename
+_group_media_by_source = pipeline.group_media_by_source
 
 
 def _caption_links(entry):

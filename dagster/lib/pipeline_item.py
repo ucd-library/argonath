@@ -10,18 +10,23 @@ upsert genuinely needs one (see below).
 It works like one item's slice of lib/pipeline_fanout.py's
 process_collection_job and reuses that module's pieces: item_tasks() builds
 the tasks (one per image/PDF file, one per video/audio item),
-process_derivative_batch runs them, and finalize_one_item() writes the
-item-level outputs. The graph:
+process_derivative_batch runs them, finalize_one_item() writes the item-level
+derivative outputs, and build_item_record() assembles the canonical
+item.jsonld.json. The graph:
 
-  plan_item -> process_derivative_batch (mapped) -> collect -> finalize_item -> index_item
+  plan_item -> process_derivative_batch (mapped) -> collect -> finalize_item
+            -> generate_item_record -> index_item
 
 finalize_item fails the run if any file failed, and only finalizes items with
-image or PDF outputs. index_item then runs `digtk showcase es upsert <ark>`
-(ItemRunConfig.index_es) — the one step that still hard-requires an ark, since
-the ES document's own id is ark-shaped; an item with no ark fails here
-(after derivatives/finalize have already succeeded), not earlier. An item
-whose formats listing itself fails (not just a missing ark) becomes a single
-error task, so the run reports it and fails like any other failed step.
+image or PDF outputs. generate_item_record then runs `digtk showcase
+build-item <item>`, assembling the item's full descriptive/associatedMedia
+record — this is the other step that hard-requires an ark (the canonical
+public record needs a stable identifier), so it fails here for an ark-less
+item, after derivatives/finalize already succeeded. index_item then runs
+`digtk showcase es upsert <ark>` (ItemRunConfig.index_es), re-reading whatever
+generate_item_record just wrote. An item whose formats listing itself fails
+(not just a missing ark) becomes a single error task at plan_item, so the run
+reports it and fails like any other failed step.
 
 Task ids, events and digtk reporting rows use the item's collection key (the
 first three path segments, "bronze/[group]/[collection]"), the same as
@@ -56,6 +61,7 @@ from lib.fanout_batching import batches, log_batching, relative_id, step_key
 from lib.pipeline_fanout import (
     _PER_FILE_FORMATS,
     _error_task,
+    build_item_record,
     finalize_one_item,
     item_tasks,
     process_derivative_batch,
@@ -174,6 +180,32 @@ def finalize_item(context: OpExecutionContext, results: list, item: dict) -> dic
 
 
 @op
+def generate_item_record(context: OpExecutionContext, item: dict) -> dict:
+    """Assemble and write the item's complete, canonical item.jsonld.json
+    (`digtk showcase build-item`) from its now-finalized derivatives and
+    bronze identifiers/metadata.
+
+    Unlike every other op in this job, this one genuinely requires an ark and
+    fails outright without one — the canonical public record needs a stable
+    identifier (see digtk.models.digital_website.item_record.build()'s
+    docstring). This runs before index_item, so an ark-less item's run fails
+    here rather than inside index_item's Elasticsearch upsert.
+
+    :param context: Dagster op execution context.
+    :param dict item: finalize_item's item dict.
+    :returns: The same item dict, passed on to index_item.
+    :rtype: dict
+    :raises RuntimeError: If building the item record failed (including: no ark).
+    """
+    error = build_item_record(context, item["item"], item["ark"], item["id"], item["collection_key"])
+    if error is not None:
+        error = f"{item['id']} failed to build its item record: {error}"
+        _record(context, item, "failed", {"error": error})
+        raise RuntimeError(error)
+    return item
+
+
+@op
 def index_item(context: OpExecutionContext, item: dict):
     """Index the item into the DAMS Elasticsearch index (`digtk showcase es
     upsert`) if ItemRunConfig.index_es is set, then record the job as a success.
@@ -226,15 +258,15 @@ def _record(context, item, status, opts={}):
 )
 def process_item_job():
     """One item's derivatives, addressed by its bronze folder: one step per
-    image/PDF file (and per video/audio format), then finalize, then the
-    Elasticsearch upsert. Launch it
+    image/PDF file (and per video/audio format), then finalize, then building
+    its canonical item.jsonld.json, then the Elasticsearch upsert. Launch it
     from the launchpad with ops.plan_item.config.item set, or let
     lib.pipeline_collection.item_queue_sensor launch it from the queue. See
     this module's docstring.
     """
     tasks, item = plan_item()
     results = tasks.map(process_derivative_batch).collect()
-    index_item(finalize_item(results, item))
+    index_item(generate_item_record(finalize_item(results, item)))
 
 
 @dg.run_failure_sensor(monitored_jobs=[process_item_job])

@@ -389,21 +389,58 @@ def finalize_one_item(context, target, ark, id, collection_key):
     return None
 
 
+def build_item_record(context, target, ark, id, collection_key):
+    """Assemble and write one item's complete item.jsonld.json (`digtk showcase
+    build-item`) and record the result as an event. Never raises — the caller
+    decides whether a failure fails its step.
+
+    Unlike finalize_one_item() above, this genuinely can fail for an item with
+    no ark — the canonical public record needs a stable identifier, and
+    item_record.build() has no fallback for that (see its docstring).
+
+    :param context: Dagster op execution context.
+    :param str target: Item bronze path.
+    :param str|None ark: The item's ark, if it has one — metadata only (the
+        underlying command resolves/requires its own ark independently).
+    :param str id: Item folder relative to collection_key (the event's item_id).
+    :param str collection_key: "bronze/[group]/[collection]" — reporting
+        collection and event partition.
+    :returns: None on success, else the error message.
+    :rtype: str|None
+    """
+    cmd = [
+        "digtk", "showcase", "build-item", target,
+        "--reporting-job-id", context.run_id, "--reporting-collection", collection_key,
+    ]
+    try:
+        result = exec(cmd)
+    except Exception as e:
+        _emit(context, "build-item", id, None, status="failed", partition=collection_key, error=str(e), item_ark=ark)
+        return str(e)
+    _emit(context, "build-item", id, result, partition=collection_key, item_ark=ark)
+    return None
+
+
 @op(ins={"tasks": In(list)})
 def finalize_batch(context: OpExecutionContext, tasks: list):
     """Write item-level outputs for one step's items (`digtk showcase
-    finalize`), one item at a time — each gets its own result event; a failed
-    item doesn't stop the rest, but fails the step at the end.
+    finalize`, then `digtk showcase build-item`), one item at a time — each
+    gets its own result event; a failed item doesn't stop the rest, but fails
+    the step at the end. build-item only runs for an item whose finalize
+    succeeded.
 
     :param context: Dagster op execution context; partitioned by collection.
     :param list[dict] tasks: fan_out_finalize tasks ({"target", "ark", "id", "collection_key"}).
-    :raises RuntimeError: If any item in the batch failed to finalize.
+    :raises RuntimeError: If any item in the batch failed to finalize or build its record.
     """
     log_batch(context, [t["id"] for t in tasks])
-    failed = [
-        t["id"] for t in tasks
-        if finalize_one_item(context, t["target"], t["ark"], t["id"], t["collection_key"]) is not None
-    ]
+    failed = []
+    for t in tasks:
+        if finalize_one_item(context, t["target"], t["ark"], t["id"], t["collection_key"]) is not None:
+            failed.append(t["id"])
+            continue
+        if build_item_record(context, t["target"], t["ark"], t["id"], t["collection_key"]) is not None:
+            failed.append(t["id"])
     if failed:
         raise RuntimeError(f"{len(failed)} of {len(tasks)} item(s) failed to finalize: {', '.join(failed)}")
 

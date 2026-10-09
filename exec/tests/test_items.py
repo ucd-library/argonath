@@ -523,8 +523,45 @@ def test_ark_for_path_missing_sidecar_is_missing_ark(monkeypatch):
 
 
 def test_ark_for_path_sidecar_without_ark_is_missing_ark(monkeypatch):
-    monkeypatch.setattr(fs, "exists", lambda path: True)
+    monkeypatch.setattr(fs, "exists", lambda path: not path.endswith("identifiers.json"))
     monkeypatch.setattr(fs, "read", lambda path: json.dumps({"name": "Quarter Mile"}))
+
+    with pytest.raises(LookupError, match="MISSING ARK"):
+        items.ark_for_path("bronze/preservica/haeger/latest/tree/quarter-mile")
+
+
+def test_ark_for_path_falls_back_to_identifiers_json(monkeypatch):
+    sidecar = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/item.jsonld.json"
+    identifiers = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/identifiers.json"
+    monkeypatch.setattr(fs, "exists", lambda path: path == identifiers)
+    monkeypatch.setattr(fs, "read", lambda path: json.dumps([
+        {"type": "LocalID", "value": "abc123"},
+        {"type": None, "value": ARK},
+    ]))
+
+    assert items.ark_for_path("bronze/preservica/haeger/latest/tree/quarter-mile") == ARK
+
+
+def test_ark_for_path_prefers_sidecar_ark_over_identifiers_json(monkeypatch):
+    sidecar = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/item.jsonld.json"
+    identifiers = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/identifiers.json"
+    other_ark = "ark:/87287/other"
+    monkeypatch.setattr(fs, "exists", lambda path: path in (sidecar, identifiers))
+
+    def fake_read(path):
+        if path == sidecar:
+            return json.dumps({"ark": ARK})
+        return json.dumps([{"type": None, "value": other_ark}])
+    monkeypatch.setattr(fs, "read", fake_read)
+
+    assert items.ark_for_path("bronze/preservica/haeger/latest/tree/quarter-mile") == ARK
+
+
+def test_ark_for_path_raises_when_identifiers_json_has_no_ark_either(monkeypatch):
+    sidecar = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/item.jsonld.json"
+    identifiers = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/identifiers.json"
+    monkeypatch.setattr(fs, "exists", lambda path: path == identifiers)
+    monkeypatch.setattr(fs, "read", lambda path: json.dumps([{"type": "LocalID", "value": "abc123"}]))
 
     with pytest.raises(LookupError, match="MISSING ARK"):
         items.ark_for_path("bronze/preservica/haeger/latest/tree/quarter-mile")

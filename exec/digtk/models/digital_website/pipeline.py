@@ -354,6 +354,50 @@ def cask_public_ref(internal_path):
     return "cask:/" + internal_path[len("cask:"):]
 
 
+def source_filename(content_url):
+    """The bronze source filename an associatedMedia entry was derived from,
+    read from its contentUrl's public-frontend-derivatives/ segment:
+    images/<file>/images/... for an image, <file>/... for a PDF, video or
+    audio source.
+
+    :param str content_url: The entry's contentUrl.
+    :returns: The source filename, or None for a URL outside that layout.
+    :rtype: str|None
+    """
+    marker = f"/{PUBLIC_FRONTEND_DIR}/"
+    if marker not in content_url:
+        return None
+    rest = content_url.split(marker, 1)[1]
+    parts = rest.split("/")
+    if parts[0] == "images" and len(parts) > 1:
+        return parts[1]
+    return parts[0] or None
+
+
+def group_media_by_source(associated_media):
+    """Group a flat associatedMedia list by source group and source file.
+
+    Every media-generation pipeline stamps "argonath:sourceGroup" (image, pdf,
+    video, audio) on the entries it writes, and they all accumulate in one flat
+    list on the item's silver sidecar (update_associated_media() above).
+
+    ASSUMPTION: page order within an image list is the filenames' sort order —
+    nothing records an explicit order. Correct for zero-padded sequential scan
+    names (page_001.tif, page_002.tif).
+
+    :param list associated_media: Flat associatedMedia list.
+    :returns: {source group: {filename: [entries]}}, filenames sorted.
+    :rtype: dict
+    """
+    groups = {}
+    for entry in associated_media:
+        group = entry.get("argonath:sourceGroup")
+        filename = source_filename(entry.get("contentUrl", ""))
+        if group and filename:
+            groups.setdefault(group, {}).setdefault(filename, []).append(entry)
+    return {group: {f: files[f] for f in sorted(files)} for group, files in groups.items()}
+
+
 def update_associated_media(item, media_objects, source_files, source_group):
     """Merge schema:associatedMedia refs into the item's silver sidecar, creating
     it if absent. Never touches the bronze sidecar — bronze is immutable/append-only,
@@ -404,7 +448,9 @@ def update_associated_media(item, media_objects, source_files, source_group):
     if fs.exists(sidecar_path):
         doc = json.loads(fs.read(sidecar_path))
     else:
-        doc = {"@context": SCHEMA_CONTEXT, "@id": item.ark, "ark": item.ark}
+        # item.ark may be None (not every item has one) — @id must still be a
+        # real string, or CaskFS's JSON-LD harvester rejects the write outright.
+        doc = {"@context": SCHEMA_CONTEXT, "@id": items.item_id(item), "ark": item.ark}
 
     for entry in media_objects:
         entry["argonath:sourceGroup"] = source_group

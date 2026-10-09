@@ -132,3 +132,33 @@ def test_finalize_routes_missing_derivatives_through_utils_error(monkeypatch):
 
     assert result.exit_code == 1
     assert last_json_line(result.output)["status"] == "error"
+
+
+def test_build_item_calls_the_item_record_model(monkeypatch):
+    from digtk.models.digital_website import item_record
+    monkeypatch.setattr(items_lib, "resolve_target", lambda target, opts={}: ITEM)
+    seen = {}
+    monkeypatch.setattr(
+        item_record, "build",
+        lambda item, opts={}: seen.update(item=item) or {"status": "success", "ark": item.ark},
+    )
+
+    result = runner.invoke(app, ["showcase", "build-item", ARK])
+
+    assert result.exit_code == 0
+    assert seen["item"] is ITEM
+    assert last_json_line(result.output) == {"status": "success", "ark": ARK}
+
+
+def test_build_item_routes_no_ark_through_utils_error(monkeypatch):
+    from digtk.models.digital_website import item_record
+    monkeypatch.setattr(items_lib, "resolve_target", lambda target, opts={}: NO_ARK_ITEM)
+
+    def raises(item, opts={}):
+        raise LookupError(f"{ITEM_PATH} has no ark — cannot build its item record")
+    monkeypatch.setattr(item_record, "build", raises)
+
+    result = runner.invoke(app, ["showcase", "build-item", ITEM_PATH])
+
+    assert result.exit_code == 1
+    assert last_json_line(result.output)["status"] == "error"
