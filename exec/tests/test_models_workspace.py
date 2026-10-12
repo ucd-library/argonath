@@ -153,7 +153,7 @@ def test_apply_to_targets_single_item_returns_fn_result_and_reports(monkeypatch,
     })
 
     assert result == {"status": "success", "seen": {"max_alt_chars": 100}}
-    assert tracked == [{"job_id": "run-1", "stage": "alt-text", "item_id": ARK, "collection": "g/c"}]
+    assert tracked == [{"job_id": "run-1", "stage": "alt-text", "item_id": "/bronze/g/c/latest/box-12/folder-3", "collection": "g/c"}]
 
 
 def test_apply_to_targets_many_items_returns_items_list(monkeypatch, tracked):

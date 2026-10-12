@@ -10,7 +10,7 @@ existing env var override is applied, once, at import time, into CONFIG — a pl
 hierarchical dict that any module can import and read directly (e.g.
 `CONFIG["ocr"]["lang"]`). Typer commands additionally declare `envvar=` on their Option
 using the same env var name (this also documents it in --help); library code with no
-CLI surface (digtk.lib.ai, digtk.lib.auth, digtk.lib.ark, ...) just reads CONFIG
+CLI surface (digtk.lib.ai, digtk.lib.auth, ...) just reads CONFIG
 directly and gets the same env override for free, without needing any Typer plumbing.
 
 Secrets (bearer tokens, API keys, passwords) are deliberately kept out of CONFIG's
@@ -120,10 +120,6 @@ PRESERVICA_PAGE_SIZE_ENV = "DIGTK_PRESERVICA_PAGE_SIZE"
 PRESERVICA_TOKEN_REFRESH_BUFFER_S_ENV = "DIGTK_PRESERVICA_TOKEN_REFRESH_BUFFER_S"
 PRESERVICA_MAX_RETRIES_ENV = "DIGTK_PRESERVICA_MAX_RETRIES"
 PRESERVICA_RETRY_BACKOFF_S_ENV = "DIGTK_PRESERVICA_RETRY_BACKOFF_S"
-
-ARK_NAAN_ENV = "DIGTK_ARK_NAAN"
-ARK_SHOULDER_ENV = "DIGTK_ARK_SHOULDER"
-ARK_NOID_ALPHABET_ENV = "DIGTK_ARK_NOID_ALPHABET"
 
 FS_CHUNK_SIZE_ENV = "DIGTK_FS_CHUNK_SIZE"
 
@@ -238,9 +234,6 @@ SETTINGS = [
     {"dotpath": "alt.want_description", "env": ALT_WANT_DESCRIPTION_ENV, "cast": _cast_bool, "secret": False},
     {"dotpath": "gateway.url", "env": GATEWAY_URL_ENV, "cast": str, "secret": False},
     {"dotpath": "auth.login_timeout_s", "env": AUTH_LOGIN_TIMEOUT_ENV, "cast": float, "secret": False},
-    {"dotpath": "ark.naan", "env": ARK_NAAN_ENV, "cast": str, "secret": False},
-    {"dotpath": "ark.shoulder", "env": ARK_SHOULDER_ENV, "cast": str, "secret": False},
-    {"dotpath": "ark.noid_alphabet", "env": ARK_NOID_ALPHABET_ENV, "cast": str, "secret": False},
     {"dotpath": "fs.chunk_size", "env": FS_CHUNK_SIZE_ENV, "cast": int, "secret": False},
     {"dotpath": "search.space", "env": SEARCH_SPACE_ENV, "cast": str, "secret": False},
     {"dotpath": "search.top_k", "env": SEARCH_TOP_K_ENV, "cast": int, "secret": False},
@@ -483,11 +476,6 @@ CONFIG = {
     # The stored CaskFS api_url is gateway.url + "/cask" — see digtk.lib.auth.login().
     "gateway": {
         "url": _env(GATEWAY_URL_ENV, "https://argonath.library.ucdavis.edu"),
-    },
-    "ark": {
-        "naan": _env(ARK_NAAN_ENV, "87287"),
-        "shoulder": _env(ARK_SHOULDER_ENV, "d7"),
-        "noid_alphabet": _env(ARK_NOID_ALPHABET_ENV, "0123456789bcdfghjkmnpqrstvwxz"),
     },
     "fs": {
         "chunk_size": _env(FS_CHUNK_SIZE_ENV, 65536, int),

@@ -10,17 +10,18 @@ directory under PUBLIC_FRONTEND_DIR, named after the source's own bronze filenam
 flat inside, with no further nested content-kind subfolder, since this is the only
 kind of output audio produces here.
 
-Each source audio file gets one AudioObject associatedMedia entry, tagged with its own
-filename stem as 'identifier' so derivatives()'s own captions.transcribe_sources()
-call (see digtk.models.digital_website.captions) can attach its caption to the right
-entry. Captions themselves are unaffected by this module's layout — they still
+Each source audio file gets one AudioObject associatedMedia entry in the item's gold
+record (see media_objects()), tagged with its own filename stem as 'identifier' so
+digtk.models.digital_website.captions.attach_captions() can attach its caption to the
+right entry. Captions themselves are unaffected by this module's layout — they still
 publish into their own flat, shared 'captions/' directory.
 """
+import json
 import os
 import tempfile
 import time
 
-from digtk.lib import ffmpeg_utils, items, utils
+from digtk.lib import ffmpeg_utils, fs, items, utils
 from digtk.lib.config import CONFIG
 from digtk.lib.schema import ARGONATH_NS
 from digtk.models.digital_website import captions, pipeline
@@ -35,7 +36,7 @@ def probe(target, opts={}):
     :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
         or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: Unused.
-    :returns: {"status": "success", "ark": str|None, "streams": {stem: ffmpeg_utils.probe() result}}
+    :returns: {"status": "success", "item": str (item path), "streams": {stem: ffmpeg_utils.probe() result}}
     :rtype: dict
     """
     item = items.resolve_target(target)
@@ -43,7 +44,7 @@ def probe(target, opts={}):
     with tempfile.TemporaryDirectory() as tmp_dir:
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": audio_paths})
         streams = {src["stem"]: ffmpeg_utils.probe(src["local_path"], opts) for src in sources}
-    return {"status": "success", "ark": item.ark, "streams": streams}
+    return {"status": "success", "item": items.item_id(item), "streams": streams}
 
 
 def transcode(target, opts={}):
@@ -59,7 +60,7 @@ def transcode(target, opts={}):
         or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'format' (str, default CONFIG["audio"]["transcode_format"]),
         'bitrate' (str, default CONFIG["audio"]["transcode_bitrate"]).
-    :returns: {"status": "success", "ark": str|None, "audios": {filename: {"dir": str,
+    :returns: {"status": "success", "item": str (item path), "audios": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
@@ -88,7 +89,7 @@ def transcode(target, opts={}):
                 },
             )
 
-    return {"status": "success", "ark": item.ark, "audios": audios}
+    return {"status": "success", "item": items.item_id(item), "audios": audios}
 
 
 def waveform(target, opts={}):
@@ -104,7 +105,7 @@ def waveform(target, opts={}):
     :param dict opts: 'width' (int, default CONFIG["audio"]["waveform_width"]), 'height'
         (int, default CONFIG["audio"]["waveform_height"]), 'color' (str, default
         CONFIG["audio"]["waveform_color"]).
-    :returns: {"status": "success", "ark": str|None, "audios": {filename: {"dir": str,
+    :returns: {"status": "success", "item": str (item path), "audios": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
@@ -134,7 +135,7 @@ def waveform(target, opts={}):
                 },
             )
 
-    return {"status": "success", "ark": item.ark, "audios": audios}
+    return {"status": "success", "item": items.item_id(item), "audios": audios}
 
 
 def derivatives(target, opts={}):
@@ -143,16 +144,15 @@ def derivatives(target, opts={}):
     one directory per source, then transcribes every source to a WebVTT caption via
     captions.transcribe_sources() (local Whisper ASR — machine-generated and
     unreviewed, see docs/cask-conventions.md's Captions/Transcripts section) using the
-    same staged sources, merging each caption into the AudioObject entry
-    update_associated_media() just wrote. Captions still publish into their own flat,
-    shared 'captions/' directory, unaffected by this per-source layout.
+    same staged sources. Captions still publish into their own flat, shared
+    'captions/' directory, unaffected by this per-source layout.
 
     :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
         or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'format' (str, default CONFIG["audio"]["transcode_format"]),
         'width'/'height' (waveform dimensions); 'language'/'model' for the caption
         step (see captions.transcribe_sources()); forwarded to ffmpeg_utils.
-    :returns: {"status": "success", "ark": str|None, "derivatives": {filename: {"dir": str,
+    :returns: {"status": "success", "item": str (item path), "derivatives": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}, "captions": {...}}
     :rtype: dict
     """
@@ -165,7 +165,6 @@ def derivatives(target, opts={}):
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": audio_paths})
         total = len(sources)
         derivatives_results = {}
-        audio_objects = []
 
         for i, src in enumerate(sources, start=1):
             stem = src["stem"]
@@ -193,17 +192,7 @@ def derivatives(target, opts={}):
                     "link_relation": _LINK_RELATION,
                 },
             )
-
-            audio_objects.append({
-                "@type": "AudioObject",
-                "identifier": stem,
-                "contentUrl": pipeline.cask_public_ref(f"{derivatives_results[filename]['dir']}/{converted_filename}"),
-                "encodingFormat": f"audio/{fmt}",
-            })
             utils.log(f"[{i}/{total}] {stem}: done")
-
-        utils.log("Updating associated-media sidecar...")
-        pipeline.update_associated_media(item, audio_objects, [src["bronze_path"] for src in sources], "audio")
 
         utils.log("Transcribing captions...")
         captions_result = captions.transcribe_sources(
@@ -212,4 +201,33 @@ def derivatives(target, opts={}):
             opts=opts,
         )
 
-    return {"status": "success", "ark": item.ark, "derivatives": derivatives_results, "captions": captions_result}
+    return {"status": "success", "item": items.item_id(item), "derivatives": derivatives_results, "captions": captions_result}
+
+
+def media_objects(item):
+    """The item's "audio" associatedMedia entries — one AudioObject per source
+    audio file, pointing at its published transcoded copy — rebuilt from each
+    source's manifest.json. Read by
+    digtk.models.digital_website.item_record.build().
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :returns: AudioObject entries, each tagged with its source's filename stem
+        as 'identifier' (see captions.attach_captions()).
+    :rtype: list[dict]
+    :raises FileNotFoundError: If a source's transcoded copy hasn't been published.
+    """
+    objects = []
+    for path in pipeline.filter_binaries_by_format(item.bronze_binary_paths, "audio"):
+        filename = os.path.basename(path)
+        audio_dir = pipeline.derivative_dir(item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}")
+        manifest = json.loads(fs.read(f"{audio_dir}/manifest.json"))
+        converted = next((o for o in manifest.get("outputs", []) if o.startswith("converted.")), None)
+        if not converted:
+            raise FileNotFoundError(f"no transcoded audio published for {filename} of {items.item_id(item)}")
+        objects.append({
+            "@type": "AudioObject",
+            "identifier": os.path.splitext(filename)[0],
+            "contentUrl": pipeline.cask_public_ref(f"{audio_dir}/{converted}"),
+            "encodingFormat": f"audio/{converted.split('.', 1)[1]}",
+        })
+    return objects

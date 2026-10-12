@@ -53,23 +53,15 @@ def test_dest_path_silver_requires_group():
         derivative.dest_path(type="silver", collection="ucd-photos", rel_path="item-1/thumb.jpg", opts={})
 
 
-def test_dest_path_silver_rejects_app():
-    with pytest.raises(ValueError, match="app"):
-        derivative.dest_path(
-            type="silver", collection="ucd-photos", rel_path="item-1/thumb.jpg",
-            opts={"group": "digital-collections", "app": "arda"},
-        )
-
-
 def test_dest_path_gold_has_no_time_dimension():
     path = derivative.dest_path(
-        type="gold", collection="ucd-photos", rel_path="item-1/thumb.jpg", opts={"app": "arda"}
+        type="gold", collection="ucd-photos", rel_path="item-1/thumb.jpg", opts={"group": "digital-collections"}
     )
-    assert path == "/gold/arda/ucd-photos/item-1/thumb.jpg"
+    assert path == "/gold/digital-collections/ucd-photos/item-1/thumb.jpg"
 
 
-def test_dest_path_gold_requires_app():
-    with pytest.raises(ValueError, match="app"):
+def test_dest_path_gold_requires_group():
+    with pytest.raises(ValueError, match="group"):
         derivative.dest_path(type="gold", collection="ucd-photos", rel_path="item-1/thumb.jpg", opts={})
 
 
@@ -77,15 +69,7 @@ def test_dest_path_gold_rejects_time():
     with pytest.raises(ValueError, match="time"):
         derivative.dest_path(
             type="gold", collection="ucd-photos", rel_path="item-1/thumb.jpg",
-            opts={"app": "arda", "time": "2026-07-22"},
-        )
-
-
-def test_dest_path_gold_rejects_group():
-    with pytest.raises(ValueError, match="group"):
-        derivative.dest_path(
-            type="gold", collection="ucd-photos", rel_path="item-1/thumb.jpg",
-            opts={"app": "arda", "group": "digital-collections"},
+            opts={"group": "digital-collections", "time": "2026-07-22"},
         )
 
 
@@ -107,14 +91,6 @@ def test_dest_path_workspace_rejects_time():
         derivative.dest_path(
             type="workspace", collection="my-collection", rel_path="item-1/thumb.jpg",
             opts={"group": "jrmerz", "time": "2026-07-22"},
-        )
-
-
-def test_dest_path_workspace_rejects_app():
-    with pytest.raises(ValueError, match="app"):
-        derivative.dest_path(
-            type="workspace", collection="my-collection", rel_path="item-1/thumb.jpg",
-            opts={"group": "jrmerz", "app": "arda"},
         )
 
 
@@ -228,10 +204,10 @@ def test_write_cask_gold_path_has_no_time_segment(fake_fs):
     result = derivative.write_cask(
         type="gold", collection="ucd-photos", rel_path="item-1/thumb.jpg", data=b"bytes",
         source_files=["cask:/silver/digital-collections/ucd-photos/latest/item-1/thumb.jpg"],
-        opts={"app": "arda"},
+        opts={"group": "digital-collections"},
     )
 
-    assert result["path"] == "cask:/gold/arda/ucd-photos/item-1/thumb.jpg"
+    assert result["path"] == "cask:/gold/digital-collections/ucd-photos/item-1/thumb.jpg"
 
 
 def test_write_cask_workspace_path_has_no_time_segment(fake_fs):

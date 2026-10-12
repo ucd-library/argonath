@@ -77,7 +77,6 @@ Mirrors the bronze path exactly (`[group]/[collection]/[time]/[item]/`) but hold
 
 ```
 silver/[group]/[collection]/[time]/[item]/
-├── item.jsonld.json            # domain: merged sidecar — associatedMedia + DC fields
 ├── public-frontend-derivatives/ # final derivatives the websites render (see below)
 │   ├── images/<filename>/images/{manifest.json, small.jpg, medium.jpg, large.jpg, tiled.tif}
 │   ├── <pdf-filename>/images/<n>/...
@@ -111,10 +110,10 @@ Silver holds two kinds of output side by side:
 
 - **Final derivative products** — `public-frontend-derivatives/` (the small/medium/large
   set and deep-zoom tile every image and PDF page publishes, video HLS ladders, audio
-  transcodes and waveforms), `captions/`, and the item-level `item.jsonld.json`
-  (associatedMedia refs to those derivatives, merged with Dublin-Core-derived
-  descriptive fields). The digital_website pipeline writes them straight from bronze
-  into silver. They are **not app-scoped**: dc-showcase dev and prod (and any other
+  transcodes and waveforms) and `captions/`. The digital_website pipeline writes
+  them straight from bronze into silver. The item-level record describing them
+  (`item.jsonld.json`) is not in silver — it's built afterward, into gold (see
+  "Gold Layout"). They are **not app-scoped**: dc-showcase dev and prod (and any other
   app) reference the identical files, served through the dc-showcase gateway's
   `/cask/file/<path>` prefix (e.g. `/cask/file/silver/preservica/haeger/latest/tree/<item>/public-frontend-derivatives/...`).
   Whether the public can see them is decided per collection/item, not per
@@ -204,11 +203,11 @@ directly for a multi-format item; there's currently no Dagster orchestration tha
 automatically runs every applicable format for one item either, that's out of scope
 until it's actually needed.
 
-Each format's `derivatives()`/`generate()` call also merges its own
-`argonath:sourceGroup`-tagged entries into the item's `associatedMedia` rather than
-replacing the array wholesale, so running the image pipeline and then the PDF
-pipeline against the same item leaves both sets of associatedMedia entries in
-`item.jsonld.json` afterward — not just the most recently run one.
+When the item's gold `item.jsonld.json` is built (`digtk showcase build-item`), every
+format present among its bronze binaries contributes its own
+`argonath:sourceGroup`-tagged associatedMedia entries, read back from that format's
+published manifests — so running the image pipeline and the PDF pipeline against the
+same item leaves both sets of entries in the record, not just the most recently run one.
 
 ### PDF Pagination
 
@@ -223,7 +222,6 @@ publishes into its own plain 1-indexed subdirectory:
 
 ```
 silver/[group]/[collection]/[time]/[item]/
-├── item.jsonld.json                 # associatedMedia: one ImageObject per page, "position": N
 ├── public-frontend-derivatives/
 │   ├── images/                      # sibling to document.pdf/ below — holds plain image sources
 │   │   └── ...
@@ -433,7 +431,6 @@ holding a `streaming/` subdirectory:
 
 ```
 silver/[group]/[collection]/[time]/[item]/
-├── item.jsonld.json          # associatedMedia: one VideoObject, "identifier": <stem>
 └── public-frontend-derivatives/
     └── movie.mp4/
         └── streaming/
@@ -454,10 +451,9 @@ small/medium/large set lands at `public-frontend-derivatives/images/<that
 filename>/images/...`, same as any other image source, entirely unrelated to the
 video's own `streaming/` directory.
 
-The VideoObject's `identifier` (the source binary's filename stem) is how the same
-derivatives() run's caption-transcription step finds the right associatedMedia
-entry to attach its caption to (see "Captions/Transcripts" below) — it's not itself
-meant as a public identifier.
+In the gold item record each source video becomes one VideoObject, whose
+`identifier` (the source binary's filename stem) is how its caption is matched to it
+(see "Captions/Transcripts" below) — it's not itself meant as a public identifier.
 
 ### Audio Transcoding and Waveforms
 
@@ -470,7 +466,6 @@ produces here:
 
 ```
 silver/[group]/[collection]/[time]/[item]/
-├── item.jsonld.json          # associatedMedia: one AudioObject, "identifier": <stem>
 └── public-frontend-derivatives/
     └── interview.wav/
         ├── manifest.json
@@ -497,14 +492,11 @@ silver/[group]/[collection]/[time]/[item]/
     └── output-en.vtt
 ```
 
-Machine-generated and unreviewed: the caption gets merged into the matching
-VideoObject/AudioObject associatedMedia entry (matched by the `identifier` stem —
-see above, written by the same derivatives() run just before the caption step) as
-a nested `caption` MediaObject, and the item's `argonath:fieldSources` map records
-`"caption": "ai"` (see Field Sources below) so downstream review workflows know it
-needs a human pass. This merge is additive — unlike every other derivatives step,
-which regenerates and replaces its associatedMedia entries each run, caption
-generation only adds to whatever entry already exists.
+Machine-generated and unreviewed: when the gold item record is built, each caption
+is attached to the matching VideoObject/AudioObject associatedMedia entry (matched
+by the `identifier` stem — see above) as a nested `caption` MediaObject, and the
+record's `argonath:fieldSources` map records `"caption": "ai"` (see Field Sources
+below) so downstream review workflows know it needs a human pass.
 
 There's no standalone `digtk captions transcribe` command — captions are always
 generated as part of `derivatives()`, controllable via that command's
@@ -522,9 +514,20 @@ is decided per user and per collection/item, never per environment.
 ```
 gold/[group]/[collection]/[item]/
 ├── manifest.json        # structural: which bronze/silver snapshot this was promoted from
+├── item.jsonld.json     # domain: the item's canonical record — DC fields + associatedMedia
 └── ...                  # preservation/download products (layout set by the
                          # "land preservation/download products" follow-up work)
 ```
+
+`item.jsonld.json` is written only here, only by `digtk showcase build-item`
+(`digtk.models.digital_website.item_record`, Dagster's `pdc_generate_item_record`
+step) — never in bronze or silver. It is assembled in one pass: descriptive fields
+mapped from the bronze folder's `metadata.json` Dublin Core (see
+`digtk.lib.dc_mapping`), or from identifiers.json alone when there's no descriptive
+fragment, plus `associatedMedia`/`hasPart` read back from the item's published
+silver derivative manifests. Its `manifest.json` records the bronze folder it was
+built from (`"bronze"`), which is how `digtk.lib.items.resolve()` gets from the
+record's ARK back to the item's bronze location.
 
 `[group]/[collection]` mirror bronze and silver, minus the time segment. As everywhere
 else, gold entries reference the underlying blobs via `cask://` (CaskFS is
@@ -542,17 +545,13 @@ There is no per-environment copy of anything.
 Content reaches silver and gold by one of two paths, depending on the content type:
 
 - **Direct-write → silver.** The `digital_website` derivative pipeline
-  (`public-frontend-derivatives/`, `captions/`, and the `associatedMedia`/caption
-  portion of `item.jsonld.json`) writes straight from bronze into silver — these are
-  final derivative products with no review gate. So do the Dublin-Core-derived
-  descriptive fields (`name`/`description`/`creator`/`dateCreated`/`license`/
-  `publisher`/`about`/`identifier`), deterministically mapped from bronze's raw
-  Preservica metadata (see `digtk.lib.dc_mapping`).
-  `digtk.models.digital_website.pipeline.merge_dc_metadata()` and
-  `update_associated_media()` merge into disjoint sets of top-level keys on the same
-  silver `item.jsonld.json`, so either can run before or after the other without
-  clobbering the other's fields. `manifest.json` in each process directory records
-  the run/command that produced it (see "manifest.json" below).
+  (`public-frontend-derivatives/`, `captions/`) writes straight from bronze into
+  silver — these are final derivative products with no review gate.
+  `manifest.json` in each process directory records the run/command that produced
+  it (see "manifest.json" below).
+- **Built → gold.** The item record (`item.jsonld.json`, see above) is built from
+  bronze's metadata and silver's published derivatives once the derivative steps
+  are done.
 - **Promoted → gold.** Preservation/download products are promoted into gold from a
   specific bronze/silver group/time snapshot (gold promotion ops are not implemented
   yet). Because gold has no time dimension, its `manifest.json` is the only durable
@@ -562,10 +561,8 @@ Content reaches silver and gold by one of two paths, depending on the content ty
 ### Known gaps
 
 Code that still assumes the older per-app gold layout, to be updated by the follow-up
-work (nothing writes to gold today):
+work:
 
-- `digtk.lib.derivative.dest_path(type="gold")` builds `/gold/[app]/[collection]/...`
-  and requires `opts['app']`.
 - `dagster/lib/configs.py`'s `GOLD_APPS` / `SearchIndexConfig.app` (including `arda`,
   the cross-collection RAG aggregate, whose home is still to be decided).
 - The dc-showcase gateway's `CASKFS_GOLD_BASE_PATH` (default `/gold/dc-showcase`),
@@ -620,7 +617,7 @@ kinds of file, never merged into one:
 |---|---|---|
 | `manifest.json` | Structural/system: CaskFS layout facts, pipeline run records, item lists + hashes, promotion status | schema.org / descriptive fields |
 | `metadata.jsonld.json` / `<item>.jsonld.json` | Domain: schema.org descriptive metadata about the collection or item | Pipeline state, run history, promotion status |
-| `silver/[group]/[collection]/[time]/[item]/item.jsonld.json` | Domain: `schema:associatedMedia` refs to that item's derivatives (referencing the bronze original via `cask://` rather than copying it) merged with Dublin-Core-derived descriptive fields (see "How content arrives" above) | Pipeline state, run history, promotion status — and never the bronze sidecar's own fields, since bronze is immutable/append-only and this file lives in silver instead of amending it |
+| `gold/[group]/[collection]/[item]/item.jsonld.json` | Domain: the item's canonical record — `schema:associatedMedia` refs to its derivatives (referencing the bronze original via `cask://` rather than copying it) merged with Dublin-Core-derived descriptive fields (see "Gold Layout" above) | Pipeline state, run history, promotion status |
 
 This is a deliberate reaction against LDP's convention of mixing container/structural
 triples with a resource's own descriptive triples in one graph — CaskFS keeps them as
@@ -701,4 +698,6 @@ the one case that currently uses this (`original`/`small`/`medium`/`large`/
 - NAAN: `87287` (UC Davis Library)
 - Shoulder: `d7`
 - Format: `ark:/87287/d7[noid]`
-- NOID check-digit algorithm applied at mint time
+- argonath doesn't mint ARKs: an item's ARK comes from its source system (Preservica's
+  identifiers, copied into bronze's `identifiers.json`) and is first used by the gold
+  item record (see "Gold Layout")

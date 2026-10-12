@@ -422,34 +422,11 @@ def test_generate_cleans_up_temp_directory(fake_fs, fake_derivative, fake_image_
     assert not os.path.exists(captured_dirs[0])
 
 
-def test_generate_writes_associated_media_sidecar_with_dimensions(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
+def test_generate_never_writes_an_item_record(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     dw.generate(ARK, opts={"widths": WIDTHS})
 
-    sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
-    doc = json.loads(sidecar_write["data"])
-    assert doc["@id"] == ARK
-    assert doc["ark"] == ARK
-    assert len(doc["associatedMedia"]) == 3
-    for entry in doc["associatedMedia"]:
-        assert entry["@type"] == "ImageObject"
-        assert entry["width"] == 100 and entry["height"] == 200
-        assert entry["contentUrl"].startswith(
-            "cask://silver/g/c/latest/item/public-frontend-derivatives/images/photo.tiff/images/"
-        )
-
-
-def test_generate_merges_into_existing_sidecar(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
-    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
-    monkeypatch.setattr(pipeline.fs, "exists", lambda path: True)
-    monkeypatch.setattr(pipeline.fs, "read", lambda path: b'{"@id": "' + ARK.encode() + b'", "ark": "' + ARK.encode() + b'", "name": "Existing Title"}')
-
-    dw.generate(ARK, opts={"widths": WIDTHS})
-
-    sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
-    doc = json.loads(sidecar_write["data"])
-    assert doc["name"] == "Existing Title"
-    assert len(doc["associatedMedia"]) == 3
+    assert not any(c["rel_path"].endswith("item.jsonld.json") for c in fake_derivative)
 
 
 # --- generate() umbrella: multi-image item ----------------------------------
@@ -498,16 +475,25 @@ def test_generate_nests_multi_image_derivatives_by_source_filename(fake_fs, fake
     ]
 
 
-def test_generate_associated_media_covers_every_image_for_multi_image_item(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
+def test_media_objects_rebuilds_every_images_entries_from_published_manifests(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     use_multi_item(monkeypatch)
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
-
     dw.generate(ARK, opts={"widths": WIDTHS})
+    published = {
+        f"cask:/silver/g/c/latest/{c['rel_path']}": c["data"]
+        for c in fake_derivative if c["rel_path"].endswith("/images/manifest.json")
+    }
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: published[path])
 
-    sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
-    assert sorted(sidecar_write["source_files"]) == sorted(MULTI_ITEM.bronze_binary_paths)
-    doc = json.loads(sidecar_write["data"])
-    assert len(doc["associatedMedia"]) == 6  # 2 images x 3 sizes each
+    media = dw.media_objects(MULTI_ITEM)
+
+    assert len(media) == 6  # 2 images x 3 sizes each
+    for entry in media:
+        assert entry["@type"] == "ImageObject"
+        assert entry["width"] == 100 and entry["height"] == 200
+    assert media[0]["contentUrl"] == (
+        "cask://silver/g/c/latest/box-1/folder-3/public-frontend-derivatives/images/photo-a.tiff/images/small.jpg"
+    )
 
 
 # --- per-file mode + finalize ------------------------------------------------
@@ -554,13 +540,12 @@ def test_generate_per_file_rejects_an_unknown_file(fake_fs, fake_derivative, mon
 
 def test_per_file_runs_then_finalize_match_a_whole_item_run(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     """The point of finalize(): one-image-at-a-time runs plus finalize() leave
-    ocr/manifest.json and associatedMedia exactly as a whole-item generate() would."""
+    ocr/manifest.json exactly as a whole-item generate() would."""
     use_multi_item(monkeypatch)
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("deskewed"))
 
     dw.generate(ARK, opts={"widths": WIDTHS})
     whole_ocr = json.loads(_written(fake_derivative, "ocr/manifest.json")[0]["data"])
-    whole_sidecar = _written(fake_derivative, "item.jsonld.json")[0]
     fake_derivative.clear()
 
     for filename in ("photo-a.tiff", "photo-b.tiff"):
@@ -579,13 +564,8 @@ def test_per_file_runs_then_finalize_match_a_whole_item_run(fake_fs, fake_deriva
     assert finalized_ocr["params"] == whole_ocr["params"]
     assert finalized_ocr["outputs"] == whole_ocr["outputs"]
     assert ocr_write["source_files"] == MULTI_ITEM.bronze_binary_paths
-    sidecar_write = _written(fake_derivative, "item.jsonld.json")[0]
-    assert json.loads(sidecar_write["data"]) == json.loads(whole_sidecar["data"])
-    assert sidecar_write["source_files"] == whole_sidecar["source_files"]
-    assert result == {
-        "status": "success", "ark": ARK, "images": 2,
-        "ocr_manifest": finalized_ocr, "associated_media": 6,
-    }
+    assert not _written(fake_derivative, "item.jsonld.json")
+    assert result == {"status": "success", "item": "/bronze/g/c/latest/box-1/folder-3", "images": 2, "ocr_manifest": finalized_ocr}
 
 
 def test_finalize_writes_nothing_if_an_images_derivatives_are_missing(fake_fs, fake_derivative, monkeypatch):

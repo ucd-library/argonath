@@ -31,7 +31,7 @@ def test_formats_reports_every_format_present(monkeypatch):
     result = runner.invoke(app, ["showcase", "formats", ARK])
 
     assert result.exit_code == 0
-    assert last_json_line(result.output) == {"ark": ARK, "formats": ["image", "pdf"]}
+    assert last_json_line(result.output) == {"item": "/bronze/g/c/latest/item", "formats": ["image", "pdf"]}
 
 
 def test_formats_reports_empty_list_when_nothing_recognized(monkeypatch):
@@ -44,7 +44,7 @@ def test_formats_reports_empty_list_when_nothing_recognized(monkeypatch):
     result = runner.invoke(app, ["showcase", "formats", ARK])
 
     assert result.exit_code == 0
-    assert last_json_line(result.output) == {"ark": ARK, "formats": []}
+    assert last_json_line(result.output) == {"item": "/bronze/g/c/latest/item", "formats": []}
 
 
 def test_formats_routes_exception_through_utils_error(monkeypatch):
@@ -65,7 +65,7 @@ def test_formats_files_lists_each_formats_binaries(monkeypatch):
 
     assert result.exit_code == 0
     assert last_json_line(result.output) == {
-        "ark": ARK, "formats": ["image", "pdf"],
+        "item": "/bronze/g/c/latest/item", "formats": ["image", "pdf"],
         "files": {
             "image": ["cask:/bronze/g/c/latest/item/page.tif"],
             "pdf": ["cask:/bronze/g/c/latest/item/document.pdf"],
@@ -83,11 +83,11 @@ def test_formats_accepts_a_bronze_path_target(monkeypatch):
     assert result.exit_code == 0
     assert seen["target"] == ITEM_PATH
     out = last_json_line(result.output)
-    assert out["ark"] == ARK
+    assert out["item"] == "/bronze/g/c/latest/item"
     assert out["dir"] == "cask:/bronze/g/c/latest/item"
 
 
-def test_formats_succeeds_with_no_ark_when_item_has_none(monkeypatch):
+def test_formats_succeeds_and_reports_the_path_when_item_has_no_ark(monkeypatch):
     # The core fix: resolving a bronze-path item with no ARK is not an error —
     # format detection works the same either way.
     monkeypatch.setattr(items_lib, "resolve_target", lambda target, opts={}: NO_ARK_ITEM)
@@ -95,7 +95,7 @@ def test_formats_succeeds_with_no_ark_when_item_has_none(monkeypatch):
     result = runner.invoke(app, ["showcase", "formats", ITEM_PATH])
 
     assert result.exit_code == 0
-    assert last_json_line(result.output) == {"ark": None, "formats": ["image", "pdf"]}
+    assert last_json_line(result.output) == {"item": "/bronze/g/c/latest/item", "formats": ["image", "pdf"]}
 
 
 def test_formats_requires_a_target():

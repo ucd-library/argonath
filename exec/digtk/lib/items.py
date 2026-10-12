@@ -9,7 +9,10 @@ but never required to resolve or process an item. resolve_path() resolves an
 item directly from its bronze folder, with no ARK lookup at all; resolve()
 resolves from an ARK instead, via CaskFS's Layer-3 `/cask/find` search
 (digtk.lib.fs.find_by_subject) — useful when that's the only identifier in
-hand (e.g. a caller addressing an item by ARK alone). Both return the same
+hand (e.g. a caller addressing an item by ARK alone) — through a bronze
+'<binary>.jsonld.json' sidecar, or the item's gold item.jsonld.json record
+once one has been built (see digtk.models.digital_website.item_record). Both
+return the same
 ItemLocation shape, so every phase (derivatives, OCR, metadata) resolves items
 the same way regardless of which identifier it started from.
 
@@ -37,13 +40,17 @@ import json
 import re
 from dataclasses import dataclass
 
-from digtk.lib import derivative, fs
+from digtk.lib import dc_mapping, derivative, fs
 
 BRONZE_PREFIX = "/bronze/"
+GOLD_PREFIX = "/gold/"
 SIDECAR_SUFFIX = ".jsonld.json"
+# An item's canonical record, written only to gold (see
+# digtk.models.digital_website.item_record) — never to bronze or silver.
+ITEM_RECORD_FILENAME = f"item{SIDECAR_SUFFIX}"
 WORKSPACE_PREFIX = "/workspace/"
 # Mirrors digtk.models.collection's _is_ark() — this module already has source-
-# convention awareness for item.jsonld.json/tree (see ark_for_path()), so knowing
+# convention awareness for identifiers.json/tree (see ark_for_path()), so knowing
 # an ark's shape here too is the same category of knowledge, not new layering.
 _ARK_RE = re.compile(r"^ark:/")
 # Fixed subdirectories under a workspace collection: staged source binaries go in
@@ -77,14 +84,10 @@ class ItemLocation:
         or more source binaries, sorted — bronze binaries for a resolve()'d/
         resolve_path()'d item, workspace source/ binaries for a resolve_workspace()'d one.
     :param str sidecar_path: CaskFS path ('cask:/....jsonld.json') to the item's
-        canonical bronze sidecar. Usually bronze_binary_paths[0] + '.jsonld.json',
-        but not for a standalone 'item.jsonld.json' sidecar (see resolve()) — a
-        fixed name describing every binary under item_path, not one co-located
-        binary of the same name — so callers that need the sidecar itself
-        should read this field rather than reconstructing it from
-        bronze_binary_paths. None for a workspace item (no sidecar yet), a
-        bronze item with no sidecar at all, and for test fixtures built by
-        hand; resolve() always sets a real value.
+        bronze sidecar — bronze_binary_paths[0] + '.jsonld.json', for an item
+        ingested with one (see digtk.commands.ingest). None for a workspace
+        item, a bronze tree/ item (its descriptive metadata is its folder's
+        metadata.json — see metadata_for()), and test fixtures built by hand.
     :param str dest_type: digtk.lib.derivative type this item's outputs are
         written as — 'silver' (default, a bronze item) or 'workspace'.
     :param str dest_prefix: Path segment placed before item_path in every
@@ -119,19 +122,16 @@ def _parse_bronze_path(path):
     return group, collection, time, item_path, filename
 
 
-_STANDALONE_SIDECAR_FILENAME = "item"
 _NON_BINARY_FILENAMES = {"metadata.json", "identifiers.json", "children.json", "entity.json", "representations.json"}
 
 
 def _list_item_binaries(group, collection, time, item_path):
     """List every real binary file under an item's directory tree.
 
-    Used for the standalone-sidecar case in resolve() (a fixed-name
-    'item.jsonld.json' describing every binary under item_path, not one
-    co-located binary sharing its name) — e.g. Preservica's tree/<slug>/
-    layout, where an item's actual binaries sit one level deeper under
-    Access/Preservation representation-type subdirectories, not flat
-    alongside the sidecar the way the single-binary convention assumes.
+    Used for a folder-addressed item (resolve_path(), and resolve() through a
+    gold item record) — e.g. Preservica's tree/<slug>/ layout, where an
+    item's actual binaries sit one level deeper under Access/Preservation
+    representation-type subdirectories.
 
     :param str group: Bronze group namespace.
     :param str collection: Bronze collection name.
@@ -163,36 +163,67 @@ def _is_binary(filename):
     return not filename.endswith(SIDECAR_SUFFIX) and filename not in _NON_BINARY_FILENAMES
 
 
+def _resolve_gold_record(ark, record_path):
+    """Resolve an ARK through its gold item record — the item's bronze folder
+    comes from the gold manifest.json written alongside it (gold has no time
+    dimension, so the record's own path can't say which bronze snapshot it
+    was built from).
+
+    :param str ark: ARK identifier.
+    :param str record_path: '/gold/.../item.jsonld.json' match for `ark`.
+    :returns: Resolved item location.
+    :rtype: ItemLocation
+    :raises LookupError: If the gold manifest is missing or names no bronze folder.
+    """
+    manifest_path = f"cask:{record_path.rsplit('/', 1)[0]}/manifest.json"
+    if not fs.exists(manifest_path):
+        raise LookupError(f"no manifest.json next to {record_path} — cannot find {ark}'s bronze folder")
+    bronze = json.loads(fs.read(manifest_path)).get("bronze")
+    if not bronze:
+        raise LookupError(f"{manifest_path} names no bronze folder for {ark}")
+    group, collection, time, item_path = _parse_bronze_folder(bronze)
+    return ItemLocation(
+        ark=ark, group=group, collection=collection, time=time, item_path=item_path,
+        bronze_binary_paths=_list_item_binaries(group, collection, time, item_path),
+    )
+
+
 def resolve(ark, opts={}):
     """Resolve an ARK to its bronze item location (one or more binaries).
 
-    Finds every bronze sidecar file whose `@id` is the ARK — one for a
-    single-binary item, more than one when the item is a multi-image box/folder —
-    and derives each binary path by stripping the sidecar's '.jsonld.json' suffix.
+    Finds every bronze '<binary>.jsonld.json' sidecar whose `@id` is the ARK —
+    one for a single-binary item, more than one when the item is a multi-image
+    box/folder — and derives each binary path by stripping the sidecar's
+    '.jsonld.json' suffix.
 
-    Exception: a sidecar literally named 'item.jsonld.json' (docs/cask-
-    conventions.md's `<item>.jsonld.json` domain-sidecar convention, used e.g.
-    by Preservica's tree/<slug>/ layout) describes every binary under its own
-    directory, not one binary of the same name — stripping the suffix there
-    would point at a file that doesn't exist. In that case every real file
-    under item_path is listed instead (see _list_item_binaries()).
+    An item with no bronze sidecar (e.g. a Preservica tree/<slug>/ item) is
+    found through its gold item.jsonld.json record instead (see
+    _resolve_gold_record()), so it only resolves by ARK once that record has
+    been built — address it by its bronze folder (resolve_path()) before then.
 
     :param str ark: ARK identifier, e.g. 'ark:/87287/d7abc1234'.
     :param dict opts: Forwarded to fs.find_by_subject() (e.g. 'predicate' override).
     :returns: Resolved item location.
     :rtype: ItemLocation
-    :raises LookupError: If no bronze sidecar matches the ARK, or matching binaries
-        don't all share the same group/collection/time/item_path (a data-integrity
-        problem — binaries sharing an ARK should live in the same item location).
+    :raises LookupError: If neither a bronze sidecar nor a gold record matches
+        the ARK, or matching binaries don't all share the same
+        group/collection/time/item_path (a data-integrity problem — binaries
+        sharing an ARK should live in the same item location).
     """
     matches = fs.find_by_subject(ark, opts)
     sidecar_paths = sorted(
         m for m in matches
         if m.startswith(BRONZE_PREFIX) and m.endswith(SIDECAR_SUFFIX)
+        and m.rsplit("/", 1)[-1] != ITEM_RECORD_FILENAME
     )
 
     if not sidecar_paths:
-        raise LookupError(f"Expected exactly one bronze sidecar for {ark}, found 0")
+        records = sorted(m for m in matches if m.startswith(GOLD_PREFIX) and m.endswith(f"/{ITEM_RECORD_FILENAME}"))
+        if len(records) > 1:
+            raise LookupError(f"Expected one gold item record for {ark}, found {len(records)}: {records}")
+        if records:
+            return _resolve_gold_record(ark, records[0])
+        raise LookupError(f"Expected a bronze sidecar or gold item record for {ark}, found neither")
 
     binary_paths = [p[: -len(SIDECAR_SUFFIX)] for p in sidecar_paths]
     parsed = [_parse_bronze_path(p) for p in binary_paths]
@@ -204,27 +235,15 @@ def resolve(ark, opts={}):
         )
 
     group, collection, time, item_path = locations.pop()
-    filenames = {filename for *_, filename in parsed}
-
-    if filenames == {_STANDALONE_SIDECAR_FILENAME}:
-        bronze_binary_paths = _list_item_binaries(group, collection, time, item_path)
-    else:
-        bronze_binary_paths = [f"cask:{p}" for p in binary_paths]
-
     return ItemLocation(
         ark=ark,
         group=group,
         collection=collection,
         time=time,
         item_path=item_path,
-        bronze_binary_paths=bronze_binary_paths,
+        bronze_binary_paths=[f"cask:{p}" for p in binary_paths],
         sidecar_path=f"cask:{sidecar_paths[0]}",
     )
-
-
-# Standalone item sidecar name (see resolve()'s 'item.jsonld.json' exception) —
-# the file a tree/ item folder is identified by when addressed by path.
-ITEM_SIDECAR_FILENAME = f"{_STANDALONE_SIDECAR_FILENAME}{SIDECAR_SUFFIX}"
 
 
 def normalize_bronze_path(path):
@@ -247,35 +266,22 @@ def normalize_bronze_path(path):
 
 
 def ark_for_path(path):
-    """Look up the ARK of the item whose folder is `path`.
-
-    Reads the folder's own 'item.jsonld.json' sidecar first (its 'ark', falling
-    back to '@id'), the same fields digtk.models.collection.list_item_arks()
-    reads. Falls back to 'identifiers.json' (unconditionally written for every
-    Preservica tree item — see digtk.models.collection._write_tree_child() —
-    whereas item.jsonld.json is only written when a descriptive metadata
-    fragment was *also* found, a separate, independent condition from whether
-    the entity has an ark at all) when item.jsonld.json is absent or has none.
+    """Look up the ARK of the item whose folder is `path`, from its
+    'identifiers.json' (written for every Preservica tree item — see
+    digtk.models.collection._write_tree_child()).
 
     Lets a caller address an item by its bronze folder (e.g. Dagster's
-    process_item_job, keyed by the tree/ path rather than the ARK) and then go
-    through resolve() like every other ARK-based command.
+    process_item_job, keyed by the tree/ path rather than the ARK) and still
+    know its ARK.
 
     :param str path: Item folder, e.g. 'bronze/preservica/haeger/latest/tree/quarter-mile'
         (any form normalize_bronze_path() accepts).
     :returns: The item's ARK, e.g. 'ark:/87287/d7abc1234'.
     :rtype: str
     :raises ValueError: If `path` isn't a bronze path.
-    :raises LookupError: If neither item.jsonld.json nor identifiers.json carries an ARK.
+    :raises LookupError: If identifiers.json is missing or carries no ARK.
     """
     folder = normalize_bronze_path(path)
-    sidecar = f"cask:{folder}/{ITEM_SIDECAR_FILENAME}"
-    if fs.exists(sidecar):
-        doc = json.loads(fs.read(sidecar))
-        ark = doc.get("ark") or doc.get("@id")
-        if ark and _ARK_RE.match(str(ark)):
-            return ark
-
     identifiers_path = f"cask:{folder}/identifiers.json"
     if fs.exists(identifiers_path):
         for entry in json.loads(fs.read(identifiers_path)):
@@ -283,7 +289,7 @@ def ark_for_path(path):
             if _ARK_RE.match(value):
                 return value
 
-    raise LookupError(f"MISSING ARK: no ark in {folder}/{ITEM_SIDECAR_FILENAME} or identifiers.json")
+    raise LookupError(f"MISSING ARK: no ark in {folder}/identifiers.json")
 
 
 def _parse_bronze_folder(path):
@@ -326,52 +332,63 @@ def resolve_path(path, opts={}):
         ark = ark_for_path(path)
     except LookupError:
         ark = None
-    sidecar = f"cask:{normalize_bronze_path(path)}/{ITEM_SIDECAR_FILENAME}"
     return ItemLocation(
         ark=ark, group=group, collection=collection, time=time, item_path=item_path,
         bronze_binary_paths=bronze_binary_paths,
-        sidecar_path=sidecar if fs.exists(sidecar) else None,
     )
 
 
 def metadata(ark, opts={}):
-    """Read an item's existing bronze descriptive metadata.
-
-    Reads the item's own bronze sidecar (location.sidecar_path) — bronze is
-    immutable/append-only and every binary sharing an ARK was ingested from
-    the same source record, so this one sidecar is treated as authoritative
-    for item-level fields across this codebase.
+    """Read an item's existing bronze descriptive metadata (see metadata_for()).
 
     :param str ark: ARK identifier, e.g. 'ark:/87287/d7abc1234'.
     :param dict opts: Forwarded to resolve().
     :returns: See metadata_for().
     :rtype: dict
-    :raises LookupError: If no bronze sidecar matches the ARK (see resolve()).
+    :raises LookupError: If the ARK doesn't resolve (see resolve()).
     """
     return metadata_for(resolve(ark, opts))
 
 
 def metadata_for(item):
-    """Read an already-resolved item's descriptive metadata from its sidecar.
+    """Read an already-resolved item's descriptive metadata from bronze.
 
-    Same mapping as metadata(), without a second resolve() round-trip. A
-    workspace item has no sidecar yet, so every field is None for it — callers
-    fall back to filename-derived values (e.g. a PDF title) on their own.
+    Same mapping as metadata(), without a second resolve() round-trip. Reads
+    the item's bronze sidecar when it has one (bronze is immutable/append-only
+    and every binary sharing an ARK was ingested from the same source record,
+    so this one sidecar is authoritative for item-level fields); otherwise the
+    Dublin Core in its bronze folder's metadata.json (a Preservica tree/ item —
+    see digtk.lib.dc_mapping). A workspace item has neither, so every field is
+    None for it — callers fall back to filename-derived values (e.g. a PDF
+    title) on their own.
 
     :param ItemLocation item: Resolved item location.
     :returns: {"title": str|None, "description": str|None, "date": str|None,
-        "creator": the sidecar's raw 'creator' value|None} — mapped from the
-        sidecar's schema.org 'name'/'description'/'dateCreated'/'creator' keys.
+        "creator": the raw creator value|None}.
     :rtype: dict
     """
-    if not item.sidecar_path:
-        return {"title": None, "description": None, "date": None, "creator": None}
-    doc = json.loads(fs.read(item.sidecar_path))
+    if item.sidecar_path:
+        doc = json.loads(fs.read(item.sidecar_path))
+        return {
+            "title": doc.get("name"),
+            "description": doc.get("description"),
+            "date": doc.get("dateCreated"),
+            "creator": doc.get("creator"),
+        }
+    empty = {"title": None, "description": None, "date": None, "creator": None}
+    if item.dest_type != "silver":
+        return empty
+    folder = f"{BRONZE_PREFIX}{item.group}/{item.collection}/{item.time}/{item.item_path}".rstrip("/")
+    metadata_path = f"cask:{folder}/metadata.json"
+    if not fs.exists(metadata_path):
+        return empty
+    content = json.loads(fs.read(metadata_path))
+    dc = dc_mapping.extract_dublin_core(content)
     return {
-        "title": doc.get("name"),
-        "description": doc.get("description"),
-        "date": doc.get("dateCreated"),
-        "creator": doc.get("creator"),
+        "title": dc["title"] or (content.get("preservica") or {}).get("title"),
+        "description": dc["description"],
+        "date": dc["date"],
+        "creator": dc["creator"],
     }
 
 
@@ -506,16 +523,15 @@ def resolve_target(target, opts={}):
 
 
 def item_id(item):
-    """Human-readable identifier for an item, for results and logs.
+    """Identifier for an item in derivative outputs, results and logs — always
+    its path, never its ARK, so every derivative step labels an item the same
+    way whether or not it has one (the ARK only matters from the gold item
+    record onward — see digtk.models.digital_website.item_record).
 
     :param ItemLocation item: Resolved item location.
-    :returns: The ARK if the item has one; otherwise its workspace source
-        directory path (a workspace item never has an ark) or, for a bronze
-        item resolved with no ark, its bronze folder path.
+    :returns: Its workspace source directory path, or its bronze folder path.
     :rtype: str
     """
-    if item.ark:
-        return item.ark
     if item.dest_type == "workspace":
         root = workspace_source_root(item.group, item.collection)
         return f"{root}/{item.item_path}" if item.item_path else root

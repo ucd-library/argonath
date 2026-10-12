@@ -191,7 +191,7 @@ class ItemRunConfig(CollectionDerivativesConfig):
     its bronze tree folder, plus CollectionDerivativesConfig's widths/max_steps.
 
     `item` defaults to "" only because lib.utils.default_run_config() builds
-    the launchpad defaults with `cls()`; plan_item rejects an empty value.
+    the launchpad defaults with `cls()`; pdc_plan_item rejects an empty value.
 
     :param str widths: Comma-separated thumbnail widths.
     :param int max_steps: Most derivative steps the item's files may produce;

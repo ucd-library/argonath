@@ -34,7 +34,6 @@ import typer
 from digtk.lib import preservica, utils
 from digtk.lib.preservica import PreservicaAuthError, PreservicaRequestError
 from digtk.models import collection as collection_model
-from digtk.models.digital_website import pipeline
 
 app = typer.Typer(help="Pull a collection out of Preservica into bronze.", no_args_is_help=True)
 
@@ -243,22 +242,6 @@ def sync(
     })
 
 
-def _merge_dc_metadata(item_metadata_list):
-    """Merge each newly tree-built item's Dublin-Core-derived metadata into its
-    silver item.jsonld.json — tolerant of per-item failure (e.g. an item whose
-    ARK hasn't been minted into bronze's by-ref/ sidecar yet, see
-    digtk.lib.items.resolve()'s phase-0.3 dependency) so one bad item never
-    fails the whole tree rebuild/patch.
-
-    :param list[digtk.lib.schema.ItemMetadata] item_metadata_list: Items to merge.
-    """
-    for item_metadata in item_metadata_list:
-        try:
-            pipeline.merge_dc_metadata(item_metadata)
-        except (LookupError, OSError, RuntimeError, ValueError) as e:
-            utils.log(f"Warning: could not merge DC metadata for {item_metadata.ark}: {e}")
-
-
 @app.command("tree")
 def tree(
     collection: Annotated[str, typer.Option(help="Collection name.")],
@@ -276,13 +259,8 @@ def tree(
         "(or its cask:/ default) the matching `import` run used.",
     )] = None,
 ):
-    """Rebuild bronze's tree/ layout from an already-imported by-ref/, and merge
-    any Dublin-Core-derived schema.org metadata discovered along the way into
-    the silver item.jsonld.json for each affected item (see
-    digtk.models.digital_website.pipeline.merge_dc_metadata()). Makes no
-    network calls to Preservica — reads only what's already in bronze. A
-    metadata merge failure for one item is logged and skipped rather than failing the
-    whole tree rebuild/patch."""
+    """Rebuild bronze's tree/ layout from an already-imported by-ref/. Makes no
+    network calls to Preservica — reads only what's already in bronze."""
     opts = {"dest_root": dest_root}
 
     if changed:
@@ -303,19 +281,14 @@ def tree(
             f"-{len(result['removed'])} removed, ~{len(result['moved'])} moved"
             + (f", {len(result['unresolved'])} unresolved" if result["unresolved"] else "")
         )
-        _merge_dc_metadata(result["item_metadata"])
-        utils.result({
-            "status": "success", "collection": collection,
-            **{k: v for k, v in result.items() if k != "item_metadata"},
-        })
+        utils.result({"status": "success", "collection": collection, **result})
         return
 
     try:
-        count, item_metadata = collection_model.preservica_tree(collection, group, opts)
+        count = collection_model.preservica_tree(collection, group, opts)
     except FileNotFoundError as e:
         utils.error(str(e))
 
-    _merge_dc_metadata(item_metadata)
     utils.result({"status": "success", "collection": collection, "items": count})
 
 

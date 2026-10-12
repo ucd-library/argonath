@@ -118,7 +118,7 @@ def test_resolved_settings_reports_secret_set(monkeypatch):
 
 def test_resolved_settings_reports_non_secret_config_values():
     resolved = config.resolved_settings()
-    assert resolved["ark.naan"] == config.CONFIG["ark"]["naan"]
+    assert resolved["fs.chunk_size"] == config.CONFIG["fs"]["chunk_size"]
     assert resolved["search.top_k"] == config.CONFIG["search"]["top_k"]
 
 

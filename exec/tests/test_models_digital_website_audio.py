@@ -134,16 +134,31 @@ def test_derivatives_writes_transcode_and_waveform_together(fake_fs, fake_deriva
     assert audio_result["dir"] == "cask:/silver/g/c/latest/item/public-frontend-derivatives/interview.wav"
 
 
-def test_derivatives_writes_audio_object_with_identifier(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
+def test_derivatives_never_writes_an_item_record(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
     aw.derivatives(ARK, opts={})
-    sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
-    doc = json.loads(sidecar_write["data"])
-    assert len(doc["associatedMedia"]) == 1
-    media = doc["associatedMedia"][0]
-    assert media["@type"] == "AudioObject"
-    assert media["identifier"] == "interview"
-    assert media["contentUrl"] == "cask://silver/g/c/latest/item/public-frontend-derivatives/interview.wav/converted.mp3"
-    assert media["encodingFormat"] == "audio/mp3"
+    assert not any(c["rel_path"].endswith("item.jsonld.json") for c in fake_derivative)
+
+
+def test_media_objects_builds_audio_object_from_published_manifest(monkeypatch):
+    audio_dir = "cask:/silver/g/c/latest/item/public-frontend-derivatives/interview.wav"
+    manifests = {f"{audio_dir}/manifest.json": json.dumps({"outputs": ["converted.mp3", "waveform-1024x256.png"]}).encode()}
+    monkeypatch.setattr(aw.fs, "read", lambda path: manifests[path])
+
+    media = aw.media_objects(ITEM)
+
+    assert media == [{
+        "@type": "AudioObject",
+        "identifier": "interview",
+        "contentUrl": "cask://silver/g/c/latest/item/public-frontend-derivatives/interview.wav/converted.mp3",
+        "encodingFormat": "audio/mp3",
+    }]
+
+
+def test_media_objects_raises_without_a_transcoded_copy(monkeypatch):
+    monkeypatch.setattr(aw.fs, "read", lambda path: json.dumps({"outputs": ["waveform-1024x256.png"]}).encode())
+
+    with pytest.raises(FileNotFoundError, match="no transcoded audio"):
+        aw.media_objects(ITEM)
 
 
 def test_derivatives_multi_audio_item_nests_by_source_filename(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper, monkeypatch):

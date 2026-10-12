@@ -109,7 +109,7 @@ def fake_whisper(monkeypatch):
 
 def test_probe_reports_per_source(fake_fs, fake_ffmpeg):
     result = vw.probe(ARK)
-    assert result == {"status": "success", "ark": ARK, "streams": {"video": {"duration_s": 10.0, "bit_rate": 1000, "streams": []}}}
+    assert result == {"status": "success", "item": "/bronze/g/c/latest/item", "streams": {"video": {"duration_s": 10.0, "bit_rate": 1000, "streams": []}}}
     assert len(fake_ffmpeg["probe"]) == 1
     assert fake_ffmpeg["probe"][0].endswith("video.mp4")
 
@@ -146,17 +146,31 @@ def test_derivatives_publishes_stream_per_source(fake_fs, fake_derivative, fake_
     assert "playlist.m3u8" in stream_result["outputs"]
 
 
-def test_derivatives_writes_video_object_with_identifier(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
+def test_derivatives_never_writes_an_item_record(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
     vw.derivatives(ARK, opts={"resolutions": "360p"})
+    assert not any(c["rel_path"].endswith("item.jsonld.json") for c in fake_derivative)
 
-    sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
-    doc = json.loads(sidecar_write["data"])
-    assert len(doc["associatedMedia"]) == 1
-    media = doc["associatedMedia"][0]
-    assert media["@type"] == "VideoObject"
-    assert media["identifier"] == "video"
-    assert media["contentUrl"] == "cask://silver/g/c/latest/item/public-frontend-derivatives/video.mp4/streaming/playlist.m3u8"
-    assert "thumbnailUrl" not in media
+
+def test_media_objects_builds_video_object_from_published_manifest(monkeypatch):
+    stream_dir = "cask:/silver/g/c/latest/item/public-frontend-derivatives/video.mp4/streaming"
+    manifests = {f"{stream_dir}/manifest.json": json.dumps({"outputs": ["360p.m3u8", "playlist.m3u8"]}).encode()}
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: manifests[path])
+
+    media = vw.media_objects(ITEM)
+
+    assert media == [{
+        "@type": "VideoObject",
+        "identifier": "video",
+        "contentUrl": "cask://silver/g/c/latest/item/public-frontend-derivatives/video.mp4/streaming/playlist.m3u8",
+        "encodingFormat": "application/vnd.apple.mpegurl",
+    }]
+
+
+def test_media_objects_raises_without_a_playlist(monkeypatch):
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps({"outputs": ["360p.m3u8"]}).encode())
+
+    with pytest.raises(FileNotFoundError, match="no HLS playlist"):
+        vw.media_objects(ITEM)
 
 
 def test_derivatives_multi_video_item_nests_by_source_filename(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper, monkeypatch):

@@ -27,7 +27,7 @@ import urllib.parse
 import httpx
 
 from digtk.lib import items, fs
-from digtk.models.digital_website import pipeline
+from digtk.models.digital_website import item_record, pipeline
 
 ES_HOST_ENV = "DAMS_ES_HOST"
 ES_INDEX_ENV = "DAMS_ES_INDEX"
@@ -59,43 +59,6 @@ CASK_FILE_PREFIX = "/cask/file/"
 IMAGE_LIST_TYPE = "http://digital.ucdavis.edu/schema#ImageList"
 
 
-def _load_bronze_sidecar(sidecar_path):
-    """Reads and parses the item's bronze JSON-LD sidecar - the original
-    ingested metadata (name, description, creator, etc.), immutable/append-only.
-
-    :param str sidecar_path: A 'cask:/....jsonld.json' path, as returned in
-        ItemLocation.sidecar_path.
-    :returns: Parsed JSON-LD.
-    :rtype: dict
-    """
-    raw = fs.read(sidecar_path)
-    return json.loads(raw)
-
-
-def _load_derivative_sidecar(location):
-    """Reads the item's silver item.jsonld.json - NOT the bronze sidecar.
-
-    associatedMedia is deliberately never written to the bronze sidecar
-    (bronze is immutable/append-only) - it lives in this separate silver
-    file instead, written by pipeline.update_associated_media(). Reuses
-    pipeline.derivative_dir() to build the exact same path that function
-    writes to, rather than duplicating the convention here (its
-    rel_path = f"{item.item_path}/{subdir}" matches
-    update_associated_media()'s own rel_path exactly when subdir is
-    "item.jsonld.json").
-
-    :param digtk.lib.items.ItemLocation location:
-    :returns: Parsed JSON-LD, or {} if derivatives haven't been generated yet.
-    :rtype: dict
-    """
-    sidecar_path = pipeline.derivative_dir(location, "item.jsonld.json")
-    try:
-        raw = fs.read(sidecar_path)
-    except FileNotFoundError:
-        return {}
-    return json.loads(raw)
-
-
 def _normalize_type(type_value, default):
     """Normalizes a JSON-LD @type value to a list.
 
@@ -104,7 +67,7 @@ def _normalize_type(type_value, default):
     bare string, which is what a naive sidecar.get("@type") read would
     produce for a single-valued type.
 
-    :param type_value: Bronze sidecar's raw @type value (str, list, or None).
+    :param type_value: Item record's raw @type value (str, list, or None).
     :param str default: Fallback type if type_value is empty.
     :returns: @type as a list.
     :rtype: list
@@ -117,7 +80,7 @@ def _normalize_type(type_value, default):
 
 
 def _normalize_creator(creator):
-    """Shapes a bronze sidecar's creator value as the node(s) the DAMS index
+    """Shapes an item record's creator value as the node(s) the DAMS index
     expects.
 
     The item index maps @graph.creator as an object ({"@id", "name"}), so a
@@ -410,31 +373,31 @@ def build_document(ark):
     collections are only named strings (group/collection) today - there's no
     collection-level ark to link to until collection ark-minting exists.
 
+    Everything comes from the item's gold item.jsonld.json (see
+    digtk.models.digital_website.item_record), so it must be built first.
+
     :param str ark: Item ARK.
     :returns: ES document body, shaped like transform.js's {"@id", "@graph": [...]}.
     :rtype: dict
+    :raises FileNotFoundError: If the item's record hasn't been built yet.
     """
     location = items.resolve(ark)
-    bronze_sidecar = _load_bronze_sidecar(location.sidecar_path)
-    derivative_sidecar = _load_derivative_sidecar(location)
-
-    associated_media = derivative_sidecar.get("associatedMedia") or []
-    if not isinstance(associated_media, list):
-        associated_media = [associated_media]
+    record = item_record.read(location)
+    associated_media = item_record.flat_media(record)
 
     fin_path = f"/item/{ark}"
-    base_type = _normalize_type(bronze_sidecar.get("@type"), "http://schema.org/MediaObject")
-    name = bronze_sidecar.get("name")
+    base_type = _normalize_type(record.get("@type"), "http://schema.org/MediaObject")
+    name = record.get("name")
 
     root = {
         "@id": fin_path,
         "@type": base_type,
         "name": name,
-        "description": bronze_sidecar.get("description"),
-        "creator": _normalize_creator(bronze_sidecar.get("creator")),
-        "subjects": bronze_sidecar.get("about"),
+        "description": record.get("description"),
+        "creator": _normalize_creator(record.get("creator")),
+        "subjects": record.get("about"),
         "identifier": ark,
-        "fileFormat": bronze_sidecar.get("encodingFormat"),
+        "fileFormat": record.get("encodingFormat"),
     }
 
     top, children = _media_nodes(location, fin_path, _group_media_by_source(associated_media))

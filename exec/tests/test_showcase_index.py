@@ -22,6 +22,7 @@ def manifest(monkeypatch):
             return served[path]
         raise FileNotFoundError(path)
     monkeypatch.setattr(showcase_index.fs, "read", fake_read)
+    monkeypatch.setattr(showcase_index.item_record.fs, "read", fake_read)
 
     def set_doc(doc):
         served[MANIFEST_PATH] = json.dumps(doc).encode()
@@ -251,8 +252,9 @@ SILVER = "cask://silver/g/c/latest/item"
 PFD = f"{SILVER}/public-frontend-derivatives"
 LOCATION = ItemLocation(
     ark=ARK, group="g", collection="c", time="latest", item_path="item",
-    bronze_binary_paths=[], sidecar_path="cask:/bronze/g/c/latest/item/item.jsonld.json",
+    bronze_binary_paths=[],
 )
+RECORD_PATH = "cask:/gold/g/c/item/item.jsonld.json"
 
 
 def _image_entries(filename):
@@ -265,12 +267,12 @@ def _image_entries(filename):
 
 @pytest.fixture
 def item_files(monkeypatch):
-    """A fake CaskFS for one item: bronze + silver sidecars, plus any extra
+    """A fake CaskFS for one item: its gold item record, plus any extra
     files a test adds (manifests); everything else is missing."""
-    files = {LOCATION.sidecar_path: {"name": "An item", "creator": "Someone"}}
+    files = {RECORD_PATH: {"name": "An item", "creator": "Someone"}}
 
     def set_media(entries):
-        files["cask:/silver/g/c/latest/item/item.jsonld.json"] = {"associatedMedia": entries}
+        files[RECORD_PATH]["associatedMedia"] = entries
 
     def fake_read(path):
         if path not in files:
@@ -373,6 +375,26 @@ def test_build_document_makes_an_image_list_for_several_images(item_files):
     assert page1["fileFormat"] == "image/tiff"
     # a page's download is a single entry — the website collects them into the list's download
     assert isinstance(page1["clientMedia"]["download"], dict)
+
+
+def test_build_document_reads_has_part_pages_from_the_gold_record(item_files):
+    item_files[RECORD_PATH]["associatedMedia"] = []
+    item_files[RECORD_PATH]["hasPart"] = [
+        {"argonath:sourceGroup": "image", "position": 1, "associatedMedia": _image_entries("page_001.tif")},
+        {"argonath:sourceGroup": "image", "position": 2, "associatedMedia": _image_entries("page_002.tif")},
+    ]
+
+    document = showcase_index.build_document(ARK)
+    nodes = _graph(document)
+
+    list_id = f"/item/{ARK}/images"
+    assert nodes[list_id]["hasPart"] == [{"@id": f"{list_id}/1"}, {"@id": f"{list_id}/2"}]
+
+
+def test_build_document_requires_the_gold_record(item_files):
+    del item_files[RECORD_PATH]
+    with pytest.raises(FileNotFoundError):
+        showcase_index.build_document(ARK)
 
 
 def test_build_document_without_derivatives_is_just_the_root(item_files):
