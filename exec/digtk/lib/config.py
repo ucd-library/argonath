@@ -185,6 +185,11 @@ CAPTIONS_MODEL_ENV = "DIGTK_CAPTIONS_MODEL"
 CAPTIONS_WHISPER_BIN_ENV = "DIGTK_CAPTIONS_WHISPER_BIN"
 CAPTIONS_TIMEOUT_S_ENV = "DIGTK_CAPTIONS_TIMEOUT_S"
 
+# The gold "app" segment (see digtk.lib.derivative.dest_path(type="gold")) item_record
+# promotes an item's canonical record into — which consuming project/environment reads
+# it (e.g. "digital-dev", "digital-prod" — matches dagster/lib/configs.py's GOLD_APPS).
+SHOWCASE_GOLD_PROJECT_ENV = "DIGTK_SHOWCASE_GOLD_PROJECT"
+
 # The shared postgres instance's default 'postgres' database — same one
 # cask/anduin-gateway connect to (distinct from CONFIG["postgres"]'s own
 # dedicated 'argonath' database above, and from Dagster's own run/event
@@ -292,6 +297,7 @@ SETTINGS = [
     {"dotpath": "captions.model", "env": CAPTIONS_MODEL_ENV, "cast": str, "secret": False},
     {"dotpath": "captions.whisper_bin", "env": CAPTIONS_WHISPER_BIN_ENV, "cast": str, "secret": False},
     {"dotpath": "captions.timeout_s", "env": CAPTIONS_TIMEOUT_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "showcase.gold_project", "env": SHOWCASE_GOLD_PROJECT_ENV, "cast": str, "secret": False},
     {"dotpath": "ocr.orientation_word_count_threshold", "env": OCR_ORIENTATION_WORD_COUNT_THRESHOLD_ENV, "cast": int, "secret": False},
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_angle_threshold", "env": OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, "cast": float, "secret": False},
@@ -592,6 +598,9 @@ CONFIG = {
         "whisper_bin": _env(CAPTIONS_WHISPER_BIN_ENV, "whisper"),
         "timeout_s": _env(CAPTIONS_TIMEOUT_S_ENV, 3600.0, float),
     },
+    "showcase": {
+        "gold_project": _env(SHOWCASE_GOLD_PROJECT_ENV, "digital-dev"),
+    },
     "postgres": {
         # argonath's own app-level schema (collection registry, etc.) — the shared
         # Postgres/pgvector instance project-anduin provisions, not Dagster's own
@@ -755,6 +764,12 @@ CaptionsLanguageOption = Annotated[str, typer.Option(
 CaptionsModelOption = Annotated[str, typer.Option(
     "--model", envvar=CAPTIONS_MODEL_ENV,
     help=f"Whisper model size (tiny/base/small/medium/large). Env: {CAPTIONS_MODEL_ENV}.",
+)]
+
+ShowcaseGoldProjectOption = Annotated[str, typer.Option(
+    "--project", envvar=SHOWCASE_GOLD_PROJECT_ENV,
+    help=f"Gold 'app' segment to promote this item's record under (e.g. digital-dev, "
+         f"digital-prod). Env: {SHOWCASE_GOLD_PROJECT_ENV}.",
 )]
 
 SearchSpaceOption = Annotated[str, typer.Option(

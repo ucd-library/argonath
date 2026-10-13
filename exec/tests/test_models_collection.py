@@ -1585,6 +1585,7 @@ def test_preservica_tree_writes_root_metadata_json(tmp_path):
         "<Content><dc><title>My Collection</title></dc></Content></MetadataContainer></MetadataResponse>"
     )
     client.children["root-ref"] = []
+    client.identifiers["root-ref"] = [{"type": None, "value": "ark:/87287/d7rootark"}]
 
     collection.preservica_import(
         "root-ref", "my-collection", "preservica",
@@ -1599,6 +1600,69 @@ def test_preservica_tree_writes_root_metadata_json(tmp_path):
         "dc": {"title": "My Collection"},
         "preservica": {"ref": "root-ref", "title": "My Collection", "description": None, "type": "SO"},
     }
+    assert _read_json(str(root / "tree" / "identifiers.json")) == client.identifiers["root-ref"]
+
+
+def test_preservica_tree_omits_root_identifiers_json_when_none(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "My Collection", "type": "SO"}
+    client.children["root-ref"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica",
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    assert not fs.exists(str(root / "tree" / "identifiers.json"))
+
+
+def test_get_ark_returns_root_ark(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "My Collection", "type": "SO"}
+    client.children["root-ref"] = []
+    client.identifiers["root-ref"] = [{"type": None, "value": "ark:/87287/d7rootark"}]
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica",
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    ark = collection.get_ark("my-collection", "preservica", {"dest_root": str(tmp_path)})
+    assert ark == "ark:/87287/d7rootark"
+
+
+def test_get_ark_raises_when_identifiers_json_missing(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "My Collection", "type": "SO"}
+    client.children["root-ref"] = []
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica",
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    with pytest.raises(LookupError, match="MISSING ARK"):
+        collection.get_ark("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+
+def test_get_ark_raises_when_no_ark_shaped_identifier(tmp_path):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "My Collection", "type": "SO"}
+    client.children["root-ref"] = []
+    client.identifiers["root-ref"] = [{"type": "LocalID", "value": "not-an-ark"}]
+
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica",
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+
+    with pytest.raises(LookupError, match="MISSING ARK"):
+        collection.get_ark("my-collection", "preservica", {"dest_root": str(tmp_path)})
 
 
 def test_preservica_tree_raises_on_multiple_metadata_fragments(tmp_path):
