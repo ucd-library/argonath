@@ -414,7 +414,13 @@ def build_item_record(context, target, id, collection_key):
     except Exception as e:
         _emit(context, "build-item", id, None, status="failed", partition=collection_key, error=str(e))
         return str(e), None
-    ark = result.get("ark")
+    # The record is a {"@id": <ark>, "@graph": [...]} document — its own
+    # top-level @id is the item's bare ark (see item_record.build()).
+    ark = result.get("@id")
+    if not ark:
+        error = f"build-item returned no ark for {target}"
+        _emit(context, "build-item", id, None, status="failed", partition=collection_key, error=error)
+        return error, None
     _emit(context, "build-item", id, result, partition=collection_key, item_ark=ark)
     return None, ark
 

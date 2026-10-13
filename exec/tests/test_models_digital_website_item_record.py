@@ -150,7 +150,8 @@ def test_build_adopts_bronze_sidecar_descriptive_fields(fake_derivative, monkeyp
     doc = item_record.build(NO_MEDIA_ITEM)
 
     assert doc["@id"] == ARK
-    assert "@context" not in doc
+    assert doc["@context"] == item_record.RECORD_CONTEXT
+    assert doc["@context"]["@vocab"] == "https://schema.org/"
     root = _node(doc, ITEM_URI)
     assert root["name"] == "Quarter Mile"
     assert root["description"] == "A scan"

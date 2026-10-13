@@ -198,8 +198,11 @@ def resolve(ark, opts={}):
     '.jsonld.json' suffix.
 
     An item with no bronze sidecar (e.g. a Preservica tree/<slug>/ item) is
-    found through its gold item.jsonld.json record instead (see
-    _resolve_gold_record()), so it only resolves by ARK once that record has
+    found through its gold item.jsonld.json record instead — searched by
+    named graph (fs.find_by_graph()), since the record is a
+    {"@id": <ark>, "@graph": [...]} document whose item node's own subject is
+    a full item URI, not the bare ARK (see _resolve_gold_record()) — so it
+    only resolves by ARK once that record has
     been built — address it by its bronze folder (resolve_path()) before then.
     Gold is laid out per project/app (e.g. digital-dev, digital-prod), so when
     more than one project holds a record for the ARK, the one under
@@ -225,7 +228,10 @@ def resolve(ark, opts={}):
     )
 
     if not sidecar_paths:
-        records = sorted(m for m in matches if m.startswith(GOLD_PREFIX) and m.endswith(f"/{ITEM_RECORD_FILENAME}"))
+        record_matches = fs.find_by_graph(ark, find_opts)
+        records = sorted(
+            m for m in record_matches if m.startswith(GOLD_PREFIX) and m.endswith(f"/{ITEM_RECORD_FILENAME}")
+        )
         if len(records) > 1:
             project = opts.get("project") or CONFIG["showcase"]["gold_project"]
             records = [r for r in records if r.startswith(f"{GOLD_PREFIX}{project}/")] or records

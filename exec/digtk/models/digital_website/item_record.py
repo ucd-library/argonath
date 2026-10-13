@@ -25,9 +25,13 @@ public record needs stable identifiers for both ends of isPartOf, and there's
 no fallback here (see digtk.lib.items's "ark is a sidecar, not a requirement"
 convention for every *other* step).
 
-The document is a flat JSON-LD graph: {"@id", "@graph": [...]} — no
-document-level `@context` (every term is already an absolute schema:/argonath:
-IRI) — one sibling node per real thing (the item itself, each media file, an
+The document is a flat JSON-LD graph: {"@context", "@id", "@graph": [...]} —
+RECORD_CONTEXT is the same schema.org `@vocab`/argonath context bronze's own
+sidecars use (plus a `schema:` prefix for the prefixed @type values), so
+CaskFS's linked-data index sees real triples — all in the named graph <ark>
+(the document's own @id), which is how digtk.lib.items.resolve() finds this
+record by ARK (see digtk.lib.fs.find_by_graph()) — with one
+sibling node per real thing (the item itself, each media file, an
 ImageList for a multi-image item) related only by `{"@id": ...}` references,
 never inlined into each other. This matches the legacy DAMS *-metadata
 JSON-LD shape in spirit, minus its Fedora/LDP container machinery
@@ -89,12 +93,17 @@ import urllib.parse
 
 from digtk.lib import dc_mapping, derivative, fs, items, utils
 from digtk.lib.config import CONFIG
-from digtk.lib.schema import Identifier, ItemMetadata
+from digtk.lib.schema import SCHEMA_CONTEXT, Identifier, ItemMetadata
 from digtk.models import collection
 from digtk.models.digital_website import pipeline
 
 ITEM_URI_PREFIX = "https://digital.ucdavis.edu/item/"
 COLLECTION_URI_PREFIX = "https://digital.ucdavis.edu/collection/"
+
+# The record's document-level JSON-LD context: bronze's own sidecar context,
+# plus the "schema:" prefix used by prefixed @type values (e.g. ImageList's
+# "schema:MediaObject").
+RECORD_CONTEXT = {**SCHEMA_CONTEXT, "schema": "https://schema.org/"}
 
 # One graph node per bronze audio/video source file, typed by which digtk
 # pipeline produced it. Image and PDF nodes carry no @type — see _image_node()/
@@ -362,8 +371,8 @@ def _seed_graph_from_bronze(bronze_doc, item_uri):
         if is_single_document or node.get("@id") == bronze_doc.get("@id"):
             node["@id"] = item_uri
         # "@context" is bronze's own *document*-level keyword, not a property
-        # of the node it wraps — this module's output document has none at
-        # all (every term is already an absolute IRI). "argonath:fieldSources"
+        # of the node it wraps — this module's output document carries its own
+        # (RECORD_CONTEXT) at the top level instead. "argonath:fieldSources"
         # is DC-mapping provenance bookkeeping, not a public-record property.
         # Neither belongs in the output, however they arrived in bronze's own
         # stored document (and the "never override bronze" merge rule would
@@ -759,7 +768,7 @@ def build(target, opts={}):
     for node in media_nodes:
         _merge_node(graph_by_id, order, node)
 
-    doc = {"@id": item.ark, "@graph": [graph_by_id[node_id] for node_id in order]}
+    doc = {"@context": RECORD_CONTEXT, "@id": item.ark, "@graph": [graph_by_id[node_id] for node_id in order]}
 
     derivative.write(
         type="gold", collection=item.collection, rel_path=rel_path,
