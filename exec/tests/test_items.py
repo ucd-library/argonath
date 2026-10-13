@@ -115,9 +115,9 @@ def _fake_gold(monkeypatch, files):
 def test_resolve_through_gold_record_lists_real_files_under_its_bronze_folder(monkeypatch):
     monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [
         "/silver/preservica/haeger/latest/tree/calera-formatted/item.jsonld.json",
-        "/gold/preservica/haeger/tree/calera-formatted/item.jsonld.json",
+        "/gold/digital-dev/haeger/tree/calera-formatted/item.jsonld.json",
     ])
-    _fake_gold(monkeypatch, {"cask:/gold/preservica/haeger/tree/calera-formatted/manifest.json": json.dumps({
+    _fake_gold(monkeypatch, {"cask:/gold/digital-dev/haeger/tree/calera-formatted/manifest.json": json.dumps({
         "bronze": "/bronze/preservica/haeger/latest/tree/calera-formatted",
     })})
 
@@ -157,7 +157,7 @@ def test_resolve_ignores_a_stale_bronze_item_jsonld(monkeypatch):
 
 
 def test_resolve_gold_record_without_a_manifest_raises(monkeypatch):
-    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: ["/gold/g/c/i1/item.jsonld.json"])
+    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: ["/gold/digital-dev/c/i1/item.jsonld.json"])
     _fake_gold(monkeypatch, {})
     with pytest.raises(LookupError, match="no manifest.json"):
         items.resolve(ARK)
@@ -165,10 +165,24 @@ def test_resolve_gold_record_without_a_manifest_raises(monkeypatch):
 
 def test_resolve_rejects_more_than_one_gold_record(monkeypatch):
     monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [
-        "/gold/g/c/i1/item.jsonld.json", "/gold/g/c/i2/item.jsonld.json",
+        "/gold/digital-dev/c/i1/item.jsonld.json", "/gold/digital-dev/c/i2/item.jsonld.json",
     ])
     with pytest.raises(LookupError, match="Expected one gold item record"):
         items.resolve(ARK)
+
+
+def test_resolve_prefers_the_gold_record_under_the_requested_project(monkeypatch):
+    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [
+        "/gold/digital-dev/c/i1/item.jsonld.json", "/gold/digital-prod/c/i1/item.jsonld.json",
+    ])
+    _fake_gold(monkeypatch, {
+        "cask:/gold/digital-dev/c/i1/manifest.json": json.dumps({"bronze": "/bronze/g/c/dev-snapshot/i1"}),
+        "cask:/gold/digital-prod/c/i1/manifest.json": json.dumps({"bronze": "/bronze/g/c/prod-snapshot/i1"}),
+    })
+    monkeypatch.setattr(fs, "ls", lambda path, opts={}: [])
+
+    assert items.resolve(ARK).time == "dev-snapshot"
+    assert items.resolve(ARK, {"project": "digital-prod"}).time == "prod-snapshot"
 
 
 # --- resolve_path ---------------------------------------------------------------
@@ -496,9 +510,9 @@ def test_resolve_tree_item_without_media_has_no_binaries(monkeypatch):
     (no fallback to by-ref/) — callers report it as missing media."""
     tree = "/bronze/preservica/haeger/latest/tree/quarter-mile"
     monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [
-        "/gold/preservica/haeger/tree/quarter-mile/item.jsonld.json",
+        "/gold/digital-dev/haeger/tree/quarter-mile/item.jsonld.json",
     ])
-    _fake_gold(monkeypatch, {"cask:/gold/preservica/haeger/tree/quarter-mile/manifest.json": json.dumps({"bronze": tree})})
+    _fake_gold(monkeypatch, {"cask:/gold/digital-dev/haeger/tree/quarter-mile/manifest.json": json.dumps({"bronze": tree})})
     listing = {tree: [
         _entry("metadata.json", f"{tree}/metadata.json", "file"),
         _entry("identifiers.json", f"{tree}/identifiers.json", "file"),

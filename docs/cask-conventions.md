@@ -22,7 +22,7 @@ Medallion architecture — each layer answers a different question:
   duplication. This includes the final derivative products the websites render, which
   every app and environment (e.g. dc-showcase dev and prod) reads from the same files.
 - **gold** — what preservation/download products do we offer? Access-controlled,
-  current-state-only, no history, and shared by every environment (see "Gold Layout").
+  current-state-only, no history, and scoped per app/environment (see "Gold Layout").
 
 ## Item Identity
 
@@ -203,11 +203,11 @@ directly for a multi-format item; there's currently no Dagster orchestration tha
 automatically runs every applicable format for one item either, that's out of scope
 until it's actually needed.
 
-When the item's gold `item.jsonld.json` is built (`digtk showcase build-item`), every
+When the item's search index document is built (`digtk.lib.showcase_index`), every
 format present among its bronze binaries contributes its own
 `argonath:sourceGroup`-tagged associatedMedia entries, read back from that format's
 published manifests — so running the image pipeline and the PDF pipeline against the
-same item leaves both sets of entries in the record, not just the most recently run one.
+same item leaves both sets of entries in the document, not just the most recently run one.
 
 ### PDF Pagination
 
@@ -451,7 +451,7 @@ small/medium/large set lands at `public-frontend-derivatives/images/<that
 filename>/images/...`, same as any other image source, entirely unrelated to the
 video's own `streaming/` directory.
 
-In the gold item record each source video becomes one VideoObject, whose
+In the search index document each source video becomes one VideoObject, whose
 `identifier` (the source binary's filename stem) is how its caption is matched to it
 (see "Captions/Transcripts" below) — it's not itself meant as a public identifier.
 
@@ -492,11 +492,9 @@ silver/[group]/[collection]/[time]/[item]/
     └── output-en.vtt
 ```
 
-Machine-generated and unreviewed: when the gold item record is built, each caption
-is attached to the matching VideoObject/AudioObject associatedMedia entry (matched
-by the `identifier` stem — see above) as a nested `caption` MediaObject, and the
-record's `argonath:fieldSources` map records `"caption": "ai"` (see Field Sources
-below) so downstream review workflows know it needs a human pass.
+Machine-generated and unreviewed: when the search index document is built, each
+caption is attached to the matching VideoObject/AudioObject associatedMedia entry
+(matched by the `identifier` stem — see above) as a nested `caption` MediaObject.
 
 There's no standalone `digtk captions transcribe` command — captions are always
 generated as part of `derivatives()`, controllable via that command's
@@ -507,12 +505,13 @@ don't apply to a still image or an unrasterized document page.
 
 Gold holds **preservation and download products** — e.g. Preservica "Preservation"
 masters, and anything offered as an authenticated download — behind access control.
-It is **current-state only** (no `[time]`) and **not app-scoped** (no `[app]`): the
-same gold files serve every environment, dc-showcase dev and prod alike, and access
-is decided per user and per collection/item, never per environment.
+It is **current-state only** (no `[time]`) and **app-scoped**: its first segment is
+the consuming app/environment (`[app]`, e.g. `digital-dev`, `digital-prod` — matches
+`dagster/lib/configs.py`'s `GOLD_APPS`) in place of bronze/silver's `[group]`, so each
+environment's records are promoted independently.
 
 ```
-gold/[group]/[collection]/[item]/
+gold/[app]/[collection]/[item]/
 ├── manifest.json        # structural: which bronze/silver snapshot this was promoted from
 ├── item.jsonld.json     # domain: the item's canonical record — DC fields + associatedMedia
 └── ...                  # preservation/download products (layout set by the
@@ -521,24 +520,29 @@ gold/[group]/[collection]/[item]/
 
 `item.jsonld.json` is written only here, only by `digtk showcase build-item`
 (`digtk.models.digital_website.item_record`, Dagster's `pdc_generate_item_record`
-step) — never in bronze or silver. It is assembled in one pass: descriptive fields
-mapped from the bronze folder's `metadata.json` Dublin Core (see
-`digtk.lib.dc_mapping`), or from identifiers.json alone when there's no descriptive
-fragment, plus `associatedMedia`/`hasPart` read back from the item's published
-silver derivative manifests. Its `manifest.json` records the bronze folder it was
-built from (`"bronze"`), which is how `digtk.lib.items.resolve()` gets from the
-record's ARK back to the item's bronze location.
+step) — never in bronze or silver. `[app]` is build-item's `--project` /
+`DIGTK_SHOWCASE_GOLD_PROJECT` (default `digital-dev`). The record is a flat JSON-LD
+`{"@id": <ark>, "@graph": [...]}` document assembled in one pass from bronze only:
+descriptive fields from the item's bronze `<binary>.jsonld.json` sidecar, or mapped
+from the bronze folder's `metadata.json` Dublin Core (see `digtk.lib.dc_mapping`);
+identifiers from `identifiers.json`, the Preservica entity ref and the record's own
+gold path; `isPartOf` its collection's ark; and one bare `{@id, contentUrl}` node
+per bronze preservation master (an ImageList for a multi-image item). Silver's
+renditions/streams are not carried in the record — the search index
+(`digtk.lib.showcase_index`) reads those from silver directly. Its `manifest.json`
+records the bronze folder it was built from (`"bronze"`), which is how
+`digtk.lib.items.resolve()` gets from the record's ARK back to the item's bronze
+location (preferring the configured `[app]` when several hold a record).
 
-`[group]/[collection]` mirror bronze and silver, minus the time segment. As everywhere
+`[collection]` mirrors bronze and silver, minus the time segment. As everywhere
 else, gold entries reference the underlying blobs via `cask://` (CaskFS is
 content-addressed), so a preservation master "in" gold is the same blob as its bronze
 original, not a copy.
 
-**Dev vs. prod.** Nothing differs between environments, in gold or in silver.
-Derivatives live once in silver and both environments render the same files; a
-publicly accessible collection/item is equally visible to the public from dev and
-prod; gold's preservation files are shared by both, with the same access controls.
-There is no per-environment copy of anything.
+**Dev vs. prod.** Silver is shared: derivatives live once in silver and both
+environments render the same files, and a publicly accessible collection/item is
+equally visible from dev and prod. Gold is per environment: each `[app]` holds its
+own promoted item records.
 
 ### How content arrives
 
@@ -550,23 +554,12 @@ Content reaches silver and gold by one of two paths, depending on the content ty
   `manifest.json` in each process directory records the run/command that produced
   it (see "manifest.json" below).
 - **Built → gold.** The item record (`item.jsonld.json`, see above) is built from
-  bronze's metadata and silver's published derivatives once the derivative steps
-  are done.
+  bronze once the derivative steps are done.
 - **Promoted → gold.** Preservation/download products are promoted into gold from a
   specific bronze/silver group/time snapshot (gold promotion ops are not implemented
   yet). Because gold has no time dimension, its `manifest.json` is the only durable
   record of which snapshot a given entry was promoted from — promotion, not
   reprocessing, is what updates a gold entry.
-
-### Known gaps
-
-Code that still assumes the older per-app gold layout, to be updated by the follow-up
-work:
-
-- `dagster/lib/configs.py`'s `GOLD_APPS` / `SearchIndexConfig.app` (including `arda`,
-  the cross-collection RAG aggregate, whose home is still to be decided).
-- The dc-showcase gateway's `CASKFS_GOLD_BASE_PATH` (default `/gold/dc-showcase`),
-  used only by its legacy fin-style `/svc:iiif/` route.
 
 ## Workspace Layout
 
@@ -617,7 +610,7 @@ kinds of file, never merged into one:
 |---|---|---|
 | `manifest.json` | Structural/system: CaskFS layout facts, pipeline run records, item lists + hashes, promotion status | schema.org / descriptive fields |
 | `metadata.jsonld.json` / `<item>.jsonld.json` | Domain: schema.org descriptive metadata about the collection or item | Pipeline state, run history, promotion status |
-| `gold/[group]/[collection]/[item]/item.jsonld.json` | Domain: the item's canonical record — `schema:associatedMedia` refs to its derivatives (referencing the bronze original via `cask://` rather than copying it) merged with Dublin-Core-derived descriptive fields (see "Gold Layout" above) | Pipeline state, run history, promotion status |
+| `gold/[app]/[collection]/[item]/item.jsonld.json` | Domain: the item's canonical record — an `@graph` of the item node (descriptive fields, identifiers, `isPartOf`) and one node per bronze preservation master (referenced via `cask://` rather than copied — see "Gold Layout" above) | Pipeline state, run history, promotion status |
 
 This is a deliberate reaction against LDP's convention of mixing container/structural
 triples with a resource's own descriptive triples in one graph — CaskFS keeps them as

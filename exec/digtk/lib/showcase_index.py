@@ -27,7 +27,7 @@ import urllib.parse
 import httpx
 
 from digtk.lib import items, fs
-from digtk.models.digital_website import item_record, pipeline
+from digtk.models.digital_website import audio, captions, image, item_record, pdf, pipeline, video
 
 ES_HOST_ENV = "DAMS_ES_HOST"
 ES_INDEX_ENV = "DAMS_ES_INDEX"
@@ -134,6 +134,42 @@ def _mime(filename, default):
 # module-level aliases here so existing call sites below don't need touching.
 _source_filename = pipeline.source_filename
 _group_media_by_source = pipeline.group_media_by_source
+
+
+# Each format's silver associatedMedia reader, in the order its entries are read.
+_MEDIA_READERS = {
+    "image": image.media_objects,
+    "pdf": pdf.media_objects,
+    "video": video.media_objects,
+    "audio": audio.media_objects,
+}
+
+
+def _silver_media(location):
+    """Every published silver associatedMedia entry for the item's formats
+    (renditions, streams, transcoded copies), each stamped with the
+    "argonath:sourceGroup" it was built for, with captions attached to their
+    video/audio entries. The gold item record only points at bronze
+    preservation masters (see item_record), so the website-facing media
+    comes from silver here.
+
+    :param digtk.lib.items.ItemLocation location:
+    :returns: Flat associatedMedia entries.
+    :rtype: list[dict]
+    :raises FileNotFoundError: If a format's derivatives haven't been published.
+    """
+    formats = pipeline.detect_formats(location.bronze_binary_paths)
+    entries = []
+    for group, reader in _MEDIA_READERS.items():
+        if group not in formats:
+            continue
+        objects = reader(location)
+        if group in ("video", "audio"):
+            captions.attach_captions(location, objects)
+        for entry in objects:
+            entry["argonath:sourceGroup"] = group
+        entries += objects
+    return entries
 
 
 def _caption_links(entry):
@@ -352,7 +388,7 @@ def _media_nodes(location, fin_path, groups):
     return top, children
 
 
-def build_document(ark):
+def build_document(ark, opts={}):
     """Builds the ES document for an item: a metadata root node plus one node
     per media file, all in @graph, linked from the root's associatedMedia —
     every image, PDF, video and audio source the item has (see
@@ -373,17 +409,21 @@ def build_document(ark):
     collections are only named strings (group/collection) today - there's no
     collection-level ark to link to until collection ark-minting exists.
 
-    Everything comes from the item's gold item.jsonld.json (see
-    digtk.models.digital_website.item_record), so it must be built first.
+    Descriptive fields come from the root node of the item's gold
+    item.jsonld.json (see digtk.models.digital_website.item_record), so it
+    must be built first; media nodes come from its published silver
+    derivatives (see _silver_media()).
 
     :param str ark: Item ARK.
+    :param dict opts: 'project' — the gold app segment to read the record
+        from (see item_record.read()); also forwarded to items.resolve().
     :returns: ES document body, shaped like transform.js's {"@id", "@graph": [...]}.
     :rtype: dict
     :raises FileNotFoundError: If the item's record hasn't been built yet.
     """
-    location = items.resolve(ark)
-    record = item_record.read(location)
-    associated_media = item_record.flat_media(record)
+    location = items.resolve(ark, opts)
+    record = item_record.root_node(item_record.read(location, opts))
+    associated_media = _silver_media(location)
 
     fin_path = f"/item/{ark}"
     base_type = _normalize_type(record.get("@type"), "http://schema.org/MediaObject")

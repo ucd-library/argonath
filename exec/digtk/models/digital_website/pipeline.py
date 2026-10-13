@@ -18,6 +18,7 @@ digtk.lib.derivative entry. Reads still go through digtk.lib.fs directly.
 """
 import json
 import os
+import re
 
 from digtk.lib import derivative, djvu, fs, image_magick, ocr_utils, utils
 from digtk.lib.config import CONFIG
@@ -51,6 +52,36 @@ PUBLIC_FRONTEND_DIR = "public-frontend-derivatives"
 # generate_thumbnail_set() always produces exactly these three, ascending by width —
 # a fixed semantic-size product line rather than one file per configured pixel width.
 THUMBNAIL_SIZE_LABELS = ["small", "medium", "large"]
+
+# digtk.models.digital_website.item_record's ImageList node type — defined here
+# (alongside PUBLIC_FRONTEND_DIR, this pipeline's other shared JSON-LD/layout
+# plumbing) rather than imported from digtk.lib.showcase_index, which already
+# has its own copy of this same constant: item_record is the record producer,
+# showcase_index an ES-indexing consumer of that record, so pointing the
+# producer at the consumer's module would run the data flow backwards. A
+# known, minor, deliberately-deferred duplication until showcase_index is
+# updated to read item_record's new graph shape (see item_record's module
+# docstring).
+IMAGE_LIST_TYPE = "http://digital.ucdavis.edu/schema#ImageList"
+
+_TRAILING_SEQUENCE_RE = re.compile(r"_(\d+)$")
+
+
+def parse_sequence_number(filename):
+    """The trailing `_<digits>` sequence number in a filename's stem, e.g.
+    "photo_002.tif" -> 2, "interview_1.mp4" -> 1.
+
+    Shared ordering/correlation primitive — digtk.models.digital_website.item_record
+    uses this both for multi-image hasPart position and for correlating an
+    orphaned audio/video caption to its source file.
+
+    :param str filename: A bronze source or silver derivative filename.
+    :returns: The parsed integer, or None if the stem has no trailing `_<digits>`.
+    :rtype: int|None
+    """
+    stem = os.path.splitext(filename)[0]
+    match = _TRAILING_SEQUENCE_RE.search(stem)
+    return int(match.group(1)) if match else None
 
 
 # Preservica tree/ items can hold the same page twice: an access copy (e.g.

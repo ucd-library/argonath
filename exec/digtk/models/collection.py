@@ -1481,6 +1481,11 @@ def preservica_tree(collection, group, opts={}):
     fragment, if it has one — same shape as every other tree/ entry's
     metadata.json, see _copy_metadata_to_tree()) — the root folder itself
     isn't otherwise represented anywhere under tree/, only its children are.
+    Also writes a tree/identifiers.json for the root (its raw by-ref/
+    identifiers, verbatim — same "only if non-empty" convention as every
+    other tree/ entry's identifiers.json, see _write_tree_child()'s SO
+    branch) — this is what lets a collection's own ARK be resolved (see
+    get_ark()) for item-level isPartOf linking.
 
     :param str collection: Collection name.
     :param str group: Bronze group namespace.
@@ -1505,8 +1510,37 @@ def preservica_tree(collection, group, opts={}):
     except FileNotFoundError:
         pass
 
+    root_identifiers = _read_bronze_json(root, f"by-ref/{root_so_ref}/identifiers.json", [])
+    if root_identifiers:
+        _write_bronze_json(root, "tree/identifiers.json", root_identifiers)
+        _link_tree_source(root, "tree/identifiers.json", f"by-ref/{root_so_ref}/identifiers.json")
     _copy_metadata_to_tree(root, f"by-ref/{root_so_ref}", "tree", root_so_ref, collection)
     return _build_tree_from_by_ref(root_so_ref, root, "tree", collection)
+
+
+def get_ark(collection, group, opts={}):
+    """Resolve a bronze collection's own ARK, from its tree/identifiers.json
+    root entry (see preservica_tree()'s root-identifiers write).
+
+    :param str collection: Collection name.
+    :param str group: Bronze group namespace.
+    :param dict opts: 'dest_root' (str, optional — see _bronze_collection_root()).
+    :returns: The collection's ARK, e.g. 'ark:/87287/d7rootark'.
+    :rtype: str
+    :raises LookupError: If tree/identifiers.json is missing or has no
+        ARK-shaped identifier — e.g. preservica_tree() hasn't been re-run
+        since this write was added, or the collection genuinely has no
+        minted ARK.
+    """
+    root = _bronze_latest_root(collection, group, opts)
+    identifiers = _read_bronze_json(root, "tree/identifiers.json", [])
+    ark = next((i.get("value") for i in identifiers if _is_ark(i.get("value") or "")), None)
+    if not ark:
+        raise LookupError(
+            f"MISSING ARK: no ark in {collection}'s tree/identifiers.json — "
+            "re-run `digtk preservica tree`, or confirm this collection has a minted ark"
+        )
+    return ark
 
 
 def _find_parent_so_ref(root, ref, changed_entities):

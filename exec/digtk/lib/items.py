@@ -41,6 +41,7 @@ import re
 from dataclasses import dataclass
 
 from digtk.lib import dc_mapping, derivative, fs
+from digtk.lib.config import CONFIG
 
 BRONZE_PREFIX = "/bronze/"
 GOLD_PREFIX = "/gold/"
@@ -200,9 +201,14 @@ def resolve(ark, opts={}):
     found through its gold item.jsonld.json record instead (see
     _resolve_gold_record()), so it only resolves by ARK once that record has
     been built — address it by its bronze folder (resolve_path()) before then.
+    Gold is laid out per project/app (e.g. digital-dev, digital-prod), so when
+    more than one project holds a record for the ARK, the one under
+    opts['project'] is used.
 
     :param str ark: ARK identifier, e.g. 'ark:/87287/d7abc1234'.
-    :param dict opts: Forwarded to fs.find_by_subject() (e.g. 'predicate' override).
+    :param dict opts: 'project' (str, default CONFIG["showcase"]["gold_project"])
+        — preferred gold app segment when several hold a record; everything
+        else is forwarded to fs.find_by_subject() (e.g. 'predicate' override).
     :returns: Resolved item location.
     :rtype: ItemLocation
     :raises LookupError: If neither a bronze sidecar nor a gold record matches
@@ -210,7 +216,8 @@ def resolve(ark, opts={}):
         group/collection/time/item_path (a data-integrity problem — binaries
         sharing an ARK should live in the same item location).
     """
-    matches = fs.find_by_subject(ark, opts)
+    find_opts = {k: v for k, v in opts.items() if k != "project"}
+    matches = fs.find_by_subject(ark, find_opts)
     sidecar_paths = sorted(
         m for m in matches
         if m.startswith(BRONZE_PREFIX) and m.endswith(SIDECAR_SUFFIX)
@@ -219,6 +226,9 @@ def resolve(ark, opts={}):
 
     if not sidecar_paths:
         records = sorted(m for m in matches if m.startswith(GOLD_PREFIX) and m.endswith(f"/{ITEM_RECORD_FILENAME}"))
+        if len(records) > 1:
+            project = opts.get("project") or CONFIG["showcase"]["gold_project"]
+            records = [r for r in records if r.startswith(f"{GOLD_PREFIX}{project}/")] or records
         if len(records) > 1:
             raise LookupError(f"Expected one gold item record for {ark}, found {len(records)}: {records}")
         if records:

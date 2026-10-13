@@ -254,7 +254,7 @@ LOCATION = ItemLocation(
     ark=ARK, group="g", collection="c", time="latest", item_path="item",
     bronze_binary_paths=[],
 )
-RECORD_PATH = "cask:/gold/g/c/item/item.jsonld.json"
+RECORD_PATH = "cask:/gold/digital-dev/c/item/item.jsonld.json"
 
 
 def _image_entries(filename):
@@ -268,19 +268,25 @@ def _image_entries(filename):
 @pytest.fixture
 def item_files(monkeypatch):
     """A fake CaskFS for one item: its gold item record, plus any extra
-    files a test adds (manifests); everything else is missing."""
-    files = {RECORD_PATH: {"name": "An item", "creator": "Someone"}}
+    files a test adds (manifests); everything else is missing. set_media()
+    sets the item's published silver associatedMedia entries."""
+    files = {RECORD_PATH: {"@id": ARK, "@graph": [
+        {"@id": f"https://digital.ucdavis.edu/item/{ARK}", "name": "An item", "creator": "Someone"},
+    ]}}
+    media = []
 
     def set_media(entries):
-        files[RECORD_PATH]["associatedMedia"] = entries
+        media[:] = entries
 
     def fake_read(path):
         if path not in files:
             raise FileNotFoundError(path)
         return json.dumps(files[path]).encode()
 
-    monkeypatch.setattr(showcase_index.items, "resolve", lambda ark: LOCATION)
+    monkeypatch.setattr(showcase_index.items, "resolve", lambda ark, opts={}: LOCATION)
     monkeypatch.setattr(showcase_index.fs, "read", fake_read)
+    monkeypatch.setattr(showcase_index.item_record.fs, "read", fake_read)
+    monkeypatch.setattr(showcase_index, "_silver_media", lambda location: [dict(e) for e in media])
     files["set_media"] = set_media
     return files
 
@@ -377,18 +383,25 @@ def test_build_document_makes_an_image_list_for_several_images(item_files):
     assert isinstance(page1["clientMedia"]["download"], dict)
 
 
-def test_build_document_reads_has_part_pages_from_the_gold_record(item_files):
-    item_files[RECORD_PATH]["associatedMedia"] = []
-    item_files[RECORD_PATH]["hasPart"] = [
-        {"argonath:sourceGroup": "image", "position": 1, "associatedMedia": _image_entries("page_001.tif")},
-        {"argonath:sourceGroup": "image", "position": 2, "associatedMedia": _image_entries("page_002.tif")},
-    ]
-
+def test_build_document_reads_descriptive_fields_from_the_gold_root_node(item_files):
     document = showcase_index.build_document(ARK)
-    nodes = _graph(document)
+    root = document["@graph"][0]
+    assert (root["name"], document["name"]) == ("An item", "An item")
+    assert root["creator"]
 
-    list_id = f"/item/{ARK}/images"
-    assert nodes[list_id]["hasPart"] == [{"@id": f"{list_id}/1"}, {"@id": f"{list_id}/2"}]
+
+def test_silver_media_stamps_each_entry_with_its_source_group(monkeypatch):
+    location = ItemLocation(
+        ark=ARK, group="g", collection="c", time="latest", item_path="item",
+        bronze_binary_paths=["cask:/bronze/g/c/latest/item/photo.tiff", "cask:/bronze/g/c/latest/item/talk.mp3"],
+    )
+    monkeypatch.setitem(showcase_index._MEDIA_READERS, "image", lambda item: [{"contentUrl": "a"}])
+    monkeypatch.setitem(showcase_index._MEDIA_READERS, "audio", lambda item: [{"contentUrl": "b"}])
+    monkeypatch.setattr(showcase_index.captions, "attach_captions", lambda item, entries: False)
+
+    entries = showcase_index._silver_media(location)
+
+    assert [(e["contentUrl"], e["argonath:sourceGroup"]) for e in entries] == [("a", "image"), ("b", "audio")]
 
 
 def test_build_document_requires_the_gold_record(item_files):

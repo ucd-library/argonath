@@ -118,8 +118,8 @@ def write_manifest(collection, rel_path, command, params, outputs, source_files,
     :param list[str] source_files: CaskFS paths ('cask:/'-prefixed) the described
         outputs were derived from — this manifest's own lineage.
     :param str type: 'silver' (default) or 'gold' — see digtk.lib.derivative.dest_path().
-    :param dict opts: 'group' (required) and 'time' (silver only, default
-        'latest') — see dest_path(). Also: 'status'
+    :param dict opts: 'group' (required for silver) and 'time' (silver only,
+        default 'latest'), or 'app' (required for gold) — see dest_path(). Also: 'status'
         (default "success"), 'duration_s' (float), 'error' (str, only meaningful
         if status="error"), 'extra' (dict, optional) — additional top-level keys
         merged into the manifest as-is, for callers that need richer per-output
@@ -146,7 +146,7 @@ def write_manifest(collection, rel_path, command, params, outputs, source_files,
         manifest.update(opts["extra"])
 
     if type == "gold":
-        write_opts = {"group": opts.get("group"), "replace": True}
+        write_opts = {"app": opts.get("app"), "replace": True}
     else:
         write_opts = {"group": opts.get("group"), "time": opts.get("time"), "replace": True}
 
