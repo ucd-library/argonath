@@ -18,7 +18,9 @@ import typer
 
 from digtk.commands import audio, es, image, pdf, video
 from digtk.lib import items, reporting, utils
-from digtk.lib.config import ReportingCollectionOption, ReportingJobIdOption, TargetArgument
+from digtk.lib.config import (
+    CONFIG, ReportingCollectionOption, ReportingJobIdOption, ShowcaseGoldProjectOption, TargetArgument,
+)
 from digtk.models.digital_website import finalize as finalize_model
 from digtk.models.digital_website import item_record
 from digtk.models.digital_website import pipeline
@@ -89,12 +91,13 @@ def finalize(
 @app.command("build-item")
 def build_item(
     target: TargetArgument,
+    project: ShowcaseGoldProjectOption = CONFIG["showcase"]["gold_project"],
     reporting_job_id: ReportingJobIdOption = None,
     reporting_collection: ReportingCollectionOption = None,
 ):
-    """Assemble and write the item's complete, canonical item.jsonld.json:
-    identifiers, whatever descriptive metadata bronze already resolved, and a
-    freshly rebuilt associatedMedia/hasPart structure read from silver's
+    """Assemble and promote the item's complete, canonical item.jsonld.json to
+    gold: identifiers, whatever descriptive metadata bronze already resolved,
+    and a freshly rebuilt associatedMedia/hasPart structure read from silver's
     published derivatives and bronze's preservation originals. Run after
     `digtk showcase finalize` (and any video/audio derivatives()) have
     published this item's media. Unlike every other showcase step, this one
@@ -104,9 +107,9 @@ def build_item(
     try:
         item = items.resolve_target(target)
         label = items.item_id(item)
-        utils.log(f"Building item record for {label}")
+        utils.log(f"Building item record for {label} (project={project})")
         with reporting.track(reporting_job_id, stage="build-item", item_id=label, collection=reporting_collection):
-            result = item_record.build(item)
+            result = item_record.build(item, opts={"project": project})
         utils.result(result)
     except _ERRORS as e:
         utils.error(str(e))
