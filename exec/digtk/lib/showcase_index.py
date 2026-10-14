@@ -29,11 +29,14 @@ import httpx
 
 from digtk.lib import items, fs, utils
 from digtk.lib.config import CONFIG
-from digtk.models.digital_website import audio, captions, image, item_record, pdf, pipeline, video
+from digtk.models.digital_website import (
+    audio, captions, collection_record, image, item_record, pdf, pipeline, video,
+)
 
 ES_HOST = CONFIG["showcase"]["es_host"]
 ES_INDEX = CONFIG["showcase"]["es_index"]
 PAGE_SEARCH_INDEX = CONFIG["showcase"]["es_page_search_index"]
+COLLECTION_INDEX = CONFIG["showcase"]["es_collection_index"]
 
 # CaskFS file API path, proxied by the dc-showcase gateway.
 CASK_API_PREFIX = "/cask/api/fs/"
@@ -92,6 +95,29 @@ SCHEMA = "http://schema.org/"
 # first: the showcase's video player only ever reads the first media group
 # (dc-showcase app-video-viewer.js). Within a group, sources sort by filename.
 MEDIA_ORDER = ["video", "audio", "image", "pdf"]
+
+
+def _is_part_of(is_part_of):
+    """Rewrites the gold record's isPartOf to fin's "/collection/<ark>" path
+    form, matching the root's own "/item/<ark>" @id.
+
+    :param is_part_of: Gold root node's isPartOf (dict, list, or None).
+    :returns: isPartOf as a list of {"@id"}, or None if the record has none.
+    :rtype: list|None
+    """
+    if not is_part_of:
+        return None
+    if isinstance(is_part_of, dict):
+        is_part_of = [is_part_of]
+    linked = []
+    for node in is_part_of:
+        node_id = node.get("@id") if isinstance(node, dict) else node
+        if not node_id:
+            continue
+        if node_id.startswith(item_record.COLLECTION_URI_PREFIX):
+            node_id = f"/collection/{node_id[len(item_record.COLLECTION_URI_PREFIX):]}"
+        linked.append({"@id": node_id})
+    return linked or None
 
 
 def _cask_url(cask_uri):
@@ -389,10 +415,9 @@ def build_document(ark, opts={}):
     "name.raw") and "roles" (["public"] — a document without it doesn't show
     up in search).
 
-    isPartOf (collection linking) is deliberately omitted: fin's collection
-    linking expects an ark-identified collection @id, but argonath
-    collections are only named strings (group/collection) today - there's no
-    collection-level ark to link to until collection ark-minting exists.
+    isPartOf links the item to its collection by the collection's ark, read
+    from the gold record (see item_record.build() and collection.get_ark())
+    and rewritten to fin's "/collection/<ark>" path form (see _is_part_of()).
 
     Descriptive fields come from the root node of the item's gold
     item.jsonld.json (see digtk.models.digital_website.item_record), so it
@@ -428,6 +453,7 @@ def build_document(ark, opts={}):
         "subjects": record.get("about"),
         "identifier": ark,
         "fileFormat": record.get("encodingFormat"),
+        "isPartOf": _is_part_of(record.get("isPartOf")),
     }
 
     top, children = _media_nodes(location, fin_path, _group_media_by_source(associated_media))
@@ -647,6 +673,79 @@ def index_item(ark):
 
     pages = index_pages(document)
     return {"ark": ark, "esId": es_id, "index": ES_INDEX, "status": "indexed", "pages": pages}
+
+
+def build_collection_document(name, opts={}):
+    """Builds the ES document for a collection from its gold record. Items
+    link to it through their isPartOf; it has no hasPart back.
+
+    :param str name: Collection name.
+    :param dict opts: 'project' (see collection_record.read()) and
+        'item_count' (int, default 0).
+    :returns: ES document body: {"@id", "@graph", "clientMedia", "name", "roles"}.
+    :rtype: dict
+    :raises FileNotFoundError: If the collection's record hasn't been built yet.
+    """
+    record = collection_record.root_node(collection_record.read(name, opts))
+    ark = record["ark"]
+    fin_path = f"/collection/{ark}"
+    root = {
+        "@id": fin_path,
+        "@type": _normalize_type(record.get("@type"), "http://schema.org/Collection"),
+        "name": record.get("name"),
+        "description": record.get("description"),
+        "creator": _normalize_creator(record.get("creator")),
+        "publisher": record.get("publisher"),
+        "license": record.get("license"),
+        "subjects": record.get("about"),
+        "identifier": [i["value"] for i in record.get("identifier") or [] if i.get("value")] or [ark],
+        "itemCount": opts.get("item_count", 0),
+    }
+    return {
+        "@id": fin_path,
+        "@graph": [{k: v for k, v in root.items() if v is not None}],
+        "clientMedia": {},
+        "name": record.get("name"),
+        "roles": ["public"],
+    }
+
+
+def count_collection_items(collection_id):
+    """Counts items in the item index whose isPartOf is the collection.
+
+    :param str collection_id: The collection document's @id, "/collection/<ark>".
+    :returns: Item count.
+    :rtype: int
+    :raises httpx.HTTPStatusError: If the count request fails.
+    """
+    resp = httpx.post(
+        f"{ES_HOST}/{ES_INDEX}/_count",
+        json={"query": {"term": {"@graph.isPartOf.@id": collection_id}}},
+    )
+    if resp.status_code == 404:
+        return 0
+    resp.raise_for_status()
+    return resp.json()["count"]
+
+
+def index_collection(name, opts={}):
+    """Builds a collection's ES document and writes it to the collection index.
+    itemCount is set at write time; dc-showcase's cron keeps it current.
+
+    :param str name: Collection name.
+    :param dict opts: 'project' — see collection_record.read().
+    :returns: {"collection", "esId", "index", "itemCount", "status": "indexed"}
+    :rtype: dict
+    :raises httpx.HTTPStatusError: If an ES request fails.
+    """
+    document = build_collection_document(name, opts)
+    es_id = document["@id"]
+    count = count_collection_items(es_id)
+    document["@graph"][0]["itemCount"] = count
+
+    resp = httpx.put(f"{ES_HOST}/{COLLECTION_INDEX}/_doc/{urllib.parse.quote(es_id, safe='')}", json=document)
+    resp.raise_for_status()
+    return {"collection": name, "esId": es_id, "index": COLLECTION_INDEX, "itemCount": count, "status": "indexed"}
 
 
 def _with_page_size(djvu_xml, size):

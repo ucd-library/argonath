@@ -11,6 +11,7 @@ Subcommands:
   formats    — report which media-type formats an item's bronze binaries span
   finalize   — write an item's item-level outputs after one-file-at-a-time derivatives
   build-item — assemble and write the item's complete, canonical gold item.jsonld.json
+  build-collection — write the collection's gold collection.jsonld.json
 """
 from typing import Annotated
 
@@ -22,7 +23,7 @@ from digtk.lib.config import (
     CONFIG, ReportingCollectionOption, ReportingJobIdOption, ShowcaseGoldProjectOption, TargetArgument,
 )
 from digtk.models.digital_website import finalize as finalize_model
-from digtk.models.digital_website import item_record
+from digtk.models.digital_website import collection_record, item_record
 from digtk.models.digital_website import pipeline
 
 app = typer.Typer(help="Public Digital Collections website commands.", no_args_is_help=True)
@@ -110,5 +111,20 @@ def build_item(
         with reporting.track(reporting_job_id, stage="build-item", item_id=label, collection=reporting_collection):
             result = item_record.build(item, opts={"project": project})
         utils.result(result)
+    except _ERRORS as e:
+        utils.error(str(e))
+
+
+@app.command("build-collection")
+def build_collection(
+    key: Annotated[str, typer.Argument(help="Collection key: [bronze/]<group>/<collection>.")],
+    project: ShowcaseGoldProjectOption = CONFIG["showcase"]["gold_project"],
+):
+    """Build the collection's gold collection.jsonld.json from its bronze
+    tree root metadata and identifiers. Fails if the collection has no ARK."""
+    try:
+        group, name = collection_record.parse_key(key)
+        utils.log(f"Building collection record for {group}/{name} (project={project})")
+        utils.result(collection_record.build(name, group, opts={"project": project}))
     except _ERRORS as e:
         utils.error(str(e))

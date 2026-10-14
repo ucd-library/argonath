@@ -101,6 +101,22 @@ def test_normalize_creator_is_none_when_missing():
     assert showcase_index._normalize_creator([]) is None
 
 
+def test_is_part_of_rewrites_collection_uris_to_fin_paths():
+    gold = {"@id": "https://digital.ucdavis.edu/collection/ark:/87287/d7root"}
+    assert showcase_index._is_part_of(gold) == [{"@id": "/collection/ark:/87287/d7root"}]
+
+
+def test_is_part_of_keeps_other_ids_and_drops_empties():
+    assert showcase_index._is_part_of([{"@id": "/collection/x"}, {}, "y"]) == [
+        {"@id": "/collection/x"}, {"@id": "y"},
+    ]
+
+
+def test_is_part_of_is_none_when_missing():
+    assert showcase_index._is_part_of(None) is None
+    assert showcase_index._is_part_of([{}]) is None
+
+
 def test_client_media_points_images_at_the_cask_api():
     base = "cask://silver/g/c/latest/item/public-frontend-derivatives/images/photo.tiff/images"
     widths = {"small": 256, "medium": 512, "large": 1024}
@@ -466,6 +482,18 @@ def test_build_document_reads_descriptive_fields_from_the_gold_root_node(item_fi
     assert root["creator"]
 
 
+def test_build_document_links_the_item_to_its_collection(item_files):
+    item_files[RECORD_PATH]["@graph"][0]["isPartOf"] = {
+        "@id": "https://digital.ucdavis.edu/collection/ark:/87287/d7root",
+    }
+    root = showcase_index.build_document(ARK)["@graph"][0]
+    assert root["isPartOf"] == [{"@id": "/collection/ark:/87287/d7root"}]
+
+
+def test_build_document_omits_is_part_of_without_a_collection(item_files):
+    assert "isPartOf" not in showcase_index.build_document(ARK)["@graph"][0]
+
+
 def test_silver_media_stamps_each_entry_with_its_source_group(monkeypatch):
     location = ItemLocation(
         ark=ARK, group="g", collection="c", time="latest", item_path="item",
@@ -509,3 +537,80 @@ def test_build_page_documents_covers_pdf_pages(monkeypatch):
     assert [p["@graph"][0]["@id"] for p in pages] == [f"{pdf_id}:0"]
     assert pages[0]["@graph"][0]["encodesCreativeWork"] == pdf_id
     assert pages[0]["@graph"][0]["position"] == 1
+
+
+COLLECTION_ARK = "ark:/87287/d7root"
+COLLECTION_RECORD = {"@id": COLLECTION_ARK, "@graph": [{
+    "@id": f"https://digital.ucdavis.edu/collection/{COLLECTION_ARK}",
+    "@type": ["schema:Collection"],
+    "ark": COLLECTION_ARK,
+    "name": "Haeger Collection",
+    "description": "Photos.",
+    "creator": "Haeger, John Winthrop",
+    "about": [{"@id": "Aerial photographs"}],
+    "identifier": [
+        {"@type": "PropertyValue", "propertyID": "ARK", "value": COLLECTION_ARK},
+        {"@type": "PropertyValue", "propertyID": "LocalID", "value": "MC-165"},
+    ],
+}]}
+
+
+@pytest.fixture
+def collection_gold(monkeypatch):
+    """Stub the collection's gold record read."""
+    monkeypatch.setattr(showcase_index.collection_record, "read", lambda name, opts={}: COLLECTION_RECORD)
+
+
+def test_build_collection_document_shape(collection_gold):
+    document = showcase_index.build_collection_document("c", {"item_count": 4})
+    root = document["@graph"][0]
+
+    assert document["@id"] == root["@id"] == f"/collection/{COLLECTION_ARK}"
+    assert (document["name"], document["roles"], document["clientMedia"]) == ("Haeger Collection", ["public"], {})
+    assert root["identifier"] == [COLLECTION_ARK, "MC-165"]
+    assert root["subjects"] == [{"@id": "Aerial photographs"}]
+    assert root["creator"] == {"name": "Haeger, John Winthrop"}
+    assert root["itemCount"] == 4
+    assert "hasPart" not in root and "publisher" not in root
+
+
+def test_count_collection_items_queries_is_part_of(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        showcase_index.httpx, "post",
+        lambda url, json=None: calls.append((url, json)) or _Response(200, {"count": 7}),
+    )
+
+    assert showcase_index.count_collection_items("/collection/x") == 7
+    assert calls[0][0].endswith(f"/{showcase_index.ES_INDEX}/_count")
+    assert calls[0][1] == {"query": {"term": {"@graph.isPartOf.@id": "/collection/x"}}}
+
+
+def test_count_collection_items_is_zero_without_an_item_index(monkeypatch):
+    monkeypatch.setattr(showcase_index.httpx, "post", lambda url, json=None: _Response(404))
+    assert showcase_index.count_collection_items("/collection/x") == 0
+
+
+def test_index_collection_writes_the_counted_document(monkeypatch, collection_gold):
+    monkeypatch.setattr(showcase_index, "count_collection_items", lambda collection_id: 12)
+    puts = []
+    monkeypatch.setattr(
+        showcase_index.httpx, "put", lambda url, json=None: puts.append((url, json)) or _Response(201),
+    )
+
+    result = showcase_index.index_collection("c")
+
+    url, document = puts[0]
+    assert url.endswith(f"/{showcase_index.COLLECTION_INDEX}/_doc/%2Fcollection%2Fark%3A%2F87287%2Fd7root")
+    assert document["@graph"][0]["itemCount"] == 12
+    assert result == {
+        "collection": "c", "esId": f"/collection/{COLLECTION_ARK}",
+        "index": showcase_index.COLLECTION_INDEX, "itemCount": 12, "status": "indexed",
+    }
+
+
+def test_index_collection_raises_on_a_failed_write(monkeypatch, collection_gold):
+    monkeypatch.setattr(showcase_index, "count_collection_items", lambda collection_id: 0)
+    monkeypatch.setattr(showcase_index.httpx, "put", lambda url, json=None: _Response(400))
+    with pytest.raises(showcase_index.httpx.HTTPStatusError):
+        showcase_index.index_collection("c")

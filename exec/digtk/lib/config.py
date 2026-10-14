@@ -185,6 +185,7 @@ SHOWCASE_GOLD_PROJECT_ENV = "DIGTK_SHOWCASE_GOLD_PROJECT"
 SHOWCASE_ES_HOST_ENV = "SHOWCASE_ES_HOST"
 SHOWCASE_ES_INDEX_ENV = "SHOWCASE_ES_INDEX"
 SHOWCASE_ES_PAGE_SEARCH_INDEX_ENV = "SHOWCASE_ES_PAGE_SEARCH_INDEX"
+SHOWCASE_ES_COLLECTION_INDEX_ENV = "SHOWCASE_ES_COLLECTION_INDEX"
 
 # The shared postgres instance's default 'postgres' database — same one
 # cask/anduin-gateway connect to (distinct from CONFIG["postgres"]'s own
@@ -294,6 +295,7 @@ SETTINGS = [
     {"dotpath": "showcase.es_host", "env": SHOWCASE_ES_HOST_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase.es_index", "env": SHOWCASE_ES_INDEX_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase.es_page_search_index", "env": SHOWCASE_ES_PAGE_SEARCH_INDEX_ENV, "cast": str, "secret": False},
+    {"dotpath": "showcase.es_collection_index", "env": SHOWCASE_ES_COLLECTION_INDEX_ENV, "cast": str, "secret": False},
     {"dotpath": "ocr.orientation_word_count_threshold", "env": OCR_ORIENTATION_WORD_COUNT_THRESHOLD_ENV, "cast": int, "secret": False},
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_angle_threshold", "env": OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, "cast": float, "secret": False},
@@ -603,6 +605,8 @@ CONFIG = {
         # list, holding that page's DjVu text layer — which its BookReader search
         # (/api/page-search/ia) queries. Same "-write" alias convention as es_index.
         "es_page_search_index": _env(SHOWCASE_ES_PAGE_SEARCH_INDEX_ENV, "page-search-write"),
+        # The website's collection index. Same "-write" alias convention.
+        "es_collection_index": _env(SHOWCASE_ES_COLLECTION_INDEX_ENV, "collection-write"),
     },
     "postgres": {
         # argonath's own app-level schema (collection registry, etc.) — the shared
