@@ -7,6 +7,10 @@ module mirrors the {"@id", "@graph": [...]} document envelope transform.js
 produces, so the website's existing search/detail lookups work unmodified
 once an item is indexed here).
 
+Media renditions live in a root-level "clientMedia" map keyed by gold
+item.jsonld.json @ids, not on @graph nodes; each media node's "sameAs" is its
+key. "displayImage" holds the main image, so search can skip clientMedia.
+
 Deliberately unrelated to digtk.commands.search (LlamaIndex/pgvector RAG
 search) - different index, different consumer, different purpose. Kept as
 its own module/command group rather than folded into `search` so the two
@@ -23,7 +27,7 @@ import urllib.parse
 
 import httpx
 
-from digtk.lib import items, fs
+from digtk.lib import items, fs, utils
 from digtk.lib.config import CONFIG
 from digtk.models.digital_website import audio, captions, image, item_record, pdf, pipeline, video
 
@@ -31,10 +35,8 @@ ES_HOST = CONFIG["showcase"]["es_host"]
 ES_INDEX = CONFIG["showcase"]["es_index"]
 PAGE_SEARCH_INDEX = CONFIG["showcase"]["es_page_search_index"]
 
-# URL prefix the dc-showcase gateway serves CaskFS files under: a request for
-# /cask/file/silver/... is proxied to the caskfs file API's /fs/silver/...
-# (see dc-showcase/services/gateway/index.js). Replaces the old /svc:cask/.
-CASK_FILE_PREFIX = "/cask/file/"
+# CaskFS file API path, proxied by the dc-showcase gateway.
+CASK_API_PREFIX = "/cask/api/fs/"
 
 # custom digital.ucdavis.edu vocabulary type (dams/services/fin/ucd-lib-client/client/public/lib/
 # utils/client-media/definition.js:25) marking a multi-page/scanned item - triggers
@@ -93,14 +95,13 @@ MEDIA_ORDER = ["video", "audio", "image", "pdf"]
 
 
 def _cask_url(cask_uri):
-    """A "cask://silver/..." reference URI as the URL the dc-showcase gateway
-    serves it at ("/cask/file/silver/...").
+    """A "cask://silver/..." reference URI as its CaskFS API download URL.
 
     :param str cask_uri: e.g. "cask://silver/g/c/latest/item/ocr/ocr.djvu".
-    :returns: e.g. "/cask/file/silver/g/c/latest/item/ocr/ocr.djvu".
+    :returns: e.g. "/cask/api/fs/silver/g/c/latest/item/ocr/ocr.djvu".
     :rtype: str
     """
-    return CASK_FILE_PREFIX + cask_uri.removeprefix("cask://")
+    return CASK_API_PREFIX + cask_uri.removeprefix("cask://")
 
 
 def _mime(filename, default):
@@ -398,15 +399,20 @@ def build_document(ark, opts={}):
     must be built first; media nodes come from its published silver
     derivatives (see _silver_media()).
 
+    Node clientMedia is moved to the root "clientMedia" map, keyed by gold
+    @id (see _extract_client_media()), plus a "displayImage".
+
     :param str ark: Item ARK.
     :param dict opts: 'project' — the gold app segment to read the record
         from (see item_record.read()); also forwarded to items.resolve().
-    :returns: ES document body, shaped like transform.js's {"@id", "@graph": [...]}.
+    :returns: ES document body: {"@id", "@graph", "clientMedia",
+        "displayImage", "name", "roles"}.
     :rtype: dict
     :raises FileNotFoundError: If the item's record hasn't been built yet.
     """
     location = items.resolve(ark, opts)
-    record = item_record.root_node(item_record.read(location, opts))
+    gold = item_record.read(location, opts)
+    record = item_record.root_node(gold)
     associated_media = _silver_media(location)
 
     fin_path = f"/item/{ark}"
@@ -437,29 +443,89 @@ def build_document(ark, opts={}):
         if IMAGE_LIST_TYPE in node["@type"]:
             graph += children
     graph = [{k: v for k, v in node.items() if v is not None} for node in graph]
+    client_media = _extract_client_media(graph[1:], _gold_media_ids(gold))
 
-    return {
+    document = {
         "@id": fin_path,
         "@graph": graph,
+        "clientMedia": client_media,
         "name": name,
         "roles": ["public"],
     }
+    display_image = _display_image(graph, client_media, (record.get("image") or {}).get("@id"))
+    if display_image:
+        document["displayImage"] = display_image
+    return document
+
+
+def _gold_media_ids(gold):
+    """Gold record media @ids, keyed by source filename.
+
+    Ids are item_record._frag() fragments: "#imagelist" for the image list
+    (keyed None), "#imagelist/<file>" or "#media/<file>" for files.
+
+    :param dict gold: The item's gold item.jsonld.json document.
+    :returns: {filename|None: gold @id}.
+    :rtype: dict
+    """
+    ids = {}
+    for node in gold.get("@graph") or []:
+        _, _, fragment = (node.get("@id") or "").partition("#")
+        namespace, _, filename = fragment.partition("/")
+        if namespace == "imagelist" and not filename:
+            ids[None] = node["@id"]
+        elif namespace in ("imagelist", "media") and filename:
+            ids[urllib.parse.unquote(filename)] = node["@id"]
+    return ids
+
+
+def _extract_client_media(nodes, gold_ids):
+    """Moves each media node's clientMedia into one map keyed by gold @id,
+    and sets the node's sameAs to that key.
+
+    A node with no gold match loses its clientMedia, with a warning.
+
+    :param list[dict] nodes: Media nodes (not the root), mutated in place.
+    :param dict gold_ids: _gold_media_ids()'s result.
+    :returns: {gold @id: clientMedia}.
+    :rtype: dict
+    """
+    client_media = {}
+    for node in nodes:
+        media = node.pop("clientMedia", None)
+        key = None if IMAGE_LIST_TYPE in node["@type"] else node.get("name")
+        gold_id = gold_ids.get(key)
+        if not gold_id:
+            utils.warn(f"no gold record node for {node['@id']}, dropping its clientMedia")
+            continue
+        node["sameAs"] = gold_id
+        if media is not None:
+            client_media[gold_id] = media
+    return client_media
+
+
+def _display_image(graph, client_media, gold_image_id):
+    """The item's main image: the gold root's schema:image (position 1, or
+    the lone image), else the first PDF's first page.
+
+    :param list[dict] graph: The document's @graph.
+    :param dict client_media: _extract_client_media()'s result.
+    :param str|None gold_image_id: The gold root node's image @id.
+    :returns: {"@id": gold @id, "images": {...}}, or None.
+    :rtype: dict|None
+    """
+    candidates = [gold_image_id] + [n.get("sameAs") for n in graph if n.get("fileFormatSimple") == "pdf"]
+    for gold_id in candidates:
+        images = (client_media.get(gold_id) or {}).get("images")
+        if images:
+            return {"@id": gold_id, "images": images}
+    return None
 
 
 def _build_client_media(location, page_media, filename=None):
-    """Builds the clientMedia urls the showcase webapp reads off an image node (a
-    single image, or one page of an image list),
-    pointing at the dc-showcase gateway's /cask/file/ prefix (CASK_FILE_PREFIX
-    — see dc-showcase/services/gateway/index.js) for images, instead of fin's
-    /svc:gcs/ - the gateway proxies that prefix straight to the caskfs file
-    API, so this can point directly at wherever generate_derivatives wrote
-    silver outputs, with no ark lookup needed at request time. The IIIF
-    deep-zoom viewer url uses a separate /iiif/ prefix instead,
-    which the dams-router forwards to the new argonath-iiif (Cantaloupe)
-    service rather than the argonath-adapter - see _tiled_iiif_url_for_filename().
-    It's nested in images (images.tiled.iiif), like the legacy fin image
-    manifest, because the fullscreen lightbox reads it off the page's images
-    object (app-image-viewer-lightbox.js renderCanvas()).
+    """Builds an image's clientMedia: CaskFS API urls for small/medium/large
+    and OCR, plus the IIIF tiled url nested under images (the lightbox reads
+    it there).
 
     :param digtk.lib.items.ItemLocation location:
     :param list page_media: This page's associatedMedia entries (from
@@ -474,10 +540,6 @@ def _build_client_media(location, page_media, filename=None):
         content_url = candidate.get("contentUrl", "")
         name = content_url.rsplit("/", 1)[-1].split(".")[0]
         if name in ("small", "medium", "large"):
-            # cask_public_ref() produces "cask://silver/..." - strip the full
-            # "cask://" scheme (not just "cask:/") so the result doesn't carry
-            # a leading slash into the prefix and create a
-            # "/cask/file//silver/..." double-slash.
             image = {"url": _cask_url(content_url)}
             # the record page's viewer builds its srcset from size.width and
             # crashes without it (app-image-viewer.js _renderImg())
@@ -531,7 +593,7 @@ def _ocr_from_manifest(manifest):
     so an image list with no OCR shows no pages at all).
 
     :param dict|None manifest: _image_manifest()'s result.
-    :returns: {"url": "/cask/file/...-ocr.djvu", "size": {...}, "imageSize": "large"}, or None.
+    :returns: {"url": "/cask/api/fs/...-ocr.djvu", "size": {...}, "imageSize": "large"}, or None.
     :rtype: dict|None
     """
     ocr = (manifest or {}).get("ocr")
@@ -623,16 +685,20 @@ def build_page_documents(document):
     """
     graph = document["@graph"]
     by_id = {node["@id"]: node for node in graph}
+    client_media = document.get("clientMedia") or {}
+
+    def media_of(node):
+        return client_media.get(node.get("sameAs")) or {}
 
     targets = []  # (book @id, page @id, position, ocr)
     for node in graph:
         if IMAGE_LIST_TYPE in (node.get("@type") or []):
             for link in node.get("hasPart") or []:
                 page = by_id.get(link["@id"]) or {}
-                ocr = ((page.get("clientMedia") or {}).get("images") or {}).get("ocr")
+                ocr = (media_of(page).get("images") or {}).get("ocr")
                 targets.append((node["@id"], page.get("@id"), page.get("position"), ocr))
         elif node.get("fileFormatSimple") == "pdf":
-            for page in (node.get("clientMedia") or {}).get("pages") or []:
+            for page in media_of(node).get("pages") or []:
                 targets.append((node["@id"], page["@id"], page["page"], page.get("ocr")))
 
     pages = []
@@ -640,7 +706,7 @@ def build_page_documents(document):
         if not page_id or not ocr:
             continue
         try:
-            raw = fs.read(f"cask:/{ocr['url'].removeprefix(CASK_FILE_PREFIX)}")
+            raw = fs.read(f"cask:/{ocr['url'].removeprefix(CASK_API_PREFIX)}")
         except FileNotFoundError:
             continue
         content = raw.decode("utf-8") if isinstance(raw, bytes) else raw

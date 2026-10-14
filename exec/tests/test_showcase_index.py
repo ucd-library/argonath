@@ -101,7 +101,7 @@ def test_normalize_creator_is_none_when_missing():
     assert showcase_index._normalize_creator([]) is None
 
 
-def test_client_media_points_images_at_the_gateways_cask_file_prefix():
+def test_client_media_points_images_at_the_cask_api():
     base = "cask://silver/g/c/latest/item/public-frontend-derivatives/images/photo.tiff/images"
     widths = {"small": 256, "medium": 512, "large": 1024}
     media = [
@@ -112,7 +112,7 @@ def test_client_media_points_images_at_the_gateways_cask_file_prefix():
     client_media = showcase_index._build_client_media(ITEM, media)
 
     assert client_media["images"]["medium"] == {
-        "url": "/cask/file/silver/g/c/latest/item/public-frontend-derivatives/images/photo.tiff/images/medium.jpg",
+        "url": "/cask/api/fs/silver/g/c/latest/item/public-frontend-derivatives/images/photo.tiff/images/medium.jpg",
         "size": {"width": "512", "height": "1024"},
     }
     assert set(client_media["images"]) == {"small", "medium", "large"}
@@ -137,7 +137,7 @@ def test_client_media_adds_the_pages_ocr_layer_for_bookreader(manifest):
     images = showcase_index._build_client_media(ITEM, media, "photo.tiff")["images"]
 
     assert images["ocr"] == {
-        "url": "/cask/file/silver/g/c/latest/item/ocr/photo-ocr.djvu",
+        "url": "/cask/api/fs/silver/g/c/latest/item/ocr/photo-ocr.djvu",
         "size": {"width": "1024", "height": "1325"},
         "imageSize": "large",
     }
@@ -170,15 +170,16 @@ def test_client_media_has_no_ocr_without_a_manifest_entry(manifest):
 # --- page search ----------------------------------------------------------------
 
 ITEM_ID = "/item/ark:/87287/d7abc1234"
-DJVU_URL = "/cask/file/silver/g/c/latest/item/ocr/page_001-ocr.djvu"
+DJVU_URL = "/cask/api/fs/silver/g/c/latest/item/ocr/page_001-ocr.djvu"
+
+
+GOLD_PAGE_ID = "https://digital.ucdavis.edu/item/ark:/87287/d7abc1234#imagelist/page_001.tif"
 
 
 def _image_list_document(ocr=True):
-    page = {"@id": f"{ITEM_ID}/images/1", "position": 1, "clientMedia": {"images": {}}}
+    images = {}
     if ocr:
-        page["clientMedia"]["images"]["ocr"] = {
-            "url": DJVU_URL, "size": {"width": "1024", "height": "1325"}, "imageSize": "large",
-        }
+        images["ocr"] = {"url": DJVU_URL, "size": {"width": "1024", "height": "1325"}, "imageSize": "large"}
     return {
         "@id": ITEM_ID,
         "roles": ["public"],
@@ -186,8 +187,9 @@ def _image_list_document(ocr=True):
             {"@id": ITEM_ID},
             {"@id": f"{ITEM_ID}/images", "@type": ["http://schema.org/MediaObject", showcase_index.IMAGE_LIST_TYPE],
              "hasPart": [{"@id": f"{ITEM_ID}/images/1"}]},
-            page,
+            {"@id": f"{ITEM_ID}/images/1", "position": 1, "sameAs": GOLD_PAGE_ID},
         ],
+        "clientMedia": {GOLD_PAGE_ID: {"images": images}},
     }
 
 
@@ -255,6 +257,7 @@ LOCATION = ItemLocation(
     bronze_binary_paths=[],
 )
 RECORD_PATH = "cask:/gold/digital-dev/c/item/item.jsonld.json"
+GOLD = f"https://digital.ucdavis.edu/item/{ARK}"
 
 
 def _image_entries(filename):
@@ -271,12 +274,18 @@ def item_files(monkeypatch):
     files a test adds (manifests); everything else is missing. set_media()
     sets the item's published silver associatedMedia entries."""
     files = {RECORD_PATH: {"@id": ARK, "@graph": [
-        {"@id": f"https://digital.ucdavis.edu/item/{ARK}", "name": "An item", "creator": "Someone"},
+        {"@id": GOLD, "name": "An item", "creator": "Someone"},
     ]}}
     media = []
 
     def set_media(entries):
         media[:] = entries
+
+    def set_gold(fragments, image=None):
+        root = {"@id": GOLD, "name": "An item", "creator": "Someone"}
+        if image:
+            root["image"] = {"@id": f"{GOLD}#{image}"}
+        files[RECORD_PATH]["@graph"] = [root] + [{"@id": f"{GOLD}#{f}"} for f in fragments]
 
     def fake_read(path):
         if path not in files:
@@ -288,6 +297,7 @@ def item_files(monkeypatch):
     monkeypatch.setattr(showcase_index.item_record.fs, "read", fake_read)
     monkeypatch.setattr(showcase_index, "_silver_media", lambda location: [dict(e) for e in media])
     files["set_media"] = set_media
+    files["set_gold"] = set_gold
     return files
 
 
@@ -311,36 +321,44 @@ def test_build_document_gives_audio_image_and_pdf_each_a_node(item_files):
                  "url": f"{SILVER}/doc/ocr/page-000/ocr.djvu"}},
     ]}
 
+    item_files["set_gold"](["media/talk.mp3", "media/logo.jpg", "media/doc.pdf"], image="media/logo.jpg")
+
     document = showcase_index.build_document(ARK)
-    root, nodes = document["@graph"][0], _graph(document)
+    root, nodes, media = document["@graph"][0], _graph(document), document["clientMedia"]
 
     item = f"/item/{ARK}"
     assert root["associatedMedia"] == [{"@id": f"{item}/talk.mp3"}, {"@id": f"{item}/logo.jpg"}, {"@id": f"{item}/doc.pdf"}]
-    assert "clientMedia" not in root
+    assert not any("clientMedia" in n for n in document["@graph"])
 
     audio = nodes[f"{item}/talk.mp3"]
     assert audio["@type"] == ["http://schema.org/AudioObject"] and audio["fileFormatSimple"] == "audio"
-    assert audio["clientMedia"]["audio"]["url"] == "/cask/file/silver/g/c/latest/item/public-frontend-derivatives/talk.mp3/converted.mp3"
-    assert audio["clientMedia"]["download"] == [{"url": audio["clientMedia"]["audio"]["url"], "label": "mp3"}]
-    assert audio["caption"] == [{"@id": "/cask/file/silver/g/c/latest/item/captions/output-en.vtt", "language": "en"}]
+    assert audio["sameAs"] == f"{GOLD}#media/talk.mp3"
+    audio_media = media[audio["sameAs"]]
+    assert audio_media["audio"]["url"] == "/cask/api/fs/silver/g/c/latest/item/public-frontend-derivatives/talk.mp3/converted.mp3"
+    assert audio_media["download"] == [{"url": audio_media["audio"]["url"], "label": "mp3"}]
+    assert audio["caption"] == [{"@id": "/cask/api/fs/silver/g/c/latest/item/captions/output-en.vtt", "language": "en"}]
 
     image = nodes[f"{item}/logo.jpg"]
     assert image["@type"] == ["http://schema.org/ImageObject"] and image["fileFormatSimple"] == "image"
     assert image["fileFormat"] == "image/jpeg"
-    assert image["clientMedia"]["download"] == [{"url": image["clientMedia"]["images"]["large"]["url"], "label": "jpg"}]
+    image_media = media[f"{GOLD}#media/logo.jpg"]
+    assert image_media["download"] == [{"url": image_media["images"]["large"]["url"], "label": "jpg"}]
 
     pdf = nodes[f"{item}/doc.pdf"]
     assert pdf["@type"] == ["http://schema.org/ImageObject"]
     assert (pdf["fileFormat"], pdf["fileFormatSimple"]) == ("application/pdf", "pdf")
-    assert pdf["clientMedia"]["pages"] == [{
+    pdf_media = media[f"{GOLD}#media/doc.pdf"]
+    assert pdf_media["pages"] == [{
         "page": 1, "@id": f"{item}/doc.pdf:0",
-        "large": {"url": "/cask/file/silver/g/c/latest/item/public-frontend-derivatives/doc.pdf/images/1/large.jpg",
+        "large": {"url": "/cask/api/fs/silver/g/c/latest/item/public-frontend-derivatives/doc.pdf/images/1/large.jpg",
                   "size": {"width": "1024", "height": "1325"}},
-        "ocr": {"url": "/cask/file/silver/g/c/latest/item/doc/ocr/page-000/ocr.djvu",
+        "ocr": {"url": "/cask/api/fs/silver/g/c/latest/item/doc/ocr/page-000/ocr.djvu",
                 "size": {"width": "1024", "height": "1325"}, "imageSize": "large"},
     }]
-    assert pdf["clientMedia"]["images"] == {"large": pdf["clientMedia"]["pages"][0]["large"]}
-    assert pdf["clientMedia"]["download"] == []
+    assert pdf_media["images"] == {"large": pdf_media["pages"][0]["large"]}
+    assert pdf_media["download"] == []
+
+    assert document["displayImage"] == {"@id": f"{GOLD}#media/logo.jpg", "images": image_media["images"]}
 
 
 def test_build_document_puts_video_first_with_its_stream_and_captions(item_files):
@@ -351,6 +369,8 @@ def test_build_document_puts_video_first_with_its_stream_and_captions(item_files
          "caption": {"contentUrl": f"{SILVER}/captions/movie-en.vtt", "inLanguage": "en"}},
     ])
 
+    item_files["set_gold"](["media/movie.mp4", "media/poster.jpg"], image="media/poster.jpg")
+
     document = showcase_index.build_document(ARK)
     root, nodes = document["@graph"][0], _graph(document)
 
@@ -359,18 +379,34 @@ def test_build_document_puts_video_first_with_its_stream_and_captions(item_files
     video = nodes[video_id]
     assert video["@type"] == ["http://schema.org/VideoObject"]
     assert (video["fileFormat"], video["fileFormatSimple"]) == ("video/mp4", "video")
-    assert video["clientMedia"] == {
-        "streamingVideo": {"manifest": "/cask/file/silver/g/c/latest/item/public-frontend-derivatives/movie.mp4/streaming/playlist.m3u8"},
+    assert document["clientMedia"][video["sameAs"]] == {
+        "streamingVideo": {"manifest": "/cask/api/fs/silver/g/c/latest/item/public-frontend-derivatives/movie.mp4/streaming/playlist.m3u8"},
         "download": [],
     }
-    assert video["caption"] == [{"@id": "/cask/file/silver/g/c/latest/item/captions/movie-en.vtt", "language": "en"}]
+    assert video["caption"] == [{"@id": "/cask/api/fs/silver/g/c/latest/item/captions/movie-en.vtt", "language": "en"}]
+    assert document["displayImage"]["@id"] == f"{GOLD}#media/poster.jpg"
+
+
+def test_build_document_has_no_display_image_for_audio_only(item_files):
+    item_files["set_media"]([
+        {"@type": "AudioObject", "contentUrl": f"{PFD}/talk.mp3/converted.mp3", "argonath:sourceGroup": "audio"},
+    ])
+    item_files["set_gold"](["media/talk.mp3"])
+
+    document = showcase_index.build_document(ARK)
+
+    assert list(document["clientMedia"]) == [f"{GOLD}#media/talk.mp3"]
+    assert "displayImage" not in document
 
 
 def test_build_document_makes_an_image_list_for_several_images(item_files):
     item_files["set_media"]([*_image_entries("page_002.tif"), *_image_entries("page_001.tif")])
+    item_files["set_gold"](
+        ["imagelist", "imagelist/page_001.tif", "imagelist/page_002.tif"], image="imagelist/page_001.tif",
+    )
 
     document = showcase_index.build_document(ARK)
-    root, nodes = document["@graph"][0], _graph(document)
+    root, nodes, media = document["@graph"][0], _graph(document), document["clientMedia"]
 
     list_id = f"/item/{ARK}/images"
     assert root["associatedMedia"] == [{"@id": list_id}]
@@ -379,8 +415,48 @@ def test_build_document_makes_an_image_list_for_several_images(item_files):
     page1 = nodes[f"{list_id}/1"]
     assert (page1["name"], page1["position"]) == ("page_001.tif", 1)
     assert page1["fileFormat"] == "image/tiff"
-    # a page's download is a single entry — the website collects them into the list's download
-    assert isinstance(page1["clientMedia"]["download"], dict)
+    assert nodes[list_id]["sameAs"] == f"{GOLD}#imagelist"
+    assert page1["sameAs"] == f"{GOLD}#imagelist/page_001.tif"
+    assert set(media) == {f"{GOLD}#imagelist", f"{GOLD}#imagelist/page_001.tif", f"{GOLD}#imagelist/page_002.tif"}
+    assert media[f"{GOLD}#imagelist"] == {"download": []}
+    # a page's download is a single entry
+    assert isinstance(media[page1["sameAs"]]["download"], dict)
+    assert document["displayImage"] == {"@id": page1["sameAs"], "images": media[page1["sameAs"]]["images"]}
+
+
+def test_build_document_matches_percent_encoded_gold_ids(item_files):
+    item_files["set_media"]([*_image_entries("my page_001.tif"), *_image_entries("my page_002.tif")])
+    item_files["set_gold"](["imagelist", "imagelist/my%20page_001.tif", "imagelist/my%20page_002.tif"])
+
+    document = showcase_index.build_document(ARK)
+
+    assert f"{GOLD}#imagelist/my%20page_002.tif" in document["clientMedia"]
+    assert _graph(document)[f"/item/{ARK}/images/2"]["sameAs"] == f"{GOLD}#imagelist/my%20page_002.tif"
+
+
+def test_build_document_uses_the_first_pdf_page_without_an_image(item_files):
+    item_files["set_media"]([
+        {"@type": "ImageObject", "contentUrl": f"{PFD}/doc.pdf/images/1/large.jpg", "argonath:sourceGroup": "pdf"},
+    ])
+    item_files["set_gold"](["media/doc.pdf"])
+    item_files["cask:/silver/g/c/latest/item/public-frontend-derivatives/doc.pdf/images/manifest.json"] = {"pages": [
+        {"page": 1, "large": {"size": {"width": "1024", "height": "1325"}, "url": f"{PFD}/doc.pdf/images/1/large.jpg"}},
+    ]}
+
+    document = showcase_index.build_document(ARK)
+
+    assert document["displayImage"]["@id"] == f"{GOLD}#media/doc.pdf"
+    assert set(document["displayImage"]["images"]) == {"large"}
+
+
+def test_build_document_drops_client_media_without_a_gold_node(item_files):
+    item_files["set_media"](_image_entries("logo.jpg"))
+
+    document = showcase_index.build_document(ARK)
+    image = _graph(document)[f"/item/{ARK}/logo.jpg"]
+
+    assert "sameAs" not in image and "clientMedia" not in image
+    assert document["clientMedia"] == {}
 
 
 def test_build_document_reads_descriptive_fields_from_the_gold_root_node(item_files):
@@ -422,11 +498,11 @@ def test_build_page_documents_covers_pdf_pages(monkeypatch):
     pdf_id = f"{ITEM_ID}/doc.pdf"
     document = {"@id": ITEM_ID, "roles": ["public"], "@graph": [
         {"@id": ITEM_ID},
-        {"@id": pdf_id, "fileFormatSimple": "pdf", "clientMedia": {"pages": [
-            {"page": 1, "@id": f"{pdf_id}:0", "ocr": {"url": DJVU_URL, "size": {"width": "10", "height": "20"}}},
-            {"page": 2, "@id": f"{pdf_id}:1"},  # no OCR layer: skipped
-        ]}},
-    ]}
+        {"@id": pdf_id, "fileFormatSimple": "pdf", "sameAs": "gold-pdf"},
+    ], "clientMedia": {"gold-pdf": {"pages": [
+        {"page": 1, "@id": f"{pdf_id}:0", "ocr": {"url": DJVU_URL, "size": {"width": "10", "height": "20"}}},
+        {"page": 2, "@id": f"{pdf_id}:1"},  # no OCR layer: skipped
+    ]}}}
 
     pages = showcase_index.build_page_documents(document)
 

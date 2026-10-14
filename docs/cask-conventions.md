@@ -115,7 +115,7 @@ Silver holds two kinds of output side by side:
   (`item.jsonld.json`) is not in silver — it's built afterward, into gold (see
   "Gold Layout"). They are **not app-scoped**: dc-showcase dev and prod (and any other
   app) reference the identical files, served through the dc-showcase gateway's
-  `/cask/file/<path>` prefix (e.g. `/cask/file/silver/preservica/haeger/latest/tree/<item>/public-frontend-derivatives/...`).
+  `/cask/api/fs/<path>` prefix (e.g. `/cask/api/fs/silver/preservica/haeger/latest/tree/<item>/public-frontend-derivatives/...`).
   Whether the public can see them is decided per collection/item, not per
   environment, so a public item is equally visible from dev and prod.
 - **Intermediate work product** — `ocr/`, `text/`, `metadata/`, `rag/`, and the other
@@ -347,7 +347,7 @@ below), with two deliberate differences:
   File" convention — the same scheme `associatedMedia.contentUrl` already uses),
   not a Fin-proxy/GCS-proxy/IIIF-server path. Serving URLs are derived from it
   later: `digtk.lib.showcase_index` turns these into the dc-showcase gateway's
-  `/cask/file/<path>` URLs (and a deep-zoom `clientMedia.tiled.iiif` URL) when it
+  `/cask/api/fs/<path>` URLs (and a deep-zoom `images.tiled.iiif` URL) when it
   builds an item's Elasticsearch document, so `tiled` has no `iiif` field here.
 
 `ocr` matches legacy's shape: it points at the page's DjVu XML text layer in
