@@ -728,9 +728,38 @@ def count_collection_items(collection_id):
     return resp.json()["count"]
 
 
+def find_collection_image(collection_id, opts={}):
+    """The root image of one of the collection's items, to use as the
+    collection's own image. Items are checked in @id order.
+
+    :param str collection_id: The collection document's @id, "/collection/<ark>".
+    :param dict opts: 'size' (int, default 10) — how many items to check.
+    :returns: {"@id": <item image node @id>}, or None if no item has one.
+    :rtype: dict|None
+    :raises httpx.HTTPStatusError: If the search request fails.
+    """
+    resp = httpx.post(f"{ES_HOST}/{ES_INDEX}/_search", json={
+        "size": opts.get("size", 10),
+        "query": {"term": {"@graph.isPartOf.@id": collection_id}},
+        "sort": [{"@id": "asc"}],
+        "_source": ["@id", "@graph.@id", "@graph.image"],
+    })
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    for hit in resp.json()["hits"]["hits"]:
+        source = hit["_source"]
+        root = next((n for n in source.get("@graph") or [] if n.get("@id") == source.get("@id")), {})
+        image_id = (root.get("image") or {}).get("@id")
+        if image_id:
+            return {"@id": image_id}
+    return None
+
+
 def index_collection(name, opts={}):
     """Builds a collection's ES document and writes it to the collection index.
-    itemCount is set at write time; dc-showcase's cron keeps it current.
+    itemCount and image come from the collection's items at write time;
+    dc-showcase's cron keeps itemCount current.
 
     :param str name: Collection name.
     :param dict opts: 'project' — see collection_record.read().
@@ -741,7 +770,11 @@ def index_collection(name, opts={}):
     document = build_collection_document(name, opts)
     es_id = document["@id"]
     count = count_collection_items(es_id)
-    document["@graph"][0]["itemCount"] = count
+    root = document["@graph"][0]
+    root["itemCount"] = count
+    image = find_collection_image(es_id)
+    if image:
+        root["image"] = image
 
     resp = httpx.put(f"{ES_HOST}/{COLLECTION_INDEX}/_doc/{urllib.parse.quote(es_id, safe='')}", json=document)
     resp.raise_for_status()

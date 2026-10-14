@@ -593,6 +593,7 @@ def test_count_collection_items_is_zero_without_an_item_index(monkeypatch):
 
 def test_index_collection_writes_the_counted_document(monkeypatch, collection_gold):
     monkeypatch.setattr(showcase_index, "count_collection_items", lambda collection_id: 12)
+    monkeypatch.setattr(showcase_index, "find_collection_image", lambda collection_id: {"@id": "/item/a/images/1"})
     puts = []
     monkeypatch.setattr(
         showcase_index.httpx, "put", lambda url, json=None: puts.append((url, json)) or _Response(201),
@@ -603,6 +604,7 @@ def test_index_collection_writes_the_counted_document(monkeypatch, collection_go
     url, document = puts[0]
     assert url.endswith(f"/{showcase_index.COLLECTION_INDEX}/_doc/%2Fcollection%2Fark%3A%2F87287%2Fd7root")
     assert document["@graph"][0]["itemCount"] == 12
+    assert document["@graph"][0]["image"] == {"@id": "/item/a/images/1"}
     assert result == {
         "collection": "c", "esId": f"/collection/{COLLECTION_ARK}",
         "index": showcase_index.COLLECTION_INDEX, "itemCount": 12, "status": "indexed",
@@ -611,6 +613,53 @@ def test_index_collection_writes_the_counted_document(monkeypatch, collection_go
 
 def test_index_collection_raises_on_a_failed_write(monkeypatch, collection_gold):
     monkeypatch.setattr(showcase_index, "count_collection_items", lambda collection_id: 0)
+    monkeypatch.setattr(showcase_index, "find_collection_image", lambda collection_id: None)
     monkeypatch.setattr(showcase_index.httpx, "put", lambda url, json=None: _Response(400))
     with pytest.raises(showcase_index.httpx.HTTPStatusError):
         showcase_index.index_collection("c")
+
+
+def test_index_collection_omits_image_when_no_item_has_one(monkeypatch, collection_gold):
+    monkeypatch.setattr(showcase_index, "count_collection_items", lambda collection_id: 0)
+    monkeypatch.setattr(showcase_index, "find_collection_image", lambda collection_id: None)
+    puts = []
+    monkeypatch.setattr(
+        showcase_index.httpx, "put", lambda url, json=None: puts.append(json) or _Response(201),
+    )
+
+    showcase_index.index_collection("c")
+
+    assert "image" not in puts[0]["@graph"][0]
+
+
+def _item_hit(item_id, image=None):
+    root = {"@id": item_id}
+    if image:
+        root["image"] = {"@id": image}
+    return {"_source": {"@id": item_id, "@graph": [root, {"@id": f"{item_id}/images"}]}}
+
+
+def test_find_collection_image_uses_the_first_item_with_an_image(monkeypatch):
+    calls = []
+    hits = [_item_hit("/item/a"), _item_hit("/item/b", "/item/b/images/1")]
+    monkeypatch.setattr(
+        showcase_index.httpx, "post",
+        lambda url, json=None: calls.append((url, json)) or _Response(200, {"hits": {"hits": hits}}),
+    )
+
+    assert showcase_index.find_collection_image("/collection/x") == {"@id": "/item/b/images/1"}
+    assert calls[0][0].endswith(f"/{showcase_index.ES_INDEX}/_search")
+    assert calls[0][1]["query"] == {"term": {"@graph.isPartOf.@id": "/collection/x"}}
+
+
+def test_find_collection_image_is_none_without_images(monkeypatch):
+    monkeypatch.setattr(
+        showcase_index.httpx, "post",
+        lambda url, json=None: _Response(200, {"hits": {"hits": [_item_hit("/item/a")]}}),
+    )
+    assert showcase_index.find_collection_image("/collection/x") is None
+
+
+def test_find_collection_image_is_none_without_an_item_index(monkeypatch):
+    monkeypatch.setattr(showcase_index.httpx, "post", lambda url, json=None: _Response(404))
+    assert showcase_index.find_collection_image("/collection/x") is None
