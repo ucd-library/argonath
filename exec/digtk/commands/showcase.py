@@ -7,7 +7,7 @@ Subcommands:
   pdf        — PDF derivative commands
   video      — video derivative commands
   audio      — audio derivative commands
-  es         — index items into the DAMS website's Elasticsearch index
+  es         — index items into the showcase website's Elasticsearch index
   formats    — report which media-type formats an item's bronze binaries span
   finalize   — write an item's item-level outputs after one-file-at-a-time derivatives
   build-item — assemble and write the item's complete, canonical gold item.jsonld.json

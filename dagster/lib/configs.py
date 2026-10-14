@@ -199,13 +199,13 @@ class ItemRunConfig(CollectionDerivativesConfig):
     :param str item: The item's bronze folder, e.g.
         "bronze/preservica/haeger/latest/tree/quarter-mile" ('cask:/' and a
         leading '/' are accepted too).
-    :param bool index_es: Index the item into the DAMS Elasticsearch index
+    :param bool index_es: Index the item into the showcase Elasticsearch index
         (`digtk showcase es upsert`) once it's finalized.
     """
     item: str = Field(
         "", description="Bronze folder of the item, e.g. bronze/preservica/haeger/latest/tree/quarter-mile.",
     )
-    index_es: bool = Field(True, description="Index the item into the DAMS Elasticsearch index afterwards.")
+    index_es: bool = Field(True, description="Index the item into the showcase Elasticsearch index afterwards.")
 
 
 class OcrConfig(Config):

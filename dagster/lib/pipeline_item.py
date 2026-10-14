@@ -205,7 +205,7 @@ def pdc_generate_item_record(context: OpExecutionContext, item: dict) -> dict:
 
 @op
 def pdc_index_item(context: OpExecutionContext, item: dict):
-    """Index the item into the DAMS Elasticsearch index (`digtk showcase es
+    """Index the item into the showcase Elasticsearch index (`digtk showcase es
     upsert`) if ItemRunConfig.index_es is set, then record the job as a success.
 
     This is the one step in the job that genuinely requires an ark (the ES

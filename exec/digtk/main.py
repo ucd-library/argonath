@@ -10,7 +10,7 @@ Subcommands mirror the pipeline phases:
                           pdf (per-page thumbnails, conversion, deskew, OCR prep),
                           video (HLS stream, captions via local Whisper),
                           audio (transcode, waveform, captions via local Whisper),
-                          es (index items into the DAMS website's Elasticsearch index)
+                          es (index items into the showcase website's Elasticsearch index)
   digtk ocr           — Tesseract word geometry + Qwen vision transcript
   digtk metadata      — AI and human metadata generation
   digtk accessibility — accessibility metadata (AI alt text, PDF/UA-1 tagging)

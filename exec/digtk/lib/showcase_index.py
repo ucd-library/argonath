@@ -1,7 +1,7 @@
 """
-Indexes an item's schema.org metadata into the DAMS website's Elasticsearch
-index - the same index fin's dbsync populates today, read by the digital
-library website's /api/item and /api/collection endpoints (see
+Indexes an item's schema.org metadata into the showcase website's
+Elasticsearch index - the same index fin's dbsync populates today, read by the
+digital library website's /api/item and /api/collection endpoints (see
 dams/services/fin/models/item/{model,transform}.js in the dams repo - this
 module mirrors the {"@id", "@graph": [...]} document envelope transform.js
 produces, so the website's existing search/detail lookups work unmodified
@@ -10,49 +10,33 @@ once an item is indexed here).
 Deliberately unrelated to digtk.commands.search (LlamaIndex/pgvector RAG
 search) - different index, different consumer, different purpose. Kept as
 its own module/command group rather than folded into `search` so the two
-don't get conflated - see dagster/lib/assets.py's index_for_dams_search
+don't get conflated - see dagster/lib/assets.py's index_for_showcase_search
 docstring for the same reasoning on the Dagster side.
 
-ES connection settings are plain env vars here rather than going through
-digtk.lib.config's central SETTINGS registry - this is new/experimental, and
-migrating it into the shared config system can happen once the shape of what
-this needs settles.
+ES connection settings come from CONFIG["showcase"] (es_host, es_index,
+es_page_search_index) - see digtk.lib.config.
 """
 import json
 import mimetypes
-import os
 import re
 import urllib.parse
 
 import httpx
 
 from digtk.lib import items, fs
+from digtk.lib.config import CONFIG
 from digtk.models.digital_website import audio, captions, image, item_record, pdf, pipeline, video
 
-ES_HOST_ENV = "DAMS_ES_HOST"
-ES_INDEX_ENV = "DAMS_ES_INDEX"
-
-ES_HOST = os.environ.get(ES_HOST_ENV, "http://elasticsearch:9200")
-
-# fin's ElasticSearchModel base class (fin/services/fin/node-utils/lib/data-models/
-# elastic-search/index.js:19-20) writes through a "-write" alias and reads through
-# a "-read" alias - normally both point at the same underlying index, but diverge
-# during a reindex/mapping-change cutover (see fin's es-index-management service).
-# This indexer is a write path, so it targets item-write, matching dbsync.
-ES_INDEX = os.environ.get(ES_INDEX_ENV, "item-write")
-
-# The website's page-level full-text index — one document per page of an image
-# list, holding that page's DjVu text layer — which its BookReader search
-# (/api/page-search/ia) queries. Same "-write" alias convention as ES_INDEX.
-PAGE_SEARCH_INDEX_ENV = "DAMS_ES_PAGE_SEARCH_INDEX"
-PAGE_SEARCH_INDEX = os.environ.get(PAGE_SEARCH_INDEX_ENV, "page-search-write")
+ES_HOST = CONFIG["showcase"]["es_host"]
+ES_INDEX = CONFIG["showcase"]["es_index"]
+PAGE_SEARCH_INDEX = CONFIG["showcase"]["es_page_search_index"]
 
 # URL prefix the dc-showcase gateway serves CaskFS files under: a request for
 # /cask/file/silver/... is proxied to the caskfs file API's /fs/silver/...
 # (see dc-showcase/services/gateway/index.js). Replaces the old /svc:cask/.
 CASK_FILE_PREFIX = "/cask/file/"
 
-# custom DAMS vocabulary type (dams/services/fin/ucd-lib-client/client/public/lib/
+# custom digital.ucdavis.edu vocabulary type (dams/services/fin/ucd-lib-client/client/public/lib/
 # utils/client-media/definition.js:25) marking a multi-page/scanned item - triggers
 # the client's "imagelist" display mode, which crawls hasPart for page content
 # instead of reading clientMedia off the root node directly.
@@ -62,7 +46,7 @@ IMAGE_LIST_TYPE = "http://digital.ucdavis.edu/schema#ImageList"
 def _normalize_type(type_value, default):
     """Normalizes a JSON-LD @type value to a list.
 
-    dams's client code (RecordGraph.js, client-media/model.js) always calls
+    the showcase client code (RecordGraph.js, client-media/model.js) always calls
     .includes()/.map() on a node's @type, so it must be an array - never a
     bare string, which is what a naive sidecar.get("@type") read would
     produce for a single-valued type.
@@ -80,7 +64,7 @@ def _normalize_type(type_value, default):
 
 
 def _normalize_creator(creator):
-    """Shapes an item record's creator value as the node(s) the DAMS index
+    """Shapes an item record's creator value as the node(s) the showcase index
     expects.
 
     The item index maps @graph.creator as an object ({"@id", "name"}), so a
@@ -463,7 +447,7 @@ def build_document(ark, opts={}):
 
 
 def _build_client_media(location, page_media, filename=None):
-    """Builds the clientMedia urls the dams webapp reads off an image node (a
+    """Builds the clientMedia urls the showcase webapp reads off an image node (a
     single image, or one page of an image list),
     pointing at the dc-showcase gateway's /cask/file/ prefix (CASK_FILE_PREFIX
     — see dc-showcase/services/gateway/index.js) for images, instead of fin's
@@ -584,7 +568,7 @@ def _tiled_iiif_url_for_filename(location, filename, manifest=None):
 
 
 def index_item(ark):
-    """Builds an item's ES document and writes it to the DAMS index, then
+    """Builds an item's ES document and writes it to the showcase index, then
     replaces its page-search documents (see index_pages()).
 
     :param str ark: Item ARK to index.

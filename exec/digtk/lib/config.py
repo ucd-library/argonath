@@ -182,6 +182,9 @@ CAPTIONS_WHISPER_BIN_ENV = "DIGTK_CAPTIONS_WHISPER_BIN"
 CAPTIONS_TIMEOUT_S_ENV = "DIGTK_CAPTIONS_TIMEOUT_S"
 
 SHOWCASE_GOLD_PROJECT_ENV = "DIGTK_SHOWCASE_GOLD_PROJECT"
+SHOWCASE_ES_HOST_ENV = "SHOWCASE_ES_HOST"
+SHOWCASE_ES_INDEX_ENV = "SHOWCASE_ES_INDEX"
+SHOWCASE_ES_PAGE_SEARCH_INDEX_ENV = "SHOWCASE_ES_PAGE_SEARCH_INDEX"
 
 # The shared postgres instance's default 'postgres' database — same one
 # cask/anduin-gateway connect to (distinct from CONFIG["postgres"]'s own
@@ -288,6 +291,9 @@ SETTINGS = [
     {"dotpath": "captions.whisper_bin", "env": CAPTIONS_WHISPER_BIN_ENV, "cast": str, "secret": False},
     {"dotpath": "captions.timeout_s", "env": CAPTIONS_TIMEOUT_S_ENV, "cast": float, "secret": False},
     {"dotpath": "showcase.gold_project", "env": SHOWCASE_GOLD_PROJECT_ENV, "cast": str, "secret": False},
+    {"dotpath": "showcase.es_host", "env": SHOWCASE_ES_HOST_ENV, "cast": str, "secret": False},
+    {"dotpath": "showcase.es_index", "env": SHOWCASE_ES_INDEX_ENV, "cast": str, "secret": False},
+    {"dotpath": "showcase.es_page_search_index", "env": SHOWCASE_ES_PAGE_SEARCH_INDEX_ENV, "cast": str, "secret": False},
     {"dotpath": "ocr.orientation_word_count_threshold", "env": OCR_ORIENTATION_WORD_COUNT_THRESHOLD_ENV, "cast": int, "secret": False},
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_angle_threshold", "env": OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, "cast": float, "secret": False},
@@ -585,6 +591,18 @@ CONFIG = {
     },
     "showcase": {
         "gold_project": _env(SHOWCASE_GOLD_PROJECT_ENV, "digital-dev"),
+        # Elasticsearch the showcase website reads (see digtk.lib.showcase_index).
+        "es_host": _env(SHOWCASE_ES_HOST_ENV, "http://elasticsearch:9200"),
+        # fin's ElasticSearchModel base class (fin/services/fin/node-utils/lib/data-models/
+        # elastic-search/index.js:19-20) writes through a "-write" alias and reads through
+        # a "-read" alias - normally both point at the same underlying index, but diverge
+        # during a reindex/mapping-change cutover (see fin's es-index-management service).
+        # showcase_index is a write path, so it targets item-write, matching dbsync.
+        "es_index": _env(SHOWCASE_ES_INDEX_ENV, "item-write"),
+        # The website's page-level full-text index — one document per page of an image
+        # list, holding that page's DjVu text layer — which its BookReader search
+        # (/api/page-search/ia) queries. Same "-write" alias convention as es_index.
+        "es_page_search_index": _env(SHOWCASE_ES_PAGE_SEARCH_INDEX_ENV, "page-search-write"),
     },
     "postgres": {
         # argonath's own app-level schema (collection registry, etc.) — the shared
