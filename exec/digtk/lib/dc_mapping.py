@@ -59,9 +59,9 @@ def extract_dublin_core(content):
 
     Ported from preservica-etl's descriptive-metadata.js#extractDublinCore(),
     adapted to digtk's already-single-fragment input shape (no multi-fragment
-    search needed — digtk.models.collection._copy_metadata_to_tree() /
-    _write_tree_item_jsonld() already resolved to one fragment's Content before
-    calling this, and refuse more than one fragment per entity outright).
+    search needed — digtk.models.collection._copy_metadata_to_tree() already
+    resolved to one fragment's Content before writing the metadata.json this
+    reads, and refuses more than one fragment per entity outright).
 
     :param dict content: digtk.lib.preservica.xml.parse_metadata_content()'s
         return, e.g. {"dc": {...}}.

@@ -43,7 +43,8 @@ def item_result(context, item, status, opts={}):
     """Build an item job result for record_item_result().
 
     :param context: Dagster op or sensor context (for the run id).
-    :param dict item: plan_item's item dict ({"item", "ark", ...}).
+    :param dict item: The item job's item dict ({"item", ...}, plus "ark" once
+        pdc_generate_item_record has built the record).
     :param str status: "success" or "failed".
     :param dict opts: 'error' (str), 'run_id' (defaults to context.run_id).
     :returns: {"status", "run_id", "ark", "error", "finished_at"}.

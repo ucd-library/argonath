@@ -78,8 +78,7 @@ class ItemMetadata(BaseModel):
         Only fields that are actually set are included (besides the always-
         present @context/@id/ark/@type) — an absent field is omitted rather
         than written as null, so a consumer merging this into an existing
-        sidecar (see digtk.models.digital_website.pipeline.merge_dc_metadata())
-        never clobbers a value some other writer already set with a null.
+        document never clobbers a value some other writer already set with a null.
 
         :returns: JSON-LD document dict ready for serialization.
         :rtype: dict

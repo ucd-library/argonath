@@ -33,10 +33,10 @@ def _sources(item):
 
 @pytest.fixture
 def fake_fs(monkeypatch):
-    state = {"sidecar": None}
-    monkeypatch.setattr(captions.fs, "exists", lambda path: state["sidecar"] is not None)
-    monkeypatch.setattr(captions.fs, "read", lambda path: state["sidecar"])
-    return state
+    files = {}
+    monkeypatch.setattr(captions.fs, "exists", lambda path: path in files)
+    monkeypatch.setattr(captions.fs, "read", lambda path: files[path])
+    return files
 
 
 @pytest.fixture
@@ -51,7 +51,7 @@ def fake_derivative(monkeypatch):
         )
         return {"path": f"cask:{dest}", "links": []}
 
-    monkeypatch.setattr(captions.derivative, "write", fake_write)
+    monkeypatch.setattr(pipeline.derivative, "write", fake_write)
     return calls
 
 
@@ -84,51 +84,49 @@ def test_transcribe_sources_honors_language_opt(fake_fs, fake_derivative, fake_w
     assert result["outputs"] == ["output-es.vtt"]
 
 
-def test_transcribe_sources_creates_placeholder_sidecar_entry_when_no_existing_media(fake_fs, fake_derivative, fake_whisper, tmp_path):
+def test_transcribe_sources_never_writes_an_item_record(fake_fs, fake_derivative, fake_whisper, tmp_path):
     captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND, opts={})
-    sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
-    doc = json.loads(sidecar_write["data"])
-    assert len(doc["associatedMedia"]) == 1
-    entry = doc["associatedMedia"][0]
-    assert entry["identifier"] == "video"
-    assert entry["caption"]["encodingFormat"] == "text/vtt"
-    assert entry["caption"]["inLanguage"] == "en"
-    assert doc["argonath:fieldSources"]["caption"] == "ai"
+    assert not any(c["rel_path"].endswith("item.jsonld.json") for c in fake_derivative)
 
 
-def test_transcribe_sources_merges_into_existing_video_object(fake_fs, fake_derivative, fake_whisper, tmp_path):
-    fake_fs["sidecar"] = json.dumps({
-        "@id": ARK, "ark": ARK,
-        "associatedMedia": [{
-            "@type": "VideoObject", "identifier": "video",
-            "contentUrl": "cask://silver/g/c/latest/item/stream/playlist.m3u8",
-        }],
+def _captions_manifest(fake_fs, item, outputs, language="en"):
+    rel = f"{item.item_path}/captions" if item.item_path else "captions"
+    fake_fs[f"cask:/silver/g/c/latest/{rel}/manifest.json"] = json.dumps({
+        "command": COMMAND, "params": {"language": language}, "outputs": outputs,
     }).encode()
 
-    captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND, opts={"language": "en"})
 
-    sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
-    doc = json.loads(sidecar_write["data"])
-    assert len(doc["associatedMedia"]) == 1
-    media = doc["associatedMedia"][0]
-    assert media["@type"] == "VideoObject"  # untouched
-    assert media["contentUrl"] == "cask://silver/g/c/latest/item/stream/playlist.m3u8"  # untouched
-    assert media["caption"]["contentUrl"] == "cask://silver/g/c/latest/item/captions/output-en.vtt"
+def test_attach_captions_adds_caption_to_matching_entry(fake_fs):
+    _captions_manifest(fake_fs, ITEM, ["output-en.vtt"])
+    entries = [{
+        "@type": "VideoObject", "identifier": "video",
+        "contentUrl": "cask://silver/g/c/latest/item/stream/playlist.m3u8",
+    }]
+
+    assert captions.attach_captions(ITEM, entries) is True
+    assert entries[0]["contentUrl"] == "cask://silver/g/c/latest/item/stream/playlist.m3u8"
+    assert entries[0]["caption"] == {
+        "@type": "MediaObject", "encodingFormat": "text/vtt", "inLanguage": "en",
+        "contentUrl": "cask://silver/g/c/latest/item/captions/output-en.vtt",
+    }
 
 
-def test_transcribe_sources_multi_source_matches_captions_to_correct_identifier(fake_fs, fake_derivative, fake_whisper, tmp_path):
-    fake_fs["sidecar"] = json.dumps({
-        "@id": ARK, "ark": ARK,
-        "associatedMedia": [
-            {"@type": "VideoObject", "identifier": "clip-a", "contentUrl": "cask://.../clip-a-playlist.m3u8"},
-            {"@type": "VideoObject", "identifier": "clip-b", "contentUrl": "cask://.../clip-b-playlist.m3u8"},
-        ],
-    }).encode()
+def test_attach_captions_multi_source_matches_captions_to_correct_identifier(fake_fs):
+    _captions_manifest(fake_fs, MULTI_ITEM, ["clip-a-output-en.vtt", "clip-b-output-en.vtt"])
+    entries = [
+        {"@type": "VideoObject", "identifier": "clip-a", "contentUrl": "cask://.../clip-a-playlist.m3u8"},
+        {"@type": "VideoObject", "identifier": "clip-b", "contentUrl": "cask://.../clip-b-playlist.m3u8"},
+    ]
 
-    captions.transcribe_sources(MULTI_ITEM, _sources(MULTI_ITEM), str(tmp_path), COMMAND, opts={})
+    captions.attach_captions(MULTI_ITEM, entries)
 
-    sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
-    doc = json.loads(sidecar_write["data"])
-    by_id = {m["identifier"]: m for m in doc["associatedMedia"]}
+    by_id = {m["identifier"]: m for m in entries}
     assert by_id["clip-a"]["caption"]["contentUrl"].endswith("clip-a-output-en.vtt")
     assert by_id["clip-b"]["caption"]["contentUrl"].endswith("clip-b-output-en.vtt")
+
+
+def test_attach_captions_without_a_captions_manifest_attaches_nothing(fake_fs):
+    entries = [{"@type": "VideoObject", "identifier": "video", "contentUrl": "cask://.../playlist.m3u8"}]
+
+    assert captions.attach_captions(ITEM, entries) is False
+    assert "caption" not in entries[0]

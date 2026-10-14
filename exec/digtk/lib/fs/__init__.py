@@ -215,6 +215,18 @@ def find_by_subject(subject, opts={}):
     return _get_cask_backend().find_by_subject(subject, opts)
 
 
+def find_by_graph(graph, opts={}):
+    """Find files whose RDF content includes the given named graph.
+    CaskFS-only, same as find_by_subject().
+
+    :param str graph: Named graph URI (e.g. an ARK).
+    :param dict opts: See digtk.lib.fs.cask.CaskBackend.find_by_graph.
+    :returns: Every matching file's CaskFS-absolute path.
+    :rtype: list[str]
+    """
+    return _get_cask_backend().find_by_graph(graph, opts)
+
+
 def find_by_partition_keys(partition_keys, opts={}):
     """Find files tagged with all of the given partition keys — no RDF/
     JSON-LD content required, unlike find_by_subject(). CaskFS-only, same as

@@ -68,6 +68,17 @@ def test_set_setting_persists_preservica_tenant(home_config_path):
     assert config.read_home_config(home_config_path) == {"preservica.tenant": "mytenant"}
 
 
+def test_set_setting_persists_showcase_es_settings(home_config_path):
+    config.set_setting("showcase.es_host", "http://es.example:9200", path=home_config_path)
+    config.set_setting("showcase.es_index", "item-test", path=home_config_path)
+    config.set_setting("showcase.es_page_search_index", "page-search-test", path=home_config_path)
+    assert config.read_home_config(home_config_path) == {
+        "showcase.es_host": "http://es.example:9200",
+        "showcase.es_index": "item-test",
+        "showcase.es_page_search_index": "page-search-test",
+    }
+
+
 def test_is_secret():
     assert config.is_secret("samwise.api_key") is True
     assert config.is_secret("samwise.api_url") is False
@@ -118,8 +129,24 @@ def test_resolved_settings_reports_secret_set(monkeypatch):
 
 def test_resolved_settings_reports_non_secret_config_values():
     resolved = config.resolved_settings()
-    assert resolved["ark.naan"] == config.CONFIG["ark"]["naan"]
+    assert resolved["fs.chunk_size"] == config.CONFIG["fs"]["chunk_size"]
     assert resolved["search.top_k"] == config.CONFIG["search"]["top_k"]
+
+
+def test_resolved_settings_reports_showcase_es_settings():
+    resolved = config.resolved_settings()
+    assert resolved["showcase.es_host"] == config.CONFIG["showcase"]["es_host"]
+    assert resolved["showcase.es_index"] == config.CONFIG["showcase"]["es_index"]
+    assert resolved["showcase.es_page_search_index"] == config.CONFIG["showcase"]["es_page_search_index"]
+
+
+def test_showcase_es_defaults():
+    """Pins the showcase ES defaults that digtk.lib.showcase_index writes to — the
+    "-write" aliases of fin's item and page-search indexes."""
+    showcase = config.CONFIG["showcase"]
+    assert showcase["es_host"] == "http://elasticsearch:9200"
+    assert showcase["es_index"] == "item-write"
+    assert showcase["es_page_search_index"] == "page-search-write"
 
 
 def test_image_derivatives_defaults():

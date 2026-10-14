@@ -2,41 +2,41 @@
 process_item_job: run one item's showcase derivatives on demand. The job is
 manual and unpartitioned, and the item is addressed by its bronze tree folder
 (ItemRunConfig.item, e.g. "bronze/preservica/haeger/latest/tree/quarter-mile")
-throughout — an ARK is read from the folder's item.jsonld.json by
-`digtk showcase formats <folder> --files` if one exists, but is never required
-to generate derivatives or finalize the item; only index_item's Elasticsearch
-upsert genuinely needs one (see below).
+throughout the derivative and finalize steps, which never read or record an
+ARK. pdc_generate_item_record is the first step to use one (read from the
+folder's identifiers.json when it builds the gold item.jsonld.json), and
+pdc_index_item's Elasticsearch upsert uses that ARK (see below).
 
 It works like one item's slice of lib/pipeline_fanout.py's
 process_collection_job and reuses that module's pieces: item_tasks() builds
 the tasks (one per image/PDF file, one per video/audio item),
 process_derivative_batch runs them, finalize_one_item() writes the item-level
-derivative outputs, and build_item_record() assembles the canonical
+derivative outputs, and build_item_record() assembles the canonical gold
 item.jsonld.json. The graph:
 
-  plan_item -> process_derivative_batch (mapped) -> collect -> finalize_item
-            -> generate_item_record -> index_item
+  pdc_plan_item -> process_derivative_batch (mapped) -> collect -> pdc_finalize_item
+            -> pdc_generate_item_record -> pdc_index_item
 
-finalize_item fails the run if any file failed, and only finalizes items with
-image or PDF outputs. generate_item_record then runs `digtk showcase
+pdc_finalize_item fails the run if any file failed, and only finalizes items with
+image or PDF outputs. pdc_generate_item_record then runs `digtk showcase
 build-item <item>`, assembling the item's full descriptive/associatedMedia
 record — this is the other step that hard-requires an ark (the canonical
 public record needs a stable identifier), so it fails here for an ark-less
-item, after derivatives/finalize already succeeded. index_item then runs
+item, after derivatives/finalize already succeeded. pdc_index_item then runs
 `digtk showcase es upsert <ark>` (ItemRunConfig.index_es), re-reading whatever
-generate_item_record just wrote. An item whose formats listing itself fails
-(not just a missing ark) becomes a single error task at plan_item, so the run
+pdc_generate_item_record just wrote. An item whose formats listing itself fails
+(not just a missing ark) becomes a single error task at pdc_plan_item, so the run
 reports it and fails like any other failed step.
 
 Task ids, events and digtk reporting rows use the item's collection key (the
 first three path segments, "bronze/[group]/[collection]"), the same as
-process_collection_job. Runs are tagged argonath/item, argonath/collection and
-(when the item has one) argonath/ark, so they're searchable in the Runs
-screen. Queued runs (see lib.pipeline_collection.item_queue_sensor) already
+process_collection_job. Runs are tagged argonath/item and argonath/collection,
+plus argonath/ark once pdc_generate_item_record has built the record, so
+they're searchable in the Runs screen. Queued runs (see lib.pipeline_collection.item_queue_sensor) already
 have argonath/item and argonath/collection at launch.
 
 Each run's outcome is recorded as the item's process_item_job result in
-collection_state (see lib.collection_state): "success" after index_item, and
+collection_state (see lib.collection_state): "success" after pdc_index_item, and
 "failed" from the op that fails. A recorded
 result also tags the run argonath/result=<status>. process_item_failure_sensor
 records "failed" for failed runs without that tag, e.g. a crashed worker or an
@@ -92,14 +92,14 @@ def normalize_item(path):
 
 
 @op(out={"tasks": DynamicOut(list), "item": Out(dict)})
-def plan_item(context: OpExecutionContext, config: ItemRunConfig):
+def pdc_plan_item(context: OpExecutionContext, config: ItemRunConfig):
     """List the item's files and fan out its derivative tasks, batched so there
     are at most config.max_steps steps (see lib.fanout_batching).
 
     An item that can't be listed at all (e.g. its bronze folder has no media)
-    becomes a single error task, so the run reports it and fails. A missing
-    ARK is not by itself a listing failure — not every item has one, and
-    derivative generation/finalize don't need one (see module docstring).
+    becomes a single error task, so the run reports it and fails. The item is
+    addressed by its bronze path only — its ARK isn't read until
+    pdc_generate_item_record (see module docstring).
 
     :param context: Dagster op execution context (unpartitioned).
     :param config: ItemRunConfig: the item folder, widths, max_steps, index_es.
@@ -117,11 +117,7 @@ def plan_item(context: OpExecutionContext, config: ItemRunConfig):
         error = listing.get("error") or f"listing formats failed: {listing}"
         context.log.error(f"[{item_id}] {error}")
         tasks = [_error_task(item, item_id, item_id, error, collection_key, config)]
-        ark = None
     else:
-        ark = listing.get("ark")
-        if ark:
-            context.instance.add_run_tags(context.run_id, {"argonath/ark": ark})
         tasks = item_tasks(item, listing, collection_key, config)
         for task in tasks:
             if task["error"]:
@@ -139,21 +135,20 @@ def plan_item(context: OpExecutionContext, config: ItemRunConfig):
         "item": item,
         "collection_key": collection_key,
         "id": item_id,
-        "ark": ark,
         "index_es": config.index_es,
     }, output_name="item")
 
 
 @op
-def finalize_item(context: OpExecutionContext, results: list, item: dict) -> dict:
+def pdc_finalize_item(context: OpExecutionContext, results: list, item: dict) -> dict:
     """Fail the run if any derivative task failed; otherwise write the item's
     item-level outputs (`digtk showcase finalize`) if it has image or PDF
     outputs. A video/audio-only item has nothing to finalize.
 
     :param context: Dagster op execution context.
     :param list[list[dict]] results: Every process_derivative_batch's outcomes.
-    :param dict item: plan_item's item output.
-    :returns: The same item dict, passed on to index_item.
+    :param dict item: pdc_plan_item's item output.
+    :returns: The same item dict, passed on to pdc_index_item.
     :rtype: dict
     :raises RuntimeError: If any task failed, or finalize failed.
     """
@@ -171,7 +166,7 @@ def finalize_item(context: OpExecutionContext, results: list, item: dict) -> dic
         context.log.info(f"[{item['id']}] no image/PDF outputs, nothing to finalize")
         return item
 
-    error = finalize_one_item(context, item["item"], item["ark"], item["id"], item["collection_key"])
+    error = finalize_one_item(context, item["item"], item["id"], item["collection_key"])
     if error is not None:
         error = f"{item['id']} failed to finalize: {error}"
         _record(context, item, "failed", {"error": error})
@@ -180,34 +175,37 @@ def finalize_item(context: OpExecutionContext, results: list, item: dict) -> dic
 
 
 @op
-def generate_item_record(context: OpExecutionContext, item: dict) -> dict:
-    """Assemble and write the item's complete, canonical item.jsonld.json
+def pdc_generate_item_record(context: OpExecutionContext, item: dict) -> dict:
+    """Assemble and write the item's complete, canonical gold item.jsonld.json
     (`digtk showcase build-item`) from its now-finalized derivatives and
     bronze identifiers/metadata.
 
     Unlike every other op in this job, this one genuinely requires an ark and
     fails outright without one — the canonical public record needs a stable
     identifier (see digtk.models.digital_website.item_record.build()'s
-    docstring). This runs before index_item, so an ark-less item's run fails
-    here rather than inside index_item's Elasticsearch upsert.
+    docstring). This runs before pdc_index_item, so an ark-less item's run fails
+    here rather than inside pdc_index_item's Elasticsearch upsert. It's also the
+    first step that knows the item's ark: it's read from the built record, tagged
+    on the run (argonath/ark) and passed on to pdc_index_item.
 
     :param context: Dagster op execution context.
-    :param dict item: finalize_item's item dict.
-    :returns: The same item dict, passed on to index_item.
+    :param dict item: pdc_finalize_item's item dict.
+    :returns: The item dict plus its "ark", passed on to pdc_index_item.
     :rtype: dict
     :raises RuntimeError: If building the item record failed (including: no ark).
     """
-    error = build_item_record(context, item["item"], item["ark"], item["id"], item["collection_key"])
+    error, ark = build_item_record(context, item["item"], item["id"], item["collection_key"])
     if error is not None:
         error = f"{item['id']} failed to build its item record: {error}"
         _record(context, item, "failed", {"error": error})
         raise RuntimeError(error)
-    return item
+    context.instance.add_run_tags(context.run_id, {"argonath/ark": ark})
+    return {**item, "ark": ark}
 
 
 @op
-def index_item(context: OpExecutionContext, item: dict):
-    """Index the item into the DAMS Elasticsearch index (`digtk showcase es
+def pdc_index_item(context: OpExecutionContext, item: dict):
+    """Index the item into the showcase Elasticsearch index (`digtk showcase es
     upsert`) if ItemRunConfig.index_es is set, then record the job as a success.
 
     This is the one step in the job that genuinely requires an ark (the ES
@@ -215,7 +213,7 @@ def index_item(context: OpExecutionContext, item: dict):
     its derivatives and finalize have already succeeded, rather than earlier.
 
     :param context: Dagster op execution context.
-    :param dict item: finalize_item's item dict.
+    :param dict item: pdc_generate_item_record's item dict (with "ark").
     :raises RuntimeError: If index_es is set and the item has no ark.
     :raises Exception: If indexing failed (after recording "failed").
     """
@@ -240,7 +238,7 @@ def _record(context, item, status, opts={}):
     and tag the run with it.
 
     :param context: Dagster op execution context.
-    :param dict item: plan_item's item dict.
+    :param dict item: pdc_plan_item's item dict.
     :param str status: "success" or "failed".
     :param dict opts: 'error' (str).
     """
@@ -254,19 +252,19 @@ def _record(context, item, status, opts={}):
     # lib/pipeline_fanout.py.
     tags={"argonath/kind": "item", "dagster/max_runtime": "0"},
     executor_def=celery_executor,
-    config=default_run_config({"plan_item": ItemRunConfig}),
+    config=default_run_config({"pdc_plan_item": ItemRunConfig}),
 )
 def process_item_job():
     """One item's derivatives, addressed by its bronze folder: one step per
     image/PDF file (and per video/audio format), then finalize, then building
     its canonical item.jsonld.json, then the Elasticsearch upsert. Launch it
-    from the launchpad with ops.plan_item.config.item set, or let
+    from the launchpad with ops.pdc_plan_item.config.item set, or let
     lib.pipeline_collection.item_queue_sensor launch it from the queue. See
     this module's docstring.
     """
-    tasks, item = plan_item()
-    results = tasks.map(process_derivative_batch).collect()
-    index_item(generate_item_record(finalize_item(results, item)))
+    tasks, item = pdc_plan_item()
+    results = tasks.map(process_derivative_batch.alias("pdc_process_derivative_batch")).collect()
+    pdc_index_item(pdc_generate_item_record(pdc_finalize_item(results, item)))
 
 
 @dg.run_failure_sensor(monitored_jobs=[process_item_job])
@@ -279,7 +277,7 @@ def process_item_failure_sensor(context: dg.RunFailureSensorContext):
     count as failures, so they're not recorded here.
 
     The item comes from the run's argonath/item tag. A run that failed before
-    plan_item tagged it falls back to its run config.
+    pdc_plan_item tagged it falls back to its run config.
 
     :param context: Dagster run failure sensor context.
     """
@@ -289,7 +287,7 @@ def process_item_failure_sensor(context: dg.RunFailureSensorContext):
     item = run.tags.get("argonath/item")
     if not item:
         configured = (
-            ((run.run_config or {}).get("ops") or {}).get("plan_item", {}).get("config", {}).get("item")
+            ((run.run_config or {}).get("ops") or {}).get("pdc_plan_item", {}).get("config", {}).get("item")
         )
         try:
             item, _ = normalize_item(configured)

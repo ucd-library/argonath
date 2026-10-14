@@ -390,6 +390,26 @@ class CaskBackend:
             params["partitionKeys"] = ",".join(opts["partition_keys"])
         return self._find_paginated(params, opts.get("page_size", 100))
 
+    def find_by_graph(self, graph, opts={}):
+        """Find files whose RDF content includes a named graph, via the same
+        CaskFS Layer-3 search as find_by_subject() but with no subject —
+        e.g. a {"@id": <ark>, "@graph": [...]} JSON-LD document, whose triples
+        all land in the named graph <ark>. Like every /cask/find facet, the
+        graph and predicate URIs must be opted into CaskFS's filter
+        harvesting (CASKFS_FILTER_URIS/CASKFS_FILTER_URI_MATCHES) to match.
+
+        :param str graph: Named graph URI (e.g. an ARK).
+        :param dict opts: 'predicate' (str, default 'https://schema.org/ark' —
+            required by the underlying API, see find_by_subject()),
+            'partition_keys' (list[str]), 'page_size' (int, default 100).
+        :returns: Every matching file's CaskFS-absolute path.
+        :rtype: list[str]
+        """
+        params = {"graph": graph, "predicate": opts.get("predicate", "https://schema.org/ark")}
+        if opts.get("partition_keys"):
+            params["partitionKeys"] = ",".join(opts["partition_keys"])
+        return self._find_paginated(params, opts.get("page_size", 100))
+
     def find_by_partition_keys(self, partition_keys, opts={}):
         """Find files tagged with all of the given partition keys — no RDF/
         JSON-LD content required, unlike find_by_subject(). Wraps the same

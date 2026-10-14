@@ -28,7 +28,7 @@ def test_finalize_runs_each_format_present(monkeypatch, finalizers):
     result = fz.finalize(ARK)
 
     assert finalizers == ["image", "pdf"]
-    assert set(result) == {"status", "ark", "image", "pdf"}
+    assert set(result) == {"status", "item", "image", "pdf"}
 
 
 def test_finalize_only_images(monkeypatch, finalizers):

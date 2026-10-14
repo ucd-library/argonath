@@ -96,8 +96,8 @@ def _item_run_request(row):
     """
     queued = row["config"] or {}
     item, key = normalize_item(queued.get("item") or row["item"])
-    run_config = default_run_config({"plan_item": ItemRunConfig})
-    plan_config = run_config["ops"]["plan_item"]["config"]
+    run_config = default_run_config({"pdc_plan_item": ItemRunConfig})
+    plan_config = run_config["ops"]["pdc_plan_item"]["config"]
     plan_config.update({k: v for k, v in queued.items() if k in ItemRunConfig.model_fields})
     plan_config["item"] = item
     tags = {

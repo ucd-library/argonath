@@ -174,12 +174,12 @@ def rag_on_metadata(context: dg.SensorEvaluationContext):
     raise NotImplementedError("phase 0.7")
 
 
-@dg.sensor(job_name="dams_search_index_job")
-def dams_search_on_derivatives(context: dg.SensorEvaluationContext):
-    """Trigger dams_search_index_job when derivatives_job completes successfully.
+@dg.sensor(job_name="showcase_search_index_job")
+def showcase_search_on_derivatives(context: dg.SensorEvaluationContext):
+    """Trigger showcase_search_index_job when derivatives_job completes successfully.
 
     Fires off derivatives_job, not metadata_job like rag_on_metadata does -
-    see index_for_dams_search's docstring in lib/assets.py for why the DAMS
+    see index_for_showcase_search's docstring in lib/assets.py for why the showcase
     search index deliberately doesn't wait on the AI metadata draft step.
 
     :param context: Dagster sensor evaluation context.

@@ -17,7 +17,7 @@ from lib.assets import (
     generate_alt_text,
     tag_accessible_pdf,
     index_for_rag,
-    index_for_dams_search,
+    index_for_showcase_search,
 )
 
 reconcile_collection_job = dg.define_asset_job(
@@ -84,10 +84,10 @@ search_index_job = dg.define_asset_job(
     description="Index all partitioned items into the RAG store.",
 )
 
-dams_search_index_job = dg.define_asset_job(
-    name="dams_search_index_job",
-    selection=[index_for_dams_search],
-    description="Index all partitioned items into the DAMS website's Elasticsearch search index.",
+showcase_search_index_job = dg.define_asset_job(
+    name="showcase_search_index_job",
+    selection=[index_for_showcase_search],
+    description="Index all partitioned items into the showcase website's Elasticsearch search index.",
 )
 
 full_pipeline_job = dg.define_asset_job(
@@ -99,7 +99,7 @@ full_pipeline_job = dg.define_asset_job(
         generate_metadata,
         generate_alt_text,
         index_for_rag,
-        index_for_dams_search,
+        index_for_showcase_search,
     ],
-    description="Run the full pipeline: ingest → derivatives → OCR → metadata → alt text → RAG + DAMS search index.",
+    description="Run the full pipeline: ingest → derivatives → OCR → metadata → alt text → RAG + showcase search index.",
 )

@@ -171,7 +171,7 @@ def rebuild_collection_tree(context: dg.AssetExecutionContext, config: RebuildTr
 def ingest_item(context: dg.AssetExecutionContext, config: IngestItemConfig):
     """Perform per-item ingest bookkeeping for an already-discovered bronze item.
 
-    The item's ARK is minted and its partition registered upstream, by
+    The item's ARK is read and its partition registered upstream, by
     reconcile_collection_items — by the time this asset runs for a given
     partition, the ARK and its bronze location already exist. This asset
     covers any per-item ingest-time work beyond that initial bronze write
@@ -381,10 +381,10 @@ def index_for_rag(context: dg.AssetExecutionContext, config: SearchIndexConfig):
 @dg.asset(
     partitions_def=items_partitions,
     deps=[generate_derivatives],
-    group_name="dams_search",
+    group_name="showcase_search",
 )
-def index_for_dams_search(context: dg.AssetExecutionContext):
-    """Index an item's schema.org metadata into the DAMS website's
+def index_for_showcase_search(context: dg.AssetExecutionContext):
+    """Index an item's schema.org metadata into the showcase website's
     Elasticsearch index - the same index fin's dbsync populates today (see
     dams/services/fin/models/item/{model,transform}.js in the dams repo).
 
@@ -396,7 +396,7 @@ def index_for_dams_search(context: dg.AssetExecutionContext):
     approved" step is added to the pipeline.
 
     Distinct from index_for_rag above, which feeds an unrelated
-    LlamaIndex/pgvector RAG search space - named index_for_dams_search
+    LlamaIndex/pgvector RAG search space - named index_for_showcase_search
     rather than overloading index_for_rag's name so the two indexing
     concerns (public website search vs. AI RAG search) don't get conflated.
 
@@ -404,5 +404,5 @@ def index_for_dams_search(context: dg.AssetExecutionContext):
     """
     ark = context.partition_key.keys_by_dimension["item"]
     result = exec(["digtk", "showcase", "es", "upsert", ark])
-    context.log.info(f"DAMS search index result: {result}")
+    context.log.info(f"Showcase search index result: {result}")
     return dg.Output(result)

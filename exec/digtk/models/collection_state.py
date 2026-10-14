@@ -371,7 +371,7 @@ def record_result(job_name, opts={}):
 
 def item_ark(path, opts={}):
     """An item's most recently recorded ARK, from collection_state rather than
-    its bronze item.jsonld.json.
+    its bronze identifiers.json.
 
     :param str path: Item bronze folder path.
     :param dict opts: 'conn' (injectable psycopg2 connection).
