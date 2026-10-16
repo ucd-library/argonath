@@ -547,6 +547,8 @@ def _image_nodes(item, item_uri, filenames, bronze_by_filename):
     suffix (schema:position — see pipeline.parse_sequence_number()); if any
     filename in the group has no parseable number, every child falls back to
     stable enumeration order instead, rather than guessing a partial order.
+    If two filenames parse to the same number, children keep the parsed
+    order but are numbered 1..n so positions stay unique.
     The root item's own schema:image is the lowest-position child.
 
     :param digtk.lib.items.ItemLocation item: Resolved item location.
@@ -569,6 +571,9 @@ def _image_nodes(item, item_uri, filenames, bronze_by_filename):
     if all(v is not None for v in parsed.values()):
         ordered = sorted(filenames, key=lambda f: parsed[f])
         positions = {f: parsed[f] for f in filenames}
+        if len(set(parsed.values())) < len(filenames):
+            # duplicate numbers, so number in order
+            positions = {f: i for i, f in enumerate(ordered, start=1)}
     else:
         ordered = filenames
         positions = {f: i for i, f in enumerate(filenames, start=1)}

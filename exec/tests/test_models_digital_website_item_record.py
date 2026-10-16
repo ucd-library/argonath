@@ -414,6 +414,29 @@ def test_build_multi_image_position_from_filename_out_of_lexicographic_order(fak
     assert root["image"] == {"@id": lowest["@id"]}
 
 
+def test_build_multi_image_numbers_duplicate_sequence_numbers_in_order(fake_derivative, monkeypatch):
+    item = ItemLocation(
+        ark=ARK, group="g", collection="c", time="latest", item_path="item",
+        bronze_binary_paths=[
+            "cask:/bronze/g/c/latest/item/D-612_46_29_001.tif",
+            "cask:/bronze/g/c/latest/item/D-612_46_35_001.tif",
+            "cask:/bronze/g/c/latest/item/D-612_46_35_002.tif",
+        ],
+        sidecar_path=None,
+    )
+    monkeypatch.setattr(item_record.items, "resolve_target", lambda target, opts={}: item)
+    _fs(monkeypatch)
+
+    doc = item_record.build(item)
+
+    root = _node(doc, ITEM_URI)
+    imagelist = _node(doc, root["associatedMedia"][0]["@id"])
+    children = [_node(doc, ref["@id"]) for ref in imagelist["hasPart"]]
+    assert [(c["@id"].rsplit("/", 1)[-1], c["position"]) for c in children] == [
+        ("D-612_46_29_001.tif", 1), ("D-612_46_35_001.tif", 2), ("D-612_46_35_002.tif", 3),
+    ]
+
+
 def test_build_image_associated_media_points_at_pdf(fake_derivative, monkeypatch):
     monkeypatch.setattr(item_record.items, "resolve_target", lambda target, opts={}: IMAGE_PDF_ITEM)
     _fs(monkeypatch)

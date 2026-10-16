@@ -162,3 +162,46 @@ def test_build_item_routes_no_ark_through_utils_error(monkeypatch):
 
     assert result.exit_code == 1
     assert last_json_line(result.output)["status"] == "error"
+
+
+def test_build_collection_calls_the_collection_record_model(monkeypatch):
+    from digtk.models.digital_website import collection_record
+    seen = {}
+    monkeypatch.setattr(
+        collection_record, "build",
+        lambda name, group, opts={}: seen.update(name=name, group=group) or {"@id": "ark:/1/x"},
+    )
+
+    result = runner.invoke(app, ["showcase", "build-collection", "bronze/preservica/haeger"])
+
+    assert result.exit_code == 0
+    assert seen == {"name": "haeger", "group": "preservica"}
+    assert last_json_line(result.output) == {"@id": "ark:/1/x"}
+
+
+def test_build_collection_routes_a_missing_ark_through_utils_error(monkeypatch):
+    from digtk.models.digital_website import collection_record
+
+    def raises(name, group, opts={}):
+        raise LookupError("MISSING ARK")
+    monkeypatch.setattr(collection_record, "build", raises)
+
+    result = runner.invoke(app, ["showcase", "build-collection", "preservica/haeger"])
+
+    assert result.exit_code == 1
+    assert last_json_line(result.output)["status"] == "error"
+
+
+def test_es_upsert_collection_indexes_by_collection_name(monkeypatch):
+    from digtk.lib import showcase_index
+    seen = {}
+    monkeypatch.setattr(
+        showcase_index, "index_collection",
+        lambda name, opts={}: seen.update(name=name) or {"collection": name, "status": "indexed"},
+    )
+
+    result = runner.invoke(app, ["showcase", "es", "upsert-collection", "bronze/preservica/haeger"])
+
+    assert result.exit_code == 0
+    assert seen == {"name": "haeger"}
+    assert last_json_line(result.output) == {"collection": "haeger", "status": "indexed"}
