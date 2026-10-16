@@ -101,9 +101,17 @@ def test_normalize_creator_is_none_when_missing():
     assert showcase_index._normalize_creator([]) is None
 
 
-def test_is_part_of_rewrites_collection_uris_to_fin_paths():
+def test_is_part_of_keeps_the_gold_collection_uri():
     gold = {"@id": "https://digital.ucdavis.edu/collection/ark:/87287/d7root"}
-    assert showcase_index._is_part_of(gold) == [{"@id": "/collection/ark:/87287/d7root"}]
+    assert showcase_index._is_part_of(gold) == [{"@id": "https://digital.ucdavis.edu/collection/ark:/87287/d7root"}]
+
+
+def test_full_types_expands_bare_and_prefixed_schema_types():
+    assert showcase_index._full_types("CreativeWork") == ["http://schema.org/CreativeWork"]
+    assert showcase_index._full_types(
+        ["schema:MediaObject", showcase_index.IMAGE_LIST_TYPE], "https://schema.org/MediaObject",
+    ) == ["http://schema.org/MediaObject", showcase_index.IMAGE_LIST_TYPE]
+    assert showcase_index._full_types(None, []) == []
 
 
 def test_is_part_of_keeps_other_ids_and_drops_empties():
@@ -185,11 +193,11 @@ def test_client_media_has_no_ocr_without_a_manifest_entry(manifest):
 
 # --- page search ----------------------------------------------------------------
 
-ITEM_ID = "/item/ark:/87287/d7abc1234"
+ITEM_ID = "https://digital.ucdavis.edu/item/ark:/87287/d7abc1234"
 DJVU_URL = "/cask/api/fs/silver/g/c/latest/item/ocr/page_001-ocr.djvu"
 
 
-GOLD_PAGE_ID = "https://digital.ucdavis.edu/item/ark:/87287/d7abc1234#imagelist/page_001.tif"
+GOLD_PAGE_ID = f"{ITEM_ID}#imagelist/page_001.tif"
 
 
 def _image_list_document(ocr=True):
@@ -201,9 +209,9 @@ def _image_list_document(ocr=True):
         "roles": ["public"],
         "@graph": [
             {"@id": ITEM_ID},
-            {"@id": f"{ITEM_ID}/images", "@type": ["http://schema.org/MediaObject", showcase_index.IMAGE_LIST_TYPE],
-             "hasPart": [{"@id": f"{ITEM_ID}/images/1"}]},
-            {"@id": f"{ITEM_ID}/images/1", "position": 1, "sameAs": GOLD_PAGE_ID},
+            {"@id": f"{ITEM_ID}#imagelist", "@type": ["http://schema.org/MediaObject", showcase_index.IMAGE_LIST_TYPE],
+             "hasPart": [{"@id": GOLD_PAGE_ID}]},
+            {"@id": GOLD_PAGE_ID, "position": 1},
         ],
         "clientMedia": {GOLD_PAGE_ID: {"images": images}},
     }
@@ -229,8 +237,8 @@ def test_build_page_documents_reads_each_pages_djvu_from_silver(monkeypatch):
     assert pages == [{
         "@id": ITEM_ID,
         "@graph": [{
-            "@id": f"{ITEM_ID}/images/1",
-            "encodesCreativeWork": f"{ITEM_ID}/images",
+            "@id": GOLD_PAGE_ID,
+            "encodesCreativeWork": f"{ITEM_ID}#imagelist",
             "position": 1,
             "content": '<OBJECT width="1024" height="1325"><HIDDENTEXT/></OBJECT>',
         }],
@@ -260,7 +268,7 @@ def test_index_pages_replaces_the_items_page_documents(monkeypatch, page_deletes
 
     assert page_deletes[0]["url"].endswith("/page-search-write/_delete_by_query")
     assert page_deletes[0]["json"] == {"query": {"term": {"@id": ITEM_ID}}}
-    assert puts == [f"{showcase_index.ES_HOST}/page-search-write/_doc/%2Fitem%2Fark%3A%2F87287%2Fd7abc1234%2Fimages%2F1"]
+    assert puts == [f"{showcase_index.ES_HOST}/page-search-write/_doc/{showcase_index.urllib.parse.quote(GOLD_PAGE_ID, safe='')}"]
 
 
 # --- build_document: one node per media file ----------------------------------------
@@ -301,7 +309,16 @@ def item_files(monkeypatch):
         root = {"@id": GOLD, "name": "An item", "creator": "Someone"}
         if image:
             root["image"] = {"@id": f"{GOLD}#{image}"}
-        files[RECORD_PATH]["@graph"] = [root] + [{"@id": f"{GOLD}#{f}"} for f in fragments]
+        nodes = [{"@id": f"{GOLD}#{f}"} for f in fragments]
+        pages = [n for n in nodes if n["@id"].startswith(f"{GOLD}#imagelist/")]
+        for n in nodes:
+            if n["@id"] == f"{GOLD}#imagelist":
+                n.update({"@type": ["schema:MediaObject", showcase_index.IMAGE_LIST_TYPE],
+                          "hasPart": [{"@id": p["@id"]} for p in pages]})
+        for i, page in enumerate(pages, start=1):
+            page.update({"position": i, "contentUrl": f"cask://bronze/{i}.tif"})
+        root["associatedMedia"] = [{"@id": n["@id"]} for n in nodes if n not in pages]
+        files[RECORD_PATH]["@graph"] = [root] + nodes
 
     def fake_read(path):
         if path not in files:
@@ -342,14 +359,13 @@ def test_build_document_gives_audio_image_and_pdf_each_a_node(item_files):
     document = showcase_index.build_document(ARK)
     root, nodes, media = document["@graph"][0], _graph(document), document["clientMedia"]
 
-    item = f"/item/{ARK}"
+    item = f"{GOLD}#media"
     assert root["associatedMedia"] == [{"@id": f"{item}/talk.mp3"}, {"@id": f"{item}/logo.jpg"}, {"@id": f"{item}/doc.pdf"}]
-    assert not any("clientMedia" in n for n in document["@graph"])
+    assert not any("clientMedia" in n or "sameAs" in n for n in document["@graph"])
 
     audio = nodes[f"{item}/talk.mp3"]
     assert audio["@type"] == ["http://schema.org/AudioObject"] and audio["fileFormatSimple"] == "audio"
-    assert audio["sameAs"] == f"{GOLD}#media/talk.mp3"
-    audio_media = media[audio["sameAs"]]
+    audio_media = media[audio["@id"]]
     assert audio_media["audio"]["url"] == "/cask/api/fs/silver/g/c/latest/item/public-frontend-derivatives/talk.mp3/converted.mp3"
     assert audio_media["download"] == [{"url": audio_media["audio"]["url"], "label": "mp3"}]
     assert audio["caption"] == [{"@id": "/cask/api/fs/silver/g/c/latest/item/captions/output-en.vtt", "language": "en"}]
@@ -390,12 +406,12 @@ def test_build_document_puts_video_first_with_its_stream_and_captions(item_files
     document = showcase_index.build_document(ARK)
     root, nodes = document["@graph"][0], _graph(document)
 
-    video_id = f"/item/{ARK}/movie.mp4"
+    video_id = f"{GOLD}#media/movie.mp4"
     assert root["associatedMedia"][0] == {"@id": video_id}
     video = nodes[video_id]
     assert video["@type"] == ["http://schema.org/VideoObject"]
     assert (video["fileFormat"], video["fileFormatSimple"]) == ("video/mp4", "video")
-    assert document["clientMedia"][video["sameAs"]] == {
+    assert document["clientMedia"][video_id] == {
         "streamingVideo": {"manifest": "/cask/api/fs/silver/g/c/latest/item/public-frontend-derivatives/movie.mp4/streaming/playlist.m3u8"},
         "download": [],
     }
@@ -424,20 +440,21 @@ def test_build_document_makes_an_image_list_for_several_images(item_files):
     document = showcase_index.build_document(ARK)
     root, nodes, media = document["@graph"][0], _graph(document), document["clientMedia"]
 
-    list_id = f"/item/{ARK}/images"
+    list_id = f"{GOLD}#imagelist"
     assert root["associatedMedia"] == [{"@id": list_id}]
-    assert showcase_index.IMAGE_LIST_TYPE in nodes[list_id]["@type"]
-    assert nodes[list_id]["hasPart"] == [{"@id": f"{list_id}/1"}, {"@id": f"{list_id}/2"}]
-    page1 = nodes[f"{list_id}/1"]
+    assert nodes[list_id]["@type"] == ["http://schema.org/MediaObject", showcase_index.IMAGE_LIST_TYPE]
+    assert nodes[list_id]["hasPart"] == [{"@id": f"{list_id}/page_001.tif"}, {"@id": f"{list_id}/page_002.tif"}]
+    page1 = nodes[f"{list_id}/page_001.tif"]
     assert (page1["name"], page1["position"]) == ("page_001.tif", 1)
     assert page1["fileFormat"] == "image/tiff"
-    assert nodes[list_id]["sameAs"] == f"{GOLD}#imagelist"
-    assert page1["sameAs"] == f"{GOLD}#imagelist/page_001.tif"
-    assert set(media) == {f"{GOLD}#imagelist", f"{GOLD}#imagelist/page_001.tif", f"{GOLD}#imagelist/page_002.tif"}
-    assert media[f"{GOLD}#imagelist"] == {"download": []}
+    assert page1["@type"] == ["http://schema.org/ImageObject"]
+    # gold fields are kept
+    assert page1["contentUrl"] == "cask://bronze/1.tif"
+    assert set(media) == {list_id, f"{list_id}/page_001.tif", f"{list_id}/page_002.tif"}
+    assert media[list_id] == {"download": []}
     # a page's download is a single entry
-    assert isinstance(media[page1["sameAs"]]["download"], dict)
-    assert document["displayImage"] == {"@id": page1["sameAs"], "images": media[page1["sameAs"]]["images"]}
+    assert isinstance(media[page1["@id"]]["download"], dict)
+    assert document["displayImage"] == {"@id": page1["@id"], "images": media[page1["@id"]]["images"]}
 
 
 def test_build_document_matches_percent_encoded_gold_ids(item_files):
@@ -447,7 +464,7 @@ def test_build_document_matches_percent_encoded_gold_ids(item_files):
     document = showcase_index.build_document(ARK)
 
     assert f"{GOLD}#imagelist/my%20page_002.tif" in document["clientMedia"]
-    assert _graph(document)[f"/item/{ARK}/images/2"]["sameAs"] == f"{GOLD}#imagelist/my%20page_002.tif"
+    assert _graph(document)[f"{GOLD}#imagelist/my%20page_002.tif"]["name"] == "my page_002.tif"
 
 
 def test_build_document_uses_the_first_pdf_page_without_an_image(item_files):
@@ -465,13 +482,12 @@ def test_build_document_uses_the_first_pdf_page_without_an_image(item_files):
     assert set(document["displayImage"]["images"]) == {"large"}
 
 
-def test_build_document_drops_client_media_without_a_gold_node(item_files):
+def test_build_document_skips_media_without_a_gold_node(item_files):
     item_files["set_media"](_image_entries("logo.jpg"))
 
     document = showcase_index.build_document(ARK)
-    image = _graph(document)[f"/item/{ARK}/logo.jpg"]
 
-    assert "sameAs" not in image and "clientMedia" not in image
+    assert [n["@id"] for n in document["@graph"]] == [GOLD]
     assert document["clientMedia"] == {}
 
 
@@ -482,12 +498,44 @@ def test_build_document_reads_descriptive_fields_from_the_gold_root_node(item_fi
     assert root["creator"]
 
 
+def test_build_document_keeps_gold_ids_and_fields(item_files):
+    item_files[RECORD_PATH]["@graph"][0].update({
+        "@type": "CreativeWork",
+        "ark": ARK,
+        "publisher": "UC Davis Library",
+        "license": {"@id": "http://rightsstatements.org/vocab/InC-NC/1.0/"},
+        "dateCreated": {"@type": "http://www.w3.org/2001/XMLSchema#gYear", "@value": "2026"},
+        "about": [{"@id": "http://id.worldcat.org/fast/1"}],
+        "identifier": [
+            {"@type": "PropertyValue", "propertyID": "ARK", "value": ARK},
+            {"@type": "PropertyValue", "propertyID": "LocalID", "value": "D-91"},
+            {"@type": "PropertyValue", "propertyID": "BoxFolder", "value": "Box 3"},
+            {"@type": "PropertyValue", "propertyID": "Preservica", "value": "d7933a2e-ab3e"},
+            {"@type": "PropertyValue", "propertyID": "CaskGoldPath", "value": "cask://gold/x/item.jsonld.json"},
+        ],
+    })
+
+    document = showcase_index.build_document(ARK)
+    root = document["@graph"][0]
+
+    assert document["@id"] == root["@id"] == GOLD
+    assert root["@type"] == ["http://schema.org/CreativeWork"]
+    assert (root["ark"], root["license"], root["dateCreated"]["@value"]) == (
+        ARK, {"@id": "http://rightsstatements.org/vocab/InC-NC/1.0/"}, "2026",
+    )
+    assert root["publisher"] == {"name": "UC Davis Library"}
+    # internal ids are dropped, others kept
+    assert root["identifier"] == [ARK, "D-91", "Box 3"]
+    # about is text in the mapping
+    assert root["subjects"] == [{"@id": "http://id.worldcat.org/fast/1"}] and "about" not in root
+
+
 def test_build_document_links_the_item_to_its_collection(item_files):
     item_files[RECORD_PATH]["@graph"][0]["isPartOf"] = {
         "@id": "https://digital.ucdavis.edu/collection/ark:/87287/d7root",
     }
     root = showcase_index.build_document(ARK)["@graph"][0]
-    assert root["isPartOf"] == [{"@id": "/collection/ark:/87287/d7root"}]
+    assert root["isPartOf"] == [{"@id": "https://digital.ucdavis.edu/collection/ark:/87287/d7root"}]
 
 
 def test_build_document_omits_is_part_of_without_a_collection(item_files):
@@ -517,17 +565,17 @@ def test_build_document_requires_the_gold_record(item_files):
 def test_build_document_without_derivatives_is_just_the_root(item_files):
     item_files["set_media"]([])
     document = showcase_index.build_document(ARK)
-    assert [n["@id"] for n in document["@graph"]] == [f"/item/{ARK}"]
+    assert [n["@id"] for n in document["@graph"]] == [GOLD]
     assert "associatedMedia" not in document["@graph"][0]
 
 
 def test_build_page_documents_covers_pdf_pages(monkeypatch):
     monkeypatch.setattr(showcase_index.fs, "read", lambda path: b"<OBJECT/>")
-    pdf_id = f"{ITEM_ID}/doc.pdf"
+    pdf_id = f"{ITEM_ID}#media/doc.pdf"
     document = {"@id": ITEM_ID, "roles": ["public"], "@graph": [
         {"@id": ITEM_ID},
-        {"@id": pdf_id, "fileFormatSimple": "pdf", "sameAs": "gold-pdf"},
-    ], "clientMedia": {"gold-pdf": {"pages": [
+        {"@id": pdf_id, "fileFormatSimple": "pdf"},
+    ], "clientMedia": {pdf_id: {"pages": [
         {"page": 1, "@id": f"{pdf_id}:0", "ocr": {"url": DJVU_URL, "size": {"width": "10", "height": "20"}}},
         {"page": 2, "@id": f"{pdf_id}:1"},  # no OCR layer: skipped
     ]}}}
@@ -565,7 +613,8 @@ def test_build_collection_document_shape(collection_gold):
     document = showcase_index.build_collection_document("c", {"item_count": 4})
     root = document["@graph"][0]
 
-    assert document["@id"] == root["@id"] == f"/collection/{COLLECTION_ARK}"
+    assert document["@id"] == root["@id"] == f"https://digital.ucdavis.edu/collection/{COLLECTION_ARK}"
+    assert root["@type"] == ["http://schema.org/Collection"]
     assert (document["name"], document["roles"], document["clientMedia"]) == ("Haeger Collection", ["public"], {})
     assert root["identifier"] == [COLLECTION_ARK, "MC-165"]
     assert root["subjects"] == [{"@id": "Aerial photographs"}]
@@ -602,11 +651,12 @@ def test_index_collection_writes_the_counted_document(monkeypatch, collection_go
     result = showcase_index.index_collection("c")
 
     url, document = puts[0]
-    assert url.endswith(f"/{showcase_index.COLLECTION_INDEX}/_doc/%2Fcollection%2Fark%3A%2F87287%2Fd7root")
+    collection_id = f"https://digital.ucdavis.edu/collection/{COLLECTION_ARK}"
+    assert url.endswith(f"/{showcase_index.COLLECTION_INDEX}/_doc/{showcase_index.urllib.parse.quote(collection_id, safe='')}")
     assert document["@graph"][0]["itemCount"] == 12
     assert document["@graph"][0]["image"] == {"@id": "/item/a/images/1"}
     assert result == {
-        "collection": "c", "esId": f"/collection/{COLLECTION_ARK}",
+        "collection": "c", "esId": collection_id,
         "index": showcase_index.COLLECTION_INDEX, "itemCount": 12, "status": "indexed",
     }
 

@@ -7,9 +7,10 @@ module mirrors the {"@id", "@graph": [...]} document envelope transform.js
 produces, so the website's existing search/detail lookups work unmodified
 once an item is indexed here).
 
-Media renditions live in a root-level "clientMedia" map keyed by gold
-item.jsonld.json @ids, not on @graph nodes; each media node's "sameAs" is its
-key. "displayImage" holds the main image, so search can skip clientMedia.
+Item and collection documents keep their gold record's full URI @ids
+(https://digital.ucdavis.edu/item/<ark>...). Media renditions live in a
+root-level "clientMedia" map keyed by node @id, not on @graph nodes.
+"displayImage" holds the main image, so search can skip clientMedia.
 
 Deliberately unrelated to digtk.commands.search (LlamaIndex/pgvector RAG
 search) - different index, different consumer, different purpose. Kept as
@@ -48,26 +49,6 @@ CASK_API_PREFIX = "/cask/api/fs/"
 IMAGE_LIST_TYPE = "http://digital.ucdavis.edu/schema#ImageList"
 
 
-def _normalize_type(type_value, default):
-    """Normalizes a JSON-LD @type value to a list.
-
-    the showcase client code (RecordGraph.js, client-media/model.js) always calls
-    .includes()/.map() on a node's @type, so it must be an array - never a
-    bare string, which is what a naive sidecar.get("@type") read would
-    produce for a single-valued type.
-
-    :param type_value: Item record's raw @type value (str, list, or None).
-    :param str default: Fallback type if type_value is empty.
-    :returns: @type as a list.
-    :rtype: list
-    """
-    if not type_value:
-        return [default]
-    if isinstance(type_value, list):
-        return type_value
-    return [type_value]
-
-
 def _normalize_creator(creator):
     """Shapes an item record's creator value as the node(s) the showcase index
     expects.
@@ -98,8 +79,7 @@ MEDIA_ORDER = ["video", "audio", "image", "pdf"]
 
 
 def _is_part_of(is_part_of):
-    """Rewrites the gold record's isPartOf to fin's "/collection/<ark>" path
-    form, matching the root's own "/item/<ark>" @id.
+    """The gold record's isPartOf as a list of {"@id"} nodes.
 
     :param is_part_of: Gold root node's isPartOf (dict, list, or None).
     :returns: isPartOf as a list of {"@id"}, or None if the record has none.
@@ -112,12 +92,55 @@ def _is_part_of(is_part_of):
     linked = []
     for node in is_part_of:
         node_id = node.get("@id") if isinstance(node, dict) else node
-        if not node_id:
-            continue
-        if node_id.startswith(item_record.COLLECTION_URI_PREFIX):
-            node_id = f"/collection/{node_id[len(item_record.COLLECTION_URI_PREFIX):]}"
-        linked.append({"@id": node_id})
+        if node_id:
+            linked.append({"@id": node_id})
     return linked or None
+
+
+# internal identifier types kept off the site
+INTERNAL_IDENTIFIER_TYPES = ("Preservica", "CaskGoldPath")
+
+
+def _public_identifiers(identifiers):
+    """The gold record's identifier values, minus internal ids (Preservica
+    ref, CaskGoldPath). The website reads identifier for the call number.
+
+    :param identifiers: Gold root identifier list (PropertyValue dicts or strings).
+    :returns: Identifier value strings.
+    :rtype: list[str]
+    """
+    values = []
+    for i in identifiers or []:
+        if isinstance(i, str):
+            values.append(i)
+        elif i.get("propertyID") not in INTERNAL_IDENTIFIER_TYPES and i.get("value"):
+            values.append(i["value"])
+    return values
+
+
+def _full_types(*type_values):
+    """Combines @type values as full http://schema.org/ URIs. The website
+    only keeps types that match http://schema.org/ or the digital.ucdavis.edu
+    schema, so bare and prefixed names are expanded.
+
+    :param type_values: Raw @type values (str, list, or None each).
+    :returns: Unique full type URIs, in order.
+    :rtype: list
+    """
+    types = []
+    for value in type_values:
+        for t in value if isinstance(value, list) else [value]:
+            if not t:
+                continue
+            if t.startswith("schema:"):
+                t = SCHEMA + t.removeprefix("schema:")
+            elif t.startswith("https://schema.org/"):
+                t = SCHEMA + t.removeprefix("https://schema.org/")
+            elif ":" not in t:
+                t = SCHEMA + t
+            if t not in types:
+                types.append(t)
+    return types
 
 
 def _cask_url(cask_uri):
@@ -358,74 +381,84 @@ def _pdf_node(location, node_id, filename):
     }
 
 
-def _media_nodes(location, fin_path, groups):
+def _media_nodes(location, gold_ids, groups):
     """Every media node for an item: one per video, audio, PDF source, and
     either one ImageObject (a single image) or an image list whose pages are
-    the image nodes (two or more images).
+    the image nodes (two or more images). Each node takes its gold record
+    @id; a source with no gold node is dropped with a warning.
 
     :param digtk.lib.items.ItemLocation location:
-    :param str fin_path: The item's @id ("/item/<ark>").
+    :param dict gold_ids: _gold_media_ids()'s result.
     :param dict groups: _group_media_by_source()'s result.
     :returns: (top-level nodes in MEDIA_ORDER, child nodes) — the root links
         to the top-level ones; image-list pages are children.
     :rtype: tuple[list[dict], list[dict]]
     """
+    def gold_id(key):
+        node_id = gold_ids.get(key)
+        if not node_id:
+            utils.warn(f"no gold record node for {key or 'the image list'}, skipping it")
+        return node_id
+
     top, children = [], []
     for group in MEDIA_ORDER:
         sources = groups.get(group) or {}
         if group == "video":
-            top += [_video_node(f"{fin_path}/{f}", f, e) for f, e in sources.items()]
+            top += [_video_node(i, f, e) for f, e in sources.items() if (i := gold_id(f))]
         elif group == "audio":
-            top += [_audio_node(f"{fin_path}/{f}", f, e) for f, e in sources.items()]
+            top += [_audio_node(i, f, e) for f, e in sources.items() if (i := gold_id(f))]
         elif group == "pdf":
-            top += [_pdf_node(location, f"{fin_path}/{f}", f) for f in sources]
+            top += [_pdf_node(location, i, f) for f in sources if (i := gold_id(f))]
         elif group == "image" and len(sources) == 1:
             filename, entries = next(iter(sources.items()))
-            top.append(_image_node(location, f"{fin_path}/{filename}", filename, entries))
+            node_id = gold_id(filename)
+            if node_id:
+                top.append(_image_node(location, node_id, filename, entries))
         elif group == "image" and sources:
-            list_id = f"{fin_path}/images"
+            list_id = gold_id(None)
+            if not list_id:
+                continue
             pages = [
-                _image_node(location, f"{list_id}/{i}", f, e, {"position": i})
-                for i, (f, e) in enumerate(sources.items(), start=1)
+                _image_node(location, i, f, e, {"position": n})
+                for n, (f, e) in enumerate(sources.items(), start=1) if (i := gold_id(f))
             ]
             top.append({
                 "@id": list_id,
                 "@type": [f"{SCHEMA}MediaObject", IMAGE_LIST_TYPE],
                 "name": "Image List",
-                "hasPart": [{"@id": page["@id"]} for page in pages],
                 "clientMedia": {"download": []},
             })
             children += pages
     return top, children
 
 
+def _merge_media(gold_node, node):
+    """Adds a website media node's fields to its gold node. Gold values win,
+    except @type, which combines both as full URIs.
+
+    :param dict gold_node: The gold record's node, mutated in place.
+    :param dict node: The website node built from silver (see _media_nodes()).
+    """
+    gold_types = gold_node.get("@type")
+    for key, value in node.items():
+        if key not in gold_node and value is not None:
+            gold_node[key] = value
+    gold_node["@type"] = _full_types(node.get("@type"), gold_types)
+
+
 def build_document(ark, opts={}):
-    """Builds the ES document for an item: a metadata root node plus one node
-    per media file, all in @graph, linked from the root's associatedMedia —
-    every image, PDF, video and audio source the item has (see
-    _media_nodes()), so the website can decide what to render.
+    """Builds the ES document for an item from its gold item.jsonld.json:
+    every gold node and field, with gold's full URI @ids, plus the fields
+    the website reads.
 
-    Shaped like fin's item documents, confirmed against a real fin/fedora ES
-    document (ark:/87293/d3zp3w73h): the root stays a plain metadata node; a
-    multi-image item's images hang off a separate image-list node typed
-    IMAGE_LIST_TYPE with hasPart pages (see dams/services/fin/ucd-lib-client's
-    RecordGraph.js and client-media/definition.js: MEDIA_LINK
-    associatedMedia/image vs. CHILD_LINKS hasPart). Two document-level fields
-    outside @graph are required: "name" (item/model.js sorts search results by
-    "name.raw") and "roles" (["public"] — a document without it doesn't show
-    up in search).
-
-    isPartOf links the item to its collection by the collection's ark, read
-    from the gold record (see item_record.build() and collection.get_ark())
-    and rewritten to fin's "/collection/<ark>" path form (see _is_part_of()).
-
-    Descriptive fields come from the root node of the item's gold
-    item.jsonld.json (see digtk.models.digital_website.item_record), so it
-    must be built first; media nodes come from its published silver
-    derivatives (see _silver_media()).
-
-    Node clientMedia is moved to the root "clientMedia" map, keyed by gold
-    @id (see _extract_client_media()), plus a "displayImage".
+    Website fields: media nodes get @type/name/fileFormat/fileFormatSimple
+    from the item's silver derivatives (see _media_nodes()), and their
+    clientMedia moves to the root "clientMedia" map keyed by node @id. The
+    root gets "subjects" (from about), a {name} creator and publisher,
+    string identifiers and full @type URIs, matching the item index mapping.
+    "about" is left out, since the mapping indexes it as text. Two
+    document-level fields are required: "name" (search sorts by "name.raw")
+    and "roles" (["public"], or the document doesn't show up in search).
 
     :param str ark: Item ARK.
     :param dict opts: 'project' — the gold app segment to read the record
@@ -437,48 +470,55 @@ def build_document(ark, opts={}):
     """
     location = items.resolve(ark, opts)
     gold = item_record.read(location, opts)
-    record = item_record.root_node(gold)
-    associated_media = _silver_media(location)
+    graph = json.loads(json.dumps(gold.get("@graph") or []))
+    root = item_record.root_node({"@id": gold.get("@id"), "@graph": graph})
+    if not root:
+        raise LookupError(f"{ark}: gold record has no root node")
+    by_id = {node["@id"]: node for node in graph if node.get("@id")}
 
-    fin_path = f"/item/{ark}"
-    base_type = _normalize_type(record.get("@type"), "http://schema.org/MediaObject")
-    name = record.get("name")
+    groups = _group_media_by_source(_silver_media(location))
+    top, children = _media_nodes(location, _gold_media_ids(gold), groups)
+    client_media = {}
+    for node in top + children:
+        media = node.pop("clientMedia", None)
+        if media is not None:
+            client_media[node["@id"]] = media
+        if node["@id"] in by_id:
+            _merge_media(by_id[node["@id"]], node)
+        else:
+            graph.append(node)
 
-    root = {
-        "@id": fin_path,
-        "@type": base_type,
-        "name": name,
-        "description": record.get("description"),
-        "creator": _normalize_creator(record.get("creator")),
-        "subjects": record.get("about"),
-        "identifier": ark,
-        "fileFormat": record.get("encodingFormat"),
-        "isPartOf": _is_part_of(record.get("isPartOf")),
-    }
-
-    top, children = _media_nodes(location, fin_path, _group_media_by_source(associated_media))
-    if top:
-        root["associatedMedia"] = [{"@id": node["@id"]} for node in top]
+    # website media order first
+    refs = [{"@id": node["@id"]} for node in top]
+    for ref in root.get("associatedMedia") or []:
+        if ref not in refs:
+            refs.append(ref)
+    root["associatedMedia"] = refs or None
+    if not root.get("image"):
         thumbnail = next((n for n in children + top if n.get("fileFormatSimple") in ("image", "pdf")), None)
-        if thumbnail:
-            root["image"] = {"@id": thumbnail["@id"]}
+        root["image"] = {"@id": thumbnail["@id"]} if thumbnail else None
 
-    graph = [root]
-    for node in top:
-        graph.append(node)
-        if IMAGE_LIST_TYPE in node["@type"]:
-            graph += children
+    root["@type"] = _full_types(root.get("@type")) or [f"{SCHEMA}MediaObject"]
+    root["subjects"] = root.pop("about", None)
+    root["creator"] = _normalize_creator(root.get("creator"))
+    root["publisher"] = _normalize_creator(root.get("publisher"))
+    root["identifier"] = _public_identifiers(root.get("identifier")) or [ark]
+    root["isPartOf"] = _is_part_of(root.get("isPartOf"))
+    if root.get("encodingFormat"):
+        root["fileFormat"] = root["encodingFormat"]
+    for node in graph:
+        if node is not root and node.get("@type"):
+            node["@type"] = _full_types(node["@type"])
+
     graph = [{k: v for k, v in node.items() if v is not None} for node in graph]
-    client_media = _extract_client_media(graph[1:], _gold_media_ids(gold))
-
     document = {
-        "@id": fin_path,
+        "@id": root["@id"],
         "@graph": graph,
         "clientMedia": client_media,
-        "name": name,
+        "name": root.get("name"),
         "roles": ["public"],
     }
-    display_image = _display_image(graph, client_media, (record.get("image") or {}).get("@id"))
+    display_image = _display_image(graph, client_media, (root.get("image") or {}).get("@id"))
     if display_image:
         document["displayImage"] = display_image
     return document
@@ -505,42 +545,17 @@ def _gold_media_ids(gold):
     return ids
 
 
-def _extract_client_media(nodes, gold_ids):
-    """Moves each media node's clientMedia into one map keyed by gold @id,
-    and sets the node's sameAs to that key.
-
-    A node with no gold match loses its clientMedia, with a warning.
-
-    :param list[dict] nodes: Media nodes (not the root), mutated in place.
-    :param dict gold_ids: _gold_media_ids()'s result.
-    :returns: {gold @id: clientMedia}.
-    :rtype: dict
-    """
-    client_media = {}
-    for node in nodes:
-        media = node.pop("clientMedia", None)
-        key = None if IMAGE_LIST_TYPE in node["@type"] else node.get("name")
-        gold_id = gold_ids.get(key)
-        if not gold_id:
-            utils.warn(f"no gold record node for {node['@id']}, dropping its clientMedia")
-            continue
-        node["sameAs"] = gold_id
-        if media is not None:
-            client_media[gold_id] = media
-    return client_media
-
-
 def _display_image(graph, client_media, gold_image_id):
     """The item's main image: the gold root's schema:image (position 1, or
     the lone image), else the first PDF's first page.
 
     :param list[dict] graph: The document's @graph.
-    :param dict client_media: _extract_client_media()'s result.
+    :param dict client_media: The document's root clientMedia map.
     :param str|None gold_image_id: The gold root node's image @id.
     :returns: {"@id": gold @id, "images": {...}}, or None.
     :rtype: dict|None
     """
-    candidates = [gold_image_id] + [n.get("sameAs") for n in graph if n.get("fileFormatSimple") == "pdf"]
+    candidates = [gold_image_id] + [n["@id"] for n in graph if n.get("fileFormatSimple") == "pdf"]
     for gold_id in candidates:
         images = (client_media.get(gold_id) or {}).get("images")
         if images:
@@ -688,21 +703,21 @@ def build_collection_document(name, opts={}):
     """
     record = collection_record.root_node(collection_record.read(name, opts))
     ark = record["ark"]
-    fin_path = f"/collection/{ark}"
     root = {
-        "@id": fin_path,
-        "@type": _normalize_type(record.get("@type"), "http://schema.org/Collection"),
+        "@id": record["@id"],
+        "@type": _full_types(record.get("@type")) or [f"{SCHEMA}Collection"],
+        "ark": ark,
         "name": record.get("name"),
         "description": record.get("description"),
         "creator": _normalize_creator(record.get("creator")),
-        "publisher": record.get("publisher"),
+        "publisher": _normalize_creator(record.get("publisher")),
         "license": record.get("license"),
         "subjects": record.get("about"),
         "identifier": [i["value"] for i in record.get("identifier") or [] if i.get("value")] or [ark],
         "itemCount": opts.get("item_count", 0),
     }
     return {
-        "@id": fin_path,
+        "@id": root["@id"],
         "@graph": [{k: v for k, v in root.items() if v is not None}],
         "clientMedia": {},
         "name": record.get("name"),
@@ -713,7 +728,7 @@ def build_collection_document(name, opts={}):
 def count_collection_items(collection_id):
     """Counts items in the item index whose isPartOf is the collection.
 
-    :param str collection_id: The collection document's @id, "/collection/<ark>".
+    :param str collection_id: The collection document's @id.
     :returns: Item count.
     :rtype: int
     :raises httpx.HTTPStatusError: If the count request fails.
@@ -732,7 +747,7 @@ def find_collection_image(collection_id, opts={}):
     """The root image of one of the collection's items, to use as the
     collection's own image. Items are checked in @id order.
 
-    :param str collection_id: The collection document's @id, "/collection/<ark>".
+    :param str collection_id: The collection document's @id.
     :param dict opts: 'size' (int, default 10) — how many items to check.
     :returns: {"@id": <item image node @id>}, or None if no item has one.
     :rtype: dict|None
@@ -820,7 +835,7 @@ def build_page_documents(document):
     client_media = document.get("clientMedia") or {}
 
     def media_of(node):
-        return client_media.get(node.get("sameAs")) or {}
+        return client_media.get(node.get("@id")) or {}
 
     targets = []  # (book @id, page @id, position, ocr)
     for node in graph:
@@ -859,7 +874,7 @@ def _delete_pages(item_id):
     """Removes every page-search document belonging to an item (matched on the
     item's top-level @id) — so a re-index with fewer pages leaves none behind.
 
-    :param str item_id: The item's ES @id, "/item/<ark>".
+    :param str item_id: The item's ES @id.
     :returns: How many documents were deleted (0 if the index doesn't exist).
     :rtype: int
     :raises httpx.HTTPStatusError: If the delete fails for any other reason.
