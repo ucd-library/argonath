@@ -7,7 +7,7 @@
   },
 
   "images" : {
-    "argonauth-worker" : {
+    "argonath-worker" : {
       "contextPath" : ".",
       "dockerfile" : "./Dockerfile",
       "options" : {
