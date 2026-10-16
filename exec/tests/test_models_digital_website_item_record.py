@@ -67,6 +67,12 @@ PDF_ONLY_ITEM = ItemLocation(
     sidecar_path=None,
 )
 
+TREE_ITEM = ItemLocation(
+    ark=ARK, group="preservica", collection="haeger", time="latest", item_path="tree/quarter-mile",
+    bronze_binary_paths=["cask:/bronze/preservica/haeger/latest/tree/quarter-mile/Preservation/photo.tiff"],
+)
+TREE_FOLDER = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile"
+
 AV_ITEM = ItemLocation(
     ark=ARK, group="g", collection="c", time="latest", item_path="item",
     bronze_binary_paths=["cask:/bronze/g/c/latest/item/interview.mp4"],
@@ -144,7 +150,8 @@ def test_build_adopts_bronze_sidecar_descriptive_fields(fake_derivative, monkeyp
     doc = item_record.build(NO_MEDIA_ITEM)
 
     assert doc["@id"] == ARK
-    assert "@context" not in doc
+    assert doc["@context"] == item_record.RECORD_CONTEXT
+    assert doc["@context"]["@vocab"] == "https://schema.org/"
     root = _node(doc, ITEM_URI)
     assert root["name"] == "Quarter Mile"
     assert root["description"] == "A scan"
@@ -174,11 +181,12 @@ def test_build_promotes_to_gold_under_custom_project(fake_derivative, monkeypatc
 
     item_record.build(NO_MEDIA_ITEM, opts={"project": "digital-prod"})
 
-    assert len(fake_derivative) == 1
-    assert fake_derivative[0]["type"] == "gold"
-    assert fake_derivative[0]["opts"]["app"] == "digital-prod"
-    assert "group" not in fake_derivative[0]["opts"]
-    assert "time" not in fake_derivative[0]["opts"]
+    assert [c["rel_path"] for c in fake_derivative] == ["item/item.jsonld.json", "item/manifest.json"]
+    for call in fake_derivative:
+        assert call["type"] == "gold"
+        assert call["opts"]["app"] == "digital-prod"
+        assert "group" not in call["opts"]
+        assert "time" not in call["opts"]
 
 
 def test_build_drops_field_sources_bookkeeping(fake_derivative, monkeypatch):
@@ -484,3 +492,65 @@ def test_build_folds_alt_text_onto_image_node(fake_derivative, monkeypatch):
     assert media_node["accessibilitySummary"] == "A scanned photograph"
     assert media_node["description"] == "Longer description"
     assert media_node["accessibilityFeature"] == ["low-contrast"]
+
+
+def test_build_writes_a_gold_manifest_recording_the_bronze_folder(fake_derivative, monkeypatch):
+    monkeypatch.setattr(item_record.items, "resolve_target", lambda target, opts={}: TREE_ITEM)
+    _fs(monkeypatch)
+
+    item_record.build(TREE_ITEM)
+
+    record, manifest = fake_derivative
+    assert record["rel_path"] == "tree/quarter-mile/item.jsonld.json"
+    assert manifest["rel_path"] == "tree/quarter-mile/manifest.json"
+    assert manifest["opts"]["app"] == "digital-dev"
+    assert json.loads(manifest["data"])["bronze"] == "/bronze/preservica/haeger/latest/tree/quarter-mile"
+
+
+def test_record_path_is_under_the_gold_project():
+    assert item_record.record_path(TREE_ITEM) == "cask:/gold/digital-dev/haeger/tree/quarter-mile/item.jsonld.json"
+    assert item_record.record_path(TREE_ITEM, {"project": "digital-prod"}) == (
+        "cask:/gold/digital-prod/haeger/tree/quarter-mile/item.jsonld.json"
+    )
+
+
+def test_read_and_root_node_round_trip_a_built_record(fake_derivative, monkeypatch):
+    monkeypatch.setattr(item_record.items, "resolve_target", lambda target, opts={}: NO_MEDIA_ITEM)
+    _fs(monkeypatch, exists_paths=(NO_MEDIA_ITEM.sidecar_path,), reads={
+        NO_MEDIA_ITEM.sidecar_path: {"@id": ARK, "ark": ARK, "name": "Photo"},
+    })
+    doc = item_record.build(NO_MEDIA_ITEM)
+    monkeypatch.setattr(item_record.fs, "read", lambda path: fake_derivative[0]["data"])
+
+    record = item_record.read(NO_MEDIA_ITEM)
+
+    assert record == doc
+    assert item_record.root_node(record)["name"] == "Photo"
+
+
+def test_build_maps_tree_metadata_json_dublin_core_without_a_sidecar(fake_derivative, monkeypatch):
+    monkeypatch.setattr(item_record.items, "resolve_target", lambda target, opts={}: TREE_ITEM)
+    metadata_path = f"{TREE_FOLDER}/metadata.json"
+    _fs(monkeypatch, exists_paths=(metadata_path,), reads={metadata_path: {
+        "dc": {"title": "Quarter Mile", "description": "A scan"},
+        "preservica": {"ref": "io-1", "title": "Quarter_Mile", "type": "IO"},
+    }})
+
+    doc = item_record.build(TREE_ITEM)
+
+    root = _node(doc, ITEM_URI)
+    assert root["name"] == "Quarter Mile"
+    assert root["description"] == "A scan"
+    assert "argonath:fieldSources" not in root
+    assert root["identifier"][0] == {"@type": "PropertyValue", "propertyID": "ARK", "value": ARK}
+    assert {"@type": "PropertyValue", "propertyID": "Preservica", "value": "io-1"} in root["identifier"]
+
+
+def test_build_skips_dublin_core_mapping_without_a_metadata_fragment(fake_derivative, monkeypatch):
+    monkeypatch.setattr(item_record.items, "resolve_target", lambda target, opts={}: TREE_ITEM)
+    metadata_path = f"{TREE_FOLDER}/metadata.json"
+    _fs(monkeypatch, exists_paths=(metadata_path,), reads={metadata_path: {"preservica": {"ref": "io-1", "title": "Quarter_Mile"}}})
+
+    doc = item_record.build(TREE_ITEM)
+
+    assert _node(doc, ITEM_URI)["name"] == "quarter-mile"

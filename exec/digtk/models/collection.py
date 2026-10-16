@@ -46,7 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from digtk.lib import db, dc_mapping, fs, items, preservica, schema, utils
+from digtk.lib import db, fs, items, preservica, utils
 from digtk.lib.config import CONFIG
 
 CURRENT_TIME = "CURRENT_TIME"
@@ -502,9 +502,8 @@ def list_item_folders(collection, opts={}):
 
     No file content is read and no CaskFS-wide search is run — just one manifest.json
     read and one directory listing of the items root, so cost scales with the
-    collection's item count, not its total file count. Unlike the old
-    item.jsonld.json-based lookup, this makes no assumption that bronze items carry
-    any particular sidecar file.
+    collection's item count, not its total file count. This makes no assumption
+    that bronze items carry any particular sidecar file.
 
     If the collection has no manifest.json, or one with no 'itemsRoot' key, this
     falls back to '' (flat) and logs a warning (see utils.warn()) — so that's visible
@@ -1364,74 +1363,6 @@ def _copy_metadata_to_tree(root, entity_dir, dest_rel, ref, collection):
         _link_tree_source(root, f"{dest_rel}/metadata.json", source_rel)
 
 
-def _write_tree_item_jsonld(root, entity_dir, dest_rel, ref, collection, identifiers):
-    """Build and write an item-level schema.org JSON-LD sidecar
-    (tree/.../item.jsonld.json) from an IO entity's Dublin Core metadata
-    fragment, alongside the metadata.json _copy_metadata_to_tree() already
-    writes — see docs/cask-conventions.md's Bronze Layout `<item>.jsonld.json`
-    concept.
-
-    IO entities only — a folder (SO) doesn't reliably carry an ARK (see
-    _resolve_identifier_key()) and has no clear item-sidecar merge destination the way
-    an item's ark does, so collection-level (schema:Collection) metadata
-    mapping is out of scope here. Returns None (writes nothing) if the entity
-    has no ARK-shaped identifier yet, or no descriptive metadata fragment at
-    all — both are normal, not errors (an ARK may not be minted yet; not
-    every entity carries descriptive metadata).
-
-    :param str root: fs-compatible bronze 'latest' root.
-    :param str entity_dir: 'by-ref/<ref>', relative to `root`.
-    :param str dest_rel: Destination tree/ directory, relative to `root`.
-    :param str ref: Preservica entity ref this tree/ entry represents.
-    :param str collection: Collection name (see _tree_partition_keys()).
-    :param list[dict] identifiers: This entity's raw identifiers (from
-        by-ref/<ref>/identifiers.json).
-    :returns: The ItemMetadata written, or None if no ARK or no metadata
-        fragment exists yet for this entity.
-    :rtype: digtk.lib.schema.ItemMetadata|None
-    """
-    values = [i.get("value") for i in identifiers if i.get("value")]
-    ark = next((v for v in values if _is_ark(v)), None)
-    if not ark:
-        return None
-
-    metadata_dir = f"{entity_dir}/metadata"
-    if not fs.exists(f"{root}/{metadata_dir}"):
-        return None
-    fragments = sorted(fs.ls(f"{root}/{metadata_dir}"), key=lambda entry: entry.name)
-    if not fragments:
-        return None
-
-    fragment_rel = f"{metadata_dir}/{fragments[0].name}"
-    raw_xml = fs.read(f"{root}/{fragment_rel}").decode()
-    content = preservica.parse_metadata_content(raw_xml)
-
-    entity = _read_bronze_json(root, f"{entity_dir}/entity.json", {})
-    mapped = dc_mapping.map_dublin_core_to_schema(content, ark=ark, name_fallback=entity.get("title"))
-    if not mapped:
-        return None
-
-    item_metadata = schema.ItemMetadata(
-        id=ark,
-        ark=ark,
-        name=mapped.get("name"),
-        description=mapped.get("description"),
-        creator=mapped.get("creator"),
-        date_created=mapped.get("dateCreated"),
-        license=mapped.get("license"),
-        publisher=mapped.get("publisher"),
-        about=mapped.get("about", []),
-        identifiers=[schema.Identifier(property_id="ARK", value=ark)],
-        field_sources={key: "human" for key in mapped},
-    )
-
-    doc = item_metadata.to_jsonld()
-    write_opts = {"partition_keys": _tree_partition_keys(ref, collection)} if root.startswith("cask:") else {}
-    _write_bronze_json(root, f"{dest_rel}/item.jsonld.json", doc, write_opts)
-    _link_tree_source(root, f"{dest_rel}/item.jsonld.json", fragment_rel)
-    return item_metadata
-
-
 def _find_tree_path_for_ref(ref, collection, root):
     """Look up a Preservica ref's current tree/ directory via the partition
     key tagged on its metadata.json (see _tree_partition_keys()) — used by
@@ -1469,19 +1400,13 @@ def _write_tree_child(child, child_identifiers, root, dest_rel, collection):
     :param str root: fs-compatible bronze 'latest' root.
     :param str dest_rel: Destination tree/ directory, relative to `root`.
     :param str collection: Collection name (see _tree_partition_keys()).
-    :returns: (count, item_metadata) — number of tree entries written at and
-        under `dest_rel`, and any digtk.lib.schema.ItemMetadata written along
-        the way (IO entities with an ARK and descriptive metadata — see
-        _write_tree_item_jsonld() — empty for a folder, or an item with
-        neither) for a caller to merge into the item's silver sidecar (see
-        digtk.models.digital_website.pipeline.merge_dc_metadata()).
-    :rtype: tuple[int, list[digtk.lib.schema.ItemMetadata]]
+    :returns: Number of tree entries written at and under `dest_rel`.
+    :rtype: int
     """
     ref = child["ref"]
     entity_dir = f"by-ref/{ref}"
     identifiers_rel = f"{entity_dir}/identifiers.json"
     count = 0
-    item_metadata = []
 
     if child["type"] == "SO":
         if child_identifiers:
@@ -1489,9 +1414,7 @@ def _write_tree_child(child, child_identifiers, root, dest_rel, collection):
             _link_tree_source(root, f"{dest_rel}/identifiers.json", identifiers_rel)
         _copy_metadata_to_tree(root, entity_dir, dest_rel, ref, collection)
         count += 1
-        child_count, child_item_metadata = _build_tree_from_by_ref(ref, root, dest_rel, collection)
-        count += child_count
-        item_metadata += child_item_metadata
+        count += _build_tree_from_by_ref(ref, root, dest_rel, collection)
     elif child["type"] == "IO":
         _copy_bronze_dir(root, f"{entity_dir}/media", dest_rel)
         _write_bronze_json(root, f"{dest_rel}/identifiers.json", child_identifiers)
@@ -1499,11 +1422,8 @@ def _write_tree_child(child, child_identifiers, root, dest_rel, collection):
             _link_tree_source(root, f"{dest_rel}/identifiers.json", identifiers_rel)
         _copy_metadata_to_tree(root, entity_dir, dest_rel, ref, collection)
         count += 1
-        written = _write_tree_item_jsonld(root, entity_dir, dest_rel, ref, collection, child_identifiers)
-        if written:
-            item_metadata.append(written)
 
-    return count, item_metadata
+    return count
 
 
 def _build_tree_from_by_ref(so_ref, root, dest_rel, collection):
@@ -1525,14 +1445,12 @@ def _build_tree_from_by_ref(so_ref, root, dest_rel, collection):
     :param str root: fs-compatible bronze 'latest' root.
     :param str dest_rel: Path (relative to `root`) to build this folder's children into.
     :param str collection: Collection name (see _tree_partition_keys()).
-    :returns: (count, item_metadata) — see _write_tree_child(), aggregated
-        across every child written under `dest_rel` (recursively).
-    :rtype: tuple[int, list[digtk.lib.schema.ItemMetadata]]
+    :returns: Number of tree entries written under `dest_rel` (recursively).
+    :rtype: int
     """
     children = _read_bronze_json(root, f"by-ref/{so_ref}/children.json", [])
     used_slugs = set()
     count = 0
-    item_metadata = []
 
     for child in children:
         entity = _read_bronze_json(root, f"by-ref/{child['ref']}/entity.json", {})
@@ -1542,11 +1460,9 @@ def _build_tree_from_by_ref(so_ref, root, dest_rel, collection):
         key = _resolve_identifier_key(child_identifiers, child["ref"])["key"]
         slug = _unique_tree_slug(title, key, used_slugs)
         child_dest_rel = f"{dest_rel}/{slug}"
-        child_count, child_item_metadata = _write_tree_child(child, child_identifiers, root, child_dest_rel, collection)
-        count += child_count
-        item_metadata += child_item_metadata
+        count += _write_tree_child(child, child_identifiers, root, child_dest_rel, collection)
 
-    return count, item_metadata
+    return count
 
 
 def preservica_tree(collection, group, opts={}):
@@ -1574,12 +1490,9 @@ def preservica_tree(collection, group, opts={}):
     :param str collection: Collection name.
     :param str group: Bronze group namespace.
     :param dict opts: 'dest_root' (str, optional — see _bronze_collection_root()).
-    :returns: (count, item_metadata) — number of tree entries written (the
-        root's own metadata.json isn't counted, matching that it was never a
-        tree/ entry before), and every digtk.lib.schema.ItemMetadata written
-        along the way (see _write_tree_child()) for a caller to merge into
-        the item's silver sidecar (see digtk.models.digital_website.pipeline.merge_dc_metadata()).
-    :rtype: tuple[int, list[digtk.lib.schema.ItemMetadata]]
+    :returns: Number of tree entries written (the root's own metadata.json
+        isn't counted, matching that it was never a tree/ entry before).
+    :rtype: int
     :raises FileNotFoundError: If preservica_import() has not been run yet for
         this collection (no collection-level manifest.json / preservicaRootRef).
     """
@@ -1730,14 +1643,7 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
         type) pairs are processed only once.
     :param dict opts: 'dest_root' (str, optional — see _bronze_collection_root()).
     :returns: {'moved': [...], 'added': [...], 'removed': [...],
-        'unresolved': [...], 'item_metadata': [...]} — every list but the last
-        is a list of Preservica refs; 'item_metadata' is every
-        digtk.lib.schema.ItemMetadata written for an 'added' entity (see
-        _write_tree_child()), for a caller to merge into the item's silver sidecar (see
-        digtk.models.digital_website.pipeline.merge_dc_metadata()) — 'moved'/
-        'removed' entities don't get fresh metadata (this patches structural
-        placement only, matching _copy_metadata_to_tree()'s own non-refresh
-        behavior for those cases).
+        'unresolved': [...]} — each a list of Preservica refs.
     :rtype: dict
     :raises FileNotFoundError: If preservica_import() has not been run yet for
         this collection.
@@ -1751,7 +1657,7 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
         )
 
     root = _bronze_latest_root(collection, group, opts)
-    result = {"moved": [], "added": [], "removed": [], "unresolved": [], "item_metadata": []}
+    result = {"moved": [], "added": [], "removed": [], "unresolved": []}
 
     seen = set()
     for entity in changed_entities:
@@ -1799,11 +1705,10 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
         entity_data = _read_bronze_json(root, f"by-ref/{ref}/entity.json", {})
         used_slugs = _tree_siblings(root, parent_tree_rel)
         slug = _unique_tree_slug(entity_data.get("title"), key, used_slugs)
-        _, child_item_metadata = _write_tree_child(
+        _write_tree_child(
             {"ref": ref, "type": entity_type}, identifiers, root, f"{parent_tree_rel}/{slug}", collection,
         )
         result["added"].append(ref)
-        result["item_metadata"] += child_item_metadata
 
     return result
 

@@ -1,5 +1,5 @@
 """
-digtk showcase es — index items into the DAMS website's Elasticsearch index.
+digtk showcase es — index items into the showcase website's Elasticsearch index.
 
 Subcommands:
   upsert  — index a single item by ark
@@ -16,13 +16,13 @@ import typer
 
 from digtk.lib import showcase_index
 
-app = typer.Typer(help="DAMS Elasticsearch indexing commands.", no_args_is_help=True)
+app = typer.Typer(help="Showcase Elasticsearch indexing commands.", no_args_is_help=True)
 
 
 @app.command()
 def upsert(
     ark: Annotated[str, typer.Argument(help="Item ARK to index.")],
 ):
-    """Index a single item's schema.org metadata into the DAMS search index."""
+    """Index a single item's schema.org metadata into the showcase search index."""
     result = showcase_index.index_item(ark)
     print(json.dumps(result))

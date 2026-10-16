@@ -7,10 +7,10 @@ Subcommands:
   pdf        — PDF derivative commands
   video      — video derivative commands
   audio      — audio derivative commands
-  es         — index items into the DAMS website's Elasticsearch index
+  es         — index items into the showcase website's Elasticsearch index
   formats    — report which media-type formats an item's bronze binaries span
   finalize   — write an item's item-level outputs after one-file-at-a-time derivatives
-  build-item — assemble and write the item's complete, canonical item.jsonld.json
+  build-item — assemble and write the item's complete, canonical gold item.jsonld.json
 """
 from typing import Annotated
 
@@ -49,12 +49,12 @@ def formats(
     dagster/lib/pipeline_fanout.py and dagster/lib/pipeline_item.py to decide
     which `digtk showcase <format> derivatives` steps apply to an item (with
     --files, one step per image/PDF). `target` may be an ARK or a bronze item
-    folder; the result's "ark" is None if the item has no ARK (not an error)."""
+    folder; the item is reported by its path, never its ARK."""
     try:
         item = items.resolve_target(target)
         item_dir = f"{items.BRONZE_PREFIX}{item.group}/{item.collection}/{item.time}/{item.item_path}".rstrip("/")
         found = sorted(pipeline.detect_formats(item.bronze_binary_paths))
-        result = {"ark": item.ark, "formats": found}
+        result = {"item": items.item_id(item), "formats": found}
         if files:
             result["files"] = {
                 fmt: pipeline.filter_binaries_by_format(item.bronze_binary_paths, fmt) for fmt in found
@@ -71,9 +71,8 @@ def finalize(
     reporting_job_id: ReportingJobIdOption = None,
     reporting_collection: ReportingCollectionOption = None,
 ):
-    """Write an item's item-level outputs (an image item's ocr/manifest.json; the
-    item sidecar's associatedMedia) from its already-published per-file
-    derivatives — run after `digtk showcase image|pdf derivatives --file ...`
+    """Write an item's item-level outputs (an image item's ocr/manifest.json)
+    from its already-published per-file derivatives — run after `digtk showcase image|pdf derivatives --file ...`
     has run for every one of the item's images/PDFs. Fails without writing
     anything if any file's derivatives are missing. `target` may be an ARK or
     a bronze item folder."""

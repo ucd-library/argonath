@@ -381,6 +381,29 @@ def test_find_by_subject_stops_on_empty_page():
     assert b.find_by_subject("ark:/87287/d7abc1234") == []
 
 
+def test_find_by_graph_sends_graph_and_default_predicate_but_no_subject():
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json={
+            "totalCount": 1,
+            "results": [{"filepath": "/gold/digital-dev/c/item/item.jsonld.json"}],
+            "offset": 0,
+            "limit": 100,
+        })
+
+    b = backend(handler)
+    result = b.find_by_graph("ark:/87287/d7abc1234", opts={"partition_keys": ["medallion-gold"]})
+    assert seen["url"].startswith(f"{BASE_URL}/find")
+    assert seen["params"]["graph"] == "ark:/87287/d7abc1234"
+    assert seen["params"]["predicate"] == "https://schema.org/ark"
+    assert seen["params"]["partitionKeys"] == "medallion-gold"
+    assert "subject" not in seen["params"]
+    assert result == ["/gold/digital-dev/c/item/item.jsonld.json"]
+
+
 def test_find_by_partition_keys_sends_no_subject_or_predicate():
     seen = {}
 

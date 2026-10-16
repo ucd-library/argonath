@@ -20,9 +20,8 @@ import json
 import os
 import re
 
-from digtk.lib import derivative, djvu, fs, image_magick, items, ocr_utils, utils
+from digtk.lib import derivative, djvu, fs, image_magick, ocr_utils, utils
 from digtk.lib.config import CONFIG
-from digtk.lib.schema import SCHEMA_CONTEXT
 # Format detection, source staging, output naming and orientation selection live in
 # digtk.models.prep so the root-level tools (ocr, accessibility, split-spreads) can
 # share them without depending on this showcase-only module. Re-exported here under
@@ -188,8 +187,7 @@ def derivative_dir(item, subdir, *, type="silver", type_opts=None):
     :param str type: 'silver' (default) or 'gold' — see digtk.lib.derivative.dest_path().
     :param dict type_opts: dest_path()'s opts for `type`. Defaults to
         {'group': item.group, 'time': item.time} when `type` is left at its
-        default 'silver'; required (no default) for any other `type`, since
-        there's no sensible 'app' to guess for a gold destination.
+        default 'silver'; required (no default) for any other `type`.
     :returns: CaskFS process directory ('cask:/...').
     :rtype: str
     :raises ValueError: If `type_opts` is omitted for a non-silver `type`.
@@ -408,9 +406,8 @@ def source_filename(content_url):
 def group_media_by_source(associated_media):
     """Group a flat associatedMedia list by source group and source file.
 
-    Every media-generation pipeline stamps "argonath:sourceGroup" (image, pdf,
-    video, audio) on the entries it writes, and they all accumulate in one flat
-    list on the item's silver sidecar (update_associated_media() above).
+    Every entry carries the "argonath:sourceGroup" (image, pdf, video, audio)
+    it was built for (see digtk.models.digital_website.item_record).
 
     ASSUMPTION: page order within an image list is the filenames' sort order —
     nothing records an explicit order. Correct for zero-padded sequential scan
@@ -427,118 +424,6 @@ def group_media_by_source(associated_media):
         if group and filename:
             groups.setdefault(group, {}).setdefault(filename, []).append(entry)
     return {group: {f: files[f] for f in sorted(files)} for group, files in groups.items()}
-
-
-def update_associated_media(item, media_objects, source_files, source_group):
-    """Merge schema:associatedMedia refs into the item's silver sidecar, creating
-    it if absent. Never touches the bronze sidecar — bronze is immutable/append-only,
-    so derivative metadata lives in the item's silver sidecar instead (see
-    docs/cask-conventions.md), at
-    silver/{group}/{collection}/{time}/{item_path}/item.jsonld.json.
-
-    Merges by `source_group` rather than replacing the whole associatedMedia array:
-    an item's bronze binaries can legitimately span more than one media format (e.g.
-    an archival transfer supplying both a compiled PDF and per-page TIFF masters for
-    the same physical document — see docs/cask-conventions.md), and each format's
-    derivatives() umbrella runs independently, as its own CLI invocation. Only the
-    entries this call's own `source_group` previously wrote are replaced; entries
-    from a different group's earlier run are left untouched, so e.g. running `digtk
-    showcase pdf derivatives` after `digtk showcase image derivatives` against the
-    same item doesn't wipe out the image run's associatedMedia entries.
-
-    Merges only the associatedMedia array — never the top-level DC-metadata fields
-    (name/description/creator/dateCreated/license/publisher/about/identifier)
-    merge_dc_metadata() below owns, so a DC-metadata run and a derivative run can
-    update the same silver sidecar independently, in either order, without clobbering
-    each other.
-
-    Uses a plain dict read/merge/write rather than digtk.lib.schema.ItemMetadata
-    (its to_jsonld/from_jsonld round-trip is itself an unimplemented phase-0.2
-    stub) — only the @context/@id/ark/associatedMedia fields this needs. Reads
-    still go through fs directly (reading isn't restricted); the write goes
-    through digtk.lib.derivative, same as every other pipeline output.
-
-    :param digtk.lib.items.ItemLocation item: Resolved item location.
-    :param list[dict] media_objects: associatedMedia entries of any schema.org media
-        type — ImageObject, VideoObject, AudioObject — e.g. {"@type": "ImageObject",
-        "contentUrl": "cask://...", "width": 256, "height": 384}. Each gets an
-        "argonath:sourceGroup" field stamped on it (see above).
-    :param list[str] source_files: CaskFS paths ('cask:/'-prefixed) this sidecar's
-        associatedMedia was derived from — this item's full set of bronze binaries.
-    :param str source_group: Which pipeline produced media_objects — "image", "pdf",
-        "video", or "audio". Existing entries carrying this same group are replaced;
-        entries from other groups are preserved.
-    :returns: The full sidecar dict that was written.
-    :rtype: dict
-    """
-    rel_path = f"{item.item_path}/item.jsonld.json" if item.item_path else "item.jsonld.json"
-    write_opts = {"group": item.group, "time": item.time, "replace": True}
-    dest = derivative.dest_path(type="silver", collection=item.collection, rel_path=rel_path, opts=write_opts)
-    sidecar_path = f"cask:{dest}"
-
-    if fs.exists(sidecar_path):
-        doc = json.loads(fs.read(sidecar_path))
-    else:
-        # item.ark may be None (not every item has one) — @id must still be a
-        # real string, or CaskFS's JSON-LD harvester rejects the write outright.
-        doc = {"@context": SCHEMA_CONTEXT, "@id": items.item_id(item), "ark": item.ark}
-
-    for entry in media_objects:
-        entry["argonath:sourceGroup"] = source_group
-    existing = doc.get("associatedMedia", [])
-    doc["associatedMedia"] = [e for e in existing if e.get("argonath:sourceGroup") != source_group] + media_objects
-
-    derivative.write(
-        type="silver", collection=item.collection, rel_path=rel_path,
-        data=json.dumps(doc, indent=2).encode(), source_files=source_files, opts=write_opts,
-    )
-    return doc
-
-
-# DC-metadata top-level keys merge_dc_metadata() owns in the silver item.jsonld.json —
-# kept disjoint from update_associated_media()'s associatedMedia array (see above)
-# so the two writers never clobber each other regardless of run order.
-_DC_METADATA_KEYS = ("name", "description", "creator", "dateCreated", "license", "publisher", "about", "identifier")
-
-
-def merge_dc_metadata(item_metadata):
-    """Merge Dublin-Core-derived schema.org fields into an item's silver
-    item.jsonld.json sidecar, read-modify-write — same non-destructive
-    convention as update_associated_media() above, just scoped to a disjoint
-    set of top-level keys (_DC_METADATA_KEYS) instead of associatedMedia, so a
-    DC-metadata run (see digtk.models.collection's Preservica tree-building)
-    and a derivative-generation run can update the same silver sidecar
-    independently, in either order, without clobbering each other.
-
-    :param digtk.lib.schema.ItemMetadata item_metadata: DC-mapped fields for one
-        item, built from bronze's raw Preservica Dublin Core metadata (see
-        digtk.lib.dc_mapping).
-    :returns: The full sidecar dict that was written.
-    :rtype: dict
-    """
-    item = items.resolve(item_metadata.ark)
-    rel_path = f"{item.item_path}/item.jsonld.json" if item.item_path else "item.jsonld.json"
-    write_opts = {"group": item.group, "time": item.time, "replace": True}
-    dest = derivative.dest_path(type="silver", collection=item.collection, rel_path=rel_path, opts=write_opts)
-    sidecar_path = f"cask:{dest}"
-
-    if fs.exists(sidecar_path):
-        doc = json.loads(fs.read(sidecar_path))
-    else:
-        doc = {"@context": SCHEMA_CONTEXT, "@id": item.ark, "ark": item.ark}
-
-    dc_doc = item_metadata.to_jsonld()
-    for key in _DC_METADATA_KEYS:
-        if key in dc_doc:
-            doc[key] = dc_doc[key]
-    doc.setdefault("argonath:fieldSources", {})
-    doc["argonath:fieldSources"].update(item_metadata.field_sources)
-
-    derivative.write(
-        type="silver", collection=item.collection, rel_path=rel_path,
-        data=json.dumps(doc, indent=2).encode(), source_files=item.bronze_binary_paths, opts=write_opts,
-    )
-    return doc
 
 
 def generate_thumbnail_set(local_src, tmp_dir, widths, stem, opts={}):

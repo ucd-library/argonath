@@ -134,7 +134,7 @@ def test_detect_skips_already_present_stems_and_preserves_edits(
 
     result = split.detect(ARK)
 
-    assert result == {"status": "success", "ark": ARK, "item": ARK, "detected": 1, "total": 2}
+    assert result == {"status": "success", "ark": ARK, "item": "/bronze/g/c/latest/item", "detected": 1, "total": 2}
     assert len(fake_vision) == 1  # only photo-b was newly detected
 
     gutters_write = next(w for w in fake_derivative if w["rel_path"] == "item/split-spreads/gutters.json")

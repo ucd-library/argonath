@@ -1,7 +1,7 @@
 """
-Indexes an item's schema.org metadata into the DAMS website's Elasticsearch
-index - the same index fin's dbsync populates today, read by the digital
-library website's /api/item and /api/collection endpoints (see
+Indexes an item's schema.org metadata into the showcase website's
+Elasticsearch index - the same index fin's dbsync populates today, read by the
+digital library website's /api/item and /api/collection endpoints (see
 dams/services/fin/models/item/{model,transform}.js in the dams repo - this
 module mirrors the {"@id", "@graph": [...]} document envelope transform.js
 produces, so the website's existing search/detail lookups work unmodified
@@ -10,101 +10,48 @@ once an item is indexed here).
 Deliberately unrelated to digtk.commands.search (LlamaIndex/pgvector RAG
 search) - different index, different consumer, different purpose. Kept as
 its own module/command group rather than folded into `search` so the two
-don't get conflated - see dagster/lib/assets.py's index_for_dams_search
+don't get conflated - see dagster/lib/assets.py's index_for_showcase_search
 docstring for the same reasoning on the Dagster side.
 
-ES connection settings are plain env vars here rather than going through
-digtk.lib.config's central SETTINGS registry - this is new/experimental, and
-migrating it into the shared config system can happen once the shape of what
-this needs settles.
+ES connection settings come from CONFIG["showcase"] (es_host, es_index,
+es_page_search_index) - see digtk.lib.config.
 """
 import json
 import mimetypes
-import os
 import re
 import urllib.parse
 
 import httpx
 
 from digtk.lib import items, fs
-from digtk.models.digital_website import pipeline
+from digtk.lib.config import CONFIG
+from digtk.models.digital_website import audio, captions, image, item_record, pdf, pipeline, video
 
-ES_HOST_ENV = "DAMS_ES_HOST"
-ES_INDEX_ENV = "DAMS_ES_INDEX"
-
-ES_HOST = os.environ.get(ES_HOST_ENV, "http://elasticsearch:9200")
-
-# fin's ElasticSearchModel base class (fin/services/fin/node-utils/lib/data-models/
-# elastic-search/index.js:19-20) writes through a "-write" alias and reads through
-# a "-read" alias - normally both point at the same underlying index, but diverge
-# during a reindex/mapping-change cutover (see fin's es-index-management service).
-# This indexer is a write path, so it targets item-write, matching dbsync.
-ES_INDEX = os.environ.get(ES_INDEX_ENV, "item-write")
-
-# The website's page-level full-text index — one document per page of an image
-# list, holding that page's DjVu text layer — which its BookReader search
-# (/api/page-search/ia) queries. Same "-write" alias convention as ES_INDEX.
-PAGE_SEARCH_INDEX_ENV = "DAMS_ES_PAGE_SEARCH_INDEX"
-PAGE_SEARCH_INDEX = os.environ.get(PAGE_SEARCH_INDEX_ENV, "page-search-write")
+ES_HOST = CONFIG["showcase"]["es_host"]
+ES_INDEX = CONFIG["showcase"]["es_index"]
+PAGE_SEARCH_INDEX = CONFIG["showcase"]["es_page_search_index"]
 
 # URL prefix the dc-showcase gateway serves CaskFS files under: a request for
 # /cask/file/silver/... is proxied to the caskfs file API's /fs/silver/...
 # (see dc-showcase/services/gateway/index.js). Replaces the old /svc:cask/.
 CASK_FILE_PREFIX = "/cask/file/"
 
-# custom DAMS vocabulary type (dams/services/fin/ucd-lib-client/client/public/lib/
+# custom digital.ucdavis.edu vocabulary type (dams/services/fin/ucd-lib-client/client/public/lib/
 # utils/client-media/definition.js:25) marking a multi-page/scanned item - triggers
 # the client's "imagelist" display mode, which crawls hasPart for page content
 # instead of reading clientMedia off the root node directly.
 IMAGE_LIST_TYPE = "http://digital.ucdavis.edu/schema#ImageList"
 
 
-def _load_bronze_sidecar(sidecar_path):
-    """Reads and parses the item's bronze JSON-LD sidecar - the original
-    ingested metadata (name, description, creator, etc.), immutable/append-only.
-
-    :param str sidecar_path: A 'cask:/....jsonld.json' path, as returned in
-        ItemLocation.sidecar_path.
-    :returns: Parsed JSON-LD.
-    :rtype: dict
-    """
-    raw = fs.read(sidecar_path)
-    return json.loads(raw)
-
-
-def _load_derivative_sidecar(location):
-    """Reads the item's silver item.jsonld.json - NOT the bronze sidecar.
-
-    associatedMedia is deliberately never written to the bronze sidecar
-    (bronze is immutable/append-only) - it lives in this separate silver
-    file instead, written by pipeline.update_associated_media(). Reuses
-    pipeline.derivative_dir() to build the exact same path that function
-    writes to, rather than duplicating the convention here (its
-    rel_path = f"{item.item_path}/{subdir}" matches
-    update_associated_media()'s own rel_path exactly when subdir is
-    "item.jsonld.json").
-
-    :param digtk.lib.items.ItemLocation location:
-    :returns: Parsed JSON-LD, or {} if derivatives haven't been generated yet.
-    :rtype: dict
-    """
-    sidecar_path = pipeline.derivative_dir(location, "item.jsonld.json")
-    try:
-        raw = fs.read(sidecar_path)
-    except FileNotFoundError:
-        return {}
-    return json.loads(raw)
-
-
 def _normalize_type(type_value, default):
     """Normalizes a JSON-LD @type value to a list.
 
-    dams's client code (RecordGraph.js, client-media/model.js) always calls
+    the showcase client code (RecordGraph.js, client-media/model.js) always calls
     .includes()/.map() on a node's @type, so it must be an array - never a
     bare string, which is what a naive sidecar.get("@type") read would
     produce for a single-valued type.
 
-    :param type_value: Bronze sidecar's raw @type value (str, list, or None).
+    :param type_value: Item record's raw @type value (str, list, or None).
     :param str default: Fallback type if type_value is empty.
     :returns: @type as a list.
     :rtype: list
@@ -117,7 +64,7 @@ def _normalize_type(type_value, default):
 
 
 def _normalize_creator(creator):
-    """Shapes a bronze sidecar's creator value as the node(s) the DAMS index
+    """Shapes an item record's creator value as the node(s) the showcase index
     expects.
 
     The item index maps @graph.creator as an object ({"@id", "name"}), so a
@@ -171,6 +118,42 @@ def _mime(filename, default):
 # module-level aliases here so existing call sites below don't need touching.
 _source_filename = pipeline.source_filename
 _group_media_by_source = pipeline.group_media_by_source
+
+
+# Each format's silver associatedMedia reader, in the order its entries are read.
+_MEDIA_READERS = {
+    "image": image.media_objects,
+    "pdf": pdf.media_objects,
+    "video": video.media_objects,
+    "audio": audio.media_objects,
+}
+
+
+def _silver_media(location):
+    """Every published silver associatedMedia entry for the item's formats
+    (renditions, streams, transcoded copies), each stamped with the
+    "argonath:sourceGroup" it was built for, with captions attached to their
+    video/audio entries. The gold item record only points at bronze
+    preservation masters (see item_record), so the website-facing media
+    comes from silver here.
+
+    :param digtk.lib.items.ItemLocation location:
+    :returns: Flat associatedMedia entries.
+    :rtype: list[dict]
+    :raises FileNotFoundError: If a format's derivatives haven't been published.
+    """
+    formats = pipeline.detect_formats(location.bronze_binary_paths)
+    entries = []
+    for group, reader in _MEDIA_READERS.items():
+        if group not in formats:
+            continue
+        objects = reader(location)
+        if group in ("video", "audio"):
+            captions.attach_captions(location, objects)
+        for entry in objects:
+            entry["argonath:sourceGroup"] = group
+        entries += objects
+    return entries
 
 
 def _caption_links(entry):
@@ -389,7 +372,7 @@ def _media_nodes(location, fin_path, groups):
     return top, children
 
 
-def build_document(ark):
+def build_document(ark, opts={}):
     """Builds the ES document for an item: a metadata root node plus one node
     per media file, all in @graph, linked from the root's associatedMedia —
     every image, PDF, video and audio source the item has (see
@@ -410,31 +393,35 @@ def build_document(ark):
     collections are only named strings (group/collection) today - there's no
     collection-level ark to link to until collection ark-minting exists.
 
+    Descriptive fields come from the root node of the item's gold
+    item.jsonld.json (see digtk.models.digital_website.item_record), so it
+    must be built first; media nodes come from its published silver
+    derivatives (see _silver_media()).
+
     :param str ark: Item ARK.
+    :param dict opts: 'project' — the gold app segment to read the record
+        from (see item_record.read()); also forwarded to items.resolve().
     :returns: ES document body, shaped like transform.js's {"@id", "@graph": [...]}.
     :rtype: dict
+    :raises FileNotFoundError: If the item's record hasn't been built yet.
     """
-    location = items.resolve(ark)
-    bronze_sidecar = _load_bronze_sidecar(location.sidecar_path)
-    derivative_sidecar = _load_derivative_sidecar(location)
-
-    associated_media = derivative_sidecar.get("associatedMedia") or []
-    if not isinstance(associated_media, list):
-        associated_media = [associated_media]
+    location = items.resolve(ark, opts)
+    record = item_record.root_node(item_record.read(location, opts))
+    associated_media = _silver_media(location)
 
     fin_path = f"/item/{ark}"
-    base_type = _normalize_type(bronze_sidecar.get("@type"), "http://schema.org/MediaObject")
-    name = bronze_sidecar.get("name")
+    base_type = _normalize_type(record.get("@type"), "http://schema.org/MediaObject")
+    name = record.get("name")
 
     root = {
         "@id": fin_path,
         "@type": base_type,
         "name": name,
-        "description": bronze_sidecar.get("description"),
-        "creator": _normalize_creator(bronze_sidecar.get("creator")),
-        "subjects": bronze_sidecar.get("about"),
+        "description": record.get("description"),
+        "creator": _normalize_creator(record.get("creator")),
+        "subjects": record.get("about"),
         "identifier": ark,
-        "fileFormat": bronze_sidecar.get("encodingFormat"),
+        "fileFormat": record.get("encodingFormat"),
     }
 
     top, children = _media_nodes(location, fin_path, _group_media_by_source(associated_media))
@@ -460,7 +447,7 @@ def build_document(ark):
 
 
 def _build_client_media(location, page_media, filename=None):
-    """Builds the clientMedia urls the dams webapp reads off an image node (a
+    """Builds the clientMedia urls the showcase webapp reads off an image node (a
     single image, or one page of an image list),
     pointing at the dc-showcase gateway's /cask/file/ prefix (CASK_FILE_PREFIX
     — see dc-showcase/services/gateway/index.js) for images, instead of fin's
@@ -581,7 +568,7 @@ def _tiled_iiif_url_for_filename(location, filename, manifest=None):
 
 
 def index_item(ark):
-    """Builds an item's ES document and writes it to the DAMS index, then
+    """Builds an item's ES document and writes it to the showcase index, then
     replaces its page-search documents (see index_pages()).
 
     :param str ark: Item ARK to index.

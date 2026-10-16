@@ -1,18 +1,23 @@
 """
 Build an item's complete, canonical item.jsonld.json and promote it to gold.
 
-Unlike digtk.models.digital_website.pipeline.update_associated_media()/
-merge_dc_metadata() (which each independently merge their own slice of the
-silver sidecar — associatedMedia, or DC-mapped descriptive fields — leaving
-the rest alone, and never touch gold at all), this module is the one place
-that assembles the *whole* record in one pass — whatever descriptive
-metadata/identifiers bronze already resolved, plus a freshly rebuilt media
-graph — and promotes it as a full replace into gold (see
+This is the only place an item.jsonld.json is written: bronze never gets one,
+and the derivative steps (image/pdf/video/audio/captions) only publish their
+own files and manifests into silver. This module assembles the *whole* record
+in one pass — descriptive metadata/identifiers from bronze (an ingested
+sidecar, or the tree folder's metadata.json Dublin Core — see
+_load_bronze_sidecar()), plus a freshly rebuilt media graph — and promotes it
+as a full replace into gold (see
 digtk.lib.derivative.dest_path(type="gold"), under a project/app segment —
 build()'s own 'project' opt, default CONFIG["showcase"]["gold_project"]).
 It's meant to run once derivative generation/finalize are done, as its own
-pipeline step (see dagster/lib/pipeline_item.py's generate_item_record op and
-dagster/lib/pipeline_fanout.py's build_item_record()).
+pipeline step (see dagster/lib/pipeline_item.py's pdc_generate_item_record op
+and dagster/lib/pipeline_fanout.py's build_item_record()).
+
+The record is written to gold/[project]/[collection]/[item_path]/item.jsonld.json,
+next to a manifest.json recording the bronze folder it was built from — gold
+has no time dimension, so that manifest is what digtk.lib.items.resolve() reads
+to get from an ARK back to the item's bronze location.
 
 Unlike every other step in this pipeline, this one is allowed to simply fail
 for an item with no ark, or whose collection has none either — the canonical
@@ -20,9 +25,13 @@ public record needs stable identifiers for both ends of isPartOf, and there's
 no fallback here (see digtk.lib.items's "ark is a sidecar, not a requirement"
 convention for every *other* step).
 
-The document is a flat JSON-LD graph: {"@id", "@graph": [...]} — no
-document-level `@context` (every term is already an absolute schema:/argonath:
-IRI) — one sibling node per real thing (the item itself, each media file, an
+The document is a flat JSON-LD graph: {"@context", "@id", "@graph": [...]} —
+RECORD_CONTEXT is the same schema.org `@vocab`/argonath context bronze's own
+sidecars use (plus a `schema:` prefix for the prefixed @type values), so
+CaskFS's linked-data index sees real triples — all in the named graph <ark>
+(the document's own @id), which is how digtk.lib.items.resolve() finds this
+record by ARK (see digtk.lib.fs.find_by_graph()) — with one
+sibling node per real thing (the item itself, each media file, an
 ImageList for a multi-image item) related only by `{"@id": ...}` references,
 never inlined into each other. This matches the legacy DAMS *-metadata
 JSON-LD shape in spirit, minus its Fedora/LDP container machinery
@@ -73,26 +82,28 @@ associatedMedia, which this module no longer touches. They're bare
 nodes. This may return later via ASSOCIATED_MEDIA_RULES or some other
 bronze/derivative-based source, but isn't implemented here.
 
-NOTE (known, accepted follow-up — see the approved plan): digtk.lib.showcase_index's
-build_document()/_load_derivative_sidecar() currently reads a flat top-level
-`associatedMedia` array from silver's item.jsonld.json to build the
-Elasticsearch document. Since this module no longer writes that file at all,
-showcase_index.py would need its own follow-up to read the real canonical
-record from gold's `@graph` instead — not touched here; other devs are
-already working in that area (see the approved plan).
+digtk.lib.showcase_index reads this record's root node (see root_node()) for
+the Elasticsearch document's descriptive fields, but builds its media nodes
+from silver's published derivatives directly, since none of those renditions
+are carried here.
 """
 import json
 import os
 import urllib.parse
 
-from digtk.lib import derivative, fs, items
+from digtk.lib import dc_mapping, derivative, fs, items, utils
 from digtk.lib.config import CONFIG
-from digtk.lib.schema import Identifier
+from digtk.lib.schema import SCHEMA_CONTEXT, Identifier, ItemMetadata
 from digtk.models import collection
 from digtk.models.digital_website import pipeline
 
 ITEM_URI_PREFIX = "https://digital.ucdavis.edu/item/"
 COLLECTION_URI_PREFIX = "https://digital.ucdavis.edu/collection/"
+
+# The record's document-level JSON-LD context: bronze's own sidecar context,
+# plus the "schema:" prefix used by prefixed @type values (e.g. ImageList's
+# "schema:MediaObject").
+RECORD_CONTEXT = {**SCHEMA_CONTEXT, "schema": "https://schema.org/"}
 
 # One graph node per bronze audio/video source file, typed by which digtk
 # pipeline produced it. Image and PDF nodes carry no @type — see _image_node()/
@@ -108,6 +119,63 @@ _TYPE_BY_GROUP = {
 # excluding one). Currently always empty -- every item's media grouping comes
 # from FORMAT_BY_EXTENSION alone until this is populated.
 ASSOCIATED_MEDIA_RULES = {}
+
+
+def _project(opts={}):
+    """The gold "app" segment a record is promoted under.
+
+    :param dict opts: 'project' (str, default CONFIG["showcase"]["gold_project"]).
+    :returns: e.g. 'digital-dev'.
+    :rtype: str
+    """
+    return opts.get("project") or CONFIG["showcase"]["gold_project"]
+
+
+def record_rel_path(item):
+    """The item record's path relative to its gold collection root.
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :returns: e.g. 'tree/quarter-mile/item.jsonld.json'.
+    :rtype: str
+    """
+    return f"{item.item_path}/{items.ITEM_RECORD_FILENAME}" if item.item_path else items.ITEM_RECORD_FILENAME
+
+
+def record_path(item, opts={}):
+    """The item record's CaskFS path.
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param dict opts: 'project' — see _project().
+    :returns: e.g. 'cask:/gold/digital-dev/haeger/tree/quarter-mile/item.jsonld.json'.
+    :rtype: str
+    """
+    dest = derivative.dest_path(
+        type="gold", collection=item.collection, rel_path=record_rel_path(item), opts={"app": _project(opts)},
+    )
+    return f"cask:{dest}"
+
+
+def read(item, opts={}):
+    """Read an item's built record.
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param dict opts: 'project' — see _project().
+    :returns: The parsed item.jsonld.json.
+    :rtype: dict
+    :raises FileNotFoundError: If build() hasn't been run for the item yet.
+    """
+    return json.loads(fs.read(record_path(item, opts)))
+
+
+def root_node(doc):
+    """The item's own node in a built record's @graph.
+
+    :param dict doc: A built item record (see build()).
+    :returns: The root node, or {} if the graph has none.
+    :rtype: dict
+    """
+    item_uri = _item_uri(doc.get("@id"))
+    return next((node for node in doc.get("@graph") or [] if node.get("@id") == item_uri), {})
 
 
 def _item_uri(ark):
@@ -238,21 +306,42 @@ def _gold_path_identifier(item, rel_path, project):
 
 
 def _load_bronze_sidecar(item):
-    """The item's own bronze item.jsonld.json sidecar, if it has one.
+    """The item's bronze descriptive metadata, as a document to seed the
+    graph from (see _seed_graph_from_bronze()).
 
-    item.sidecar_path can name either of two bronze sidecar shapes — a
-    standalone tree/item.jsonld.json (Preservica tree items) or a per-binary
-    <filename>.jsonld.json — both describe the same item either way, so
-    both are honored here rather than only the standalone shape (a prior
-    latent gap: this used to only recognize the standalone name).
+    An item ingested with a bronze '<binary>.jsonld.json' sidecar (see
+    digtk.commands.ingest, item.sidecar_path) adopts that sidecar as-is.
+    Otherwise, when the bronze folder's metadata.json carries a descriptive
+    metadata fragment (anything beyond its 'preservica' entity properties —
+    see digtk.models.collection._copy_metadata_to_tree()), its Dublin Core is
+    mapped to schema.org fields (see digtk.lib.dc_mapping), with the entity's
+    own Preservica title as the name fallback.
 
     :param digtk.lib.items.ItemLocation item: Resolved item location.
-    :returns: The parsed sidecar, or None if the item has none.
+    :returns: The descriptive document, or None if the item has neither.
     :rtype: dict|None
     """
     if item.sidecar_path and fs.exists(item.sidecar_path):
         return json.loads(fs.read(item.sidecar_path))
-    return None
+
+    metadata_path = f"cask:{_bronze_folder(item)}/metadata.json"
+    content = json.loads(fs.read(metadata_path)) if fs.exists(metadata_path) else {}
+    if not any(key != "preservica" for key in content):
+        return None
+    entity = content.get("preservica") or {}
+    mapped = dc_mapping.map_dublin_core_to_schema(content, ark=item.ark, name_fallback=entity.get("title"))
+    return ItemMetadata(
+        id=item.ark,
+        ark=item.ark,
+        name=mapped.get("name"),
+        description=mapped.get("description"),
+        creator=mapped.get("creator"),
+        date_created=mapped.get("dateCreated"),
+        license=mapped.get("license"),
+        publisher=mapped.get("publisher"),
+        about=mapped.get("about", []),
+        identifiers=[Identifier(property_id="ARK", value=item.ark)],
+    ).to_jsonld()
 
 
 def _seed_graph_from_bronze(bronze_doc, item_uri):
@@ -282,8 +371,8 @@ def _seed_graph_from_bronze(bronze_doc, item_uri):
         if is_single_document or node.get("@id") == bronze_doc.get("@id"):
             node["@id"] = item_uri
         # "@context" is bronze's own *document*-level keyword, not a property
-        # of the node it wraps — this module's output document has none at
-        # all (every term is already an absolute IRI). "argonath:fieldSources"
+        # of the node it wraps — this module's output document carries its own
+        # (RECORD_CONTEXT) at the top level instead. "argonath:fieldSources"
         # is DC-mapping provenance bookkeeping, not a public-record property.
         # Neither belongs in the output, however they arrived in bronze's own
         # stored document (and the "never override bronze" merge rule would
@@ -320,8 +409,8 @@ def _merge_identifiers(bronze_identifiers, computed_identifiers):
 
     Unlike every other property (see _merge_node()'s all-or-nothing
     never-override-bronze rule), `identifier` is merged rather than replaced
-    outright: bronze's own tree item.jsonld.json sidecar typically seeds only
-    a single ARK entry (see digtk.models.collection._write_tree_item_jsonld()),
+    outright: bronze's descriptive seed typically carries only a single ARK
+    entry (see _load_bronze_sidecar()),
     which would otherwise hide every other identifier build() computes
     (LocalID, Preservica ref, gold path — see _root_identifiers()/
     _preservica_identifier()/_gold_path_identifier()).
@@ -595,7 +684,9 @@ def _build_media_graph(item, item_uri):
 
 
 def build(target, opts={}):
-    """Assemble and write an item's complete, canonical item.jsonld.json.
+    """Assemble and write an item's complete, canonical item.jsonld.json to
+    gold, plus the gold manifest.json recording the bronze folder it was built
+    from.
 
     Reads only from bronze (its descriptive sidecar, identifiers.json, tree
     metadata.json, and binary paths) plus the accessibility alt-text
@@ -610,7 +701,7 @@ def build(target, opts={}):
 
     The returned document's own top-level `@id` is the item's bare ark (e.g.
     "ark:/87287/d7abc1234") — matching the ark-as-document-@id convention
-    used elsewhere for silver sidecars (see pipeline.merge_dc_metadata()) —
+    used by bronze '<binary>.jsonld.json' sidecars —
     distinct from the item node's own `@id` within `@graph`, which is its
     full https://digital.ucdavis.edu/item/<ark> URI (see ITEM_URI_PREFIX).
 
@@ -619,9 +710,9 @@ def build(target, opts={}):
     ref if bronze's tree metadata.json records one (see
     _preservica_identifier()), and this record's own CaskFS gold path (see
     _gold_path_identifier()). Unlike every other property, this holds even
-    when bronze's own item.jsonld.json sidecar already carries its own
-    `identifier` array (typically just a single ARK entry — see
-    digtk.models.collection._write_tree_item_jsonld()): bronze's own entries
+    when bronze's descriptive seed already carries its own `identifier`
+    array (typically just a single ARK entry — see _load_bronze_sidecar()):
+    bronze's own entries
     are kept as-is and never reordered or dropped, but build()'s own computed
     entries are still unioned in (see _merge_identifiers()) rather than
     being hidden by the usual never-override-bronze rule (_merge_node()).
@@ -641,7 +732,7 @@ def build(target, opts={}):
         raise LookupError(f"{items.item_id(item)} has no ark — cannot build its item record")
     item_uri = _item_uri(item.ark)
     collection_ark = _collection_ark_or_raise(item)
-    project = opts.get("project") or CONFIG["showcase"]["gold_project"]
+    project = _project(opts)
 
     graph_by_id = {}
     order = []
@@ -649,7 +740,7 @@ def build(target, opts={}):
         graph_by_id[node_id] = node
         order.append(node_id)
 
-    rel_path = f"{item.item_path}/item.jsonld.json" if item.item_path else "item.jsonld.json"
+    rel_path = record_rel_path(item)
 
     root_media_refs, root_image_ref, media_nodes = _build_media_graph(item, item_uri)
 
@@ -677,11 +768,18 @@ def build(target, opts={}):
     for node in media_nodes:
         _merge_node(graph_by_id, order, node)
 
-    doc = {"@id": item.ark, "@graph": [graph_by_id[node_id] for node_id in order]}
+    doc = {"@context": RECORD_CONTEXT, "@id": item.ark, "@graph": [graph_by_id[node_id] for node_id in order]}
 
     derivative.write(
         type="gold", collection=item.collection, rel_path=rel_path,
         data=json.dumps(doc, indent=2).encode(), source_files=_lineage_source_files(item),
         opts={"app": project, "replace": True},
+    )
+    folder = _bronze_folder(item)
+    utils.write_manifest(
+        item.collection, item.item_path,
+        ["digtk", "showcase", "build-item", folder], {}, [items.ITEM_RECORD_FILENAME],
+        source_files=_lineage_source_files(item), type="gold",
+        opts={"app": project, "extra": {"bronze": folder}},
     )
     return doc

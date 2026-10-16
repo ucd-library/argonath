@@ -4,11 +4,12 @@ Item-level finalize for showcase derivatives generated one file at a time.
 `digtk showcase image|pdf derivatives --file ...` (one Dagster step per image
 or PDF — see dagster/lib/pipeline_fanout.py) writes only what belongs to each
 file and skips the outputs that combine every file of an item: an image item's
-ocr/manifest.json, and the item sidecar's associatedMedia. finalize() writes
-those once all of an item's files are done, by reading back what the per-file
-runs published (see digtk.models.digital_website.image.finalize() and
-.pdf.finalize()). Video and audio are still generated a whole item at a time,
-so they have nothing to finalize.
+ocr/manifest.json. finalize() writes those once all of an item's files are
+done, by reading back what the per-file runs published, and checks every
+image/PDF has its derivatives (see digtk.models.digital_website.image.finalize()
+and .pdf.finalize()). Video and audio are still generated a whole item at a
+time, so they have nothing to finalize. The item's associatedMedia goes into
+its gold record afterward (see digtk.models.digital_website.item_record).
 """
 from digtk.lib import items
 from digtk.models.digital_website import image, pdf, pipeline
@@ -20,7 +21,7 @@ def finalize(target, opts={}):
     :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
         or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: Forwarded to each format's finalize().
-    :returns: {"status": "success", "ark": str|None, "image": {...}|absent, "pdf": {...}|absent}
+    :returns: {"status": "success", "item": str (item path), "image": {...}|absent, "pdf": {...}|absent}
         — one entry per format finalized.
     :rtype: dict
     :raises ValueError: If the item has neither image nor PDF binaries.
@@ -28,7 +29,7 @@ def finalize(target, opts={}):
     """
     item = items.resolve_target(target)
     formats = pipeline.detect_formats(item.bronze_binary_paths)
-    result = {"status": "success", "ark": item.ark}
+    result = {"status": "success", "item": items.item_id(item)}
     if "image" in formats:
         result["image"] = image.finalize(item, opts)
     if "pdf" in formats:

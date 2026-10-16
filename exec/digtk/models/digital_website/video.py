@@ -15,16 +15,17 @@ archiving team, e.g. a `.jpg` alongside the `.mp4`) processed independently by
 `digtk showcase image derivatives`, under the ordinary Multi-Format Items convention (see
 docs/cask-conventions.md) — there's no ffmpeg-extracted poster frame here.
 
-Each source video gets one VideoObject associatedMedia entry, tagged with its own
-filename stem as 'identifier' so derivatives()'s own captions.transcribe_sources()
-call (see digtk.models.digital_website.captions) can attach its caption to the
-right entry without needing to re-derive which video it belongs to.
+Each source video gets one VideoObject associatedMedia entry in the item's gold
+record (see media_objects()), tagged with its own filename stem as 'identifier' so
+digtk.models.digital_website.captions.attach_captions() can attach its caption to
+the right entry.
 """
+import json
 import os
 import tempfile
 import time
 
-from digtk.lib import ffmpeg_utils, items, utils
+from digtk.lib import ffmpeg_utils, fs, items, utils
 from digtk.lib.config import CONFIG
 from digtk.lib.schema import ARGONATH_NS
 from digtk.models.digital_website import captions, pipeline
@@ -51,7 +52,7 @@ def probe(target, opts={}):
     :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
         or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: Unused.
-    :returns: {"status": "success", "ark": str|None, "streams": {stem: ffmpeg_utils.probe() result}}
+    :returns: {"status": "success", "item": str (item path), "streams": {stem: ffmpeg_utils.probe() result}}
     :rtype: dict
     """
     item = items.resolve_target(target)
@@ -59,7 +60,7 @@ def probe(target, opts={}):
     with tempfile.TemporaryDirectory() as tmp_dir:
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": video_paths})
         streams = {src["stem"]: ffmpeg_utils.probe(src["local_path"], opts) for src in sources}
-    return {"status": "success", "ark": item.ark, "streams": streams}
+    return {"status": "success", "item": items.item_id(item), "streams": streams}
 
 
 def hls(target, opts={}):
@@ -73,7 +74,7 @@ def hls(target, opts={}):
         or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'resolutions' (comma-separated str, default
         CONFIG["video"]["resolutions"]); forwarded to ffmpeg_utils.hls_ladder().
-    :returns: {"status": "success", "ark": str|None, "videos": {filename: {"dir": str,
+    :returns: {"status": "success", "item": str (item path), "videos": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
@@ -107,7 +108,7 @@ def hls(target, opts={}):
                 },
             )
 
-    return {"status": "success", "ark": item.ark, "videos": videos}
+    return {"status": "success", "item": items.item_id(item), "videos": videos}
 
 
 def derivatives(target, opts={}):
@@ -119,8 +120,7 @@ def derivatives(target, opts={}):
     docs/cask-conventions.md's Video Streaming section), then transcribes every
     source to a WebVTT caption via captions.transcribe_sources() (local Whisper ASR —
     machine-generated and unreviewed, see docs/cask-conventions.md's
-    Captions/Transcripts section) using the same staged sources, merging each caption
-    into the VideoObject entry update_associated_media() just wrote. All local
+    Captions/Transcripts section) using the same staged sources. All local
     generation happens before anything is published to CaskFS, so a failure at any
     step leaves no partial derivative set behind.
 
@@ -129,7 +129,7 @@ def derivatives(target, opts={}):
     :param dict opts: 'resolutions' (comma-separated str, default
         CONFIG["video"]["resolutions"]); 'language'/'model' for the caption step (see
         captions.transcribe_sources()); forwarded to ffmpeg_utils.
-    :returns: {"status": "success", "ark": str|None, "stream": {filename: {"dir": str,
+    :returns: {"status": "success", "item": str (item path), "stream": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}, "captions": {...}}
     :rtype: dict
     """
@@ -167,19 +167,6 @@ def derivatives(target, opts={}):
             )
             utils.log(f"[{i}/{total}] {stem}: done")
 
-        utils.log("Updating associated-media sidecar...")
-        video_objects = []
-        for src in sources:
-            stem = src["stem"]
-            filename = os.path.basename(src["bronze_path"])
-            video_objects.append({
-                "@type": "VideoObject",
-                "identifier": stem,
-                "contentUrl": pipeline.cask_public_ref(f"{stream_results[filename]['dir']}/playlist.m3u8"),
-                "encodingFormat": "application/vnd.apple.mpegurl",
-            })
-        pipeline.update_associated_media(item, video_objects, [src["bronze_path"] for src in sources], "video")
-
         utils.log("Transcribing captions...")
         captions_result = captions.transcribe_sources(
             item, sources, tmp_dir,
@@ -187,4 +174,32 @@ def derivatives(target, opts={}):
             opts=opts,
         )
 
-    return {"status": "success", "ark": item.ark, "stream": stream_results, "captions": captions_result}
+    return {"status": "success", "item": items.item_id(item), "stream": stream_results, "captions": captions_result}
+
+
+def media_objects(item):
+    """The item's "video" associatedMedia entries — one VideoObject per source
+    video, pointing at its published HLS master playlist — rebuilt from each
+    video's streaming/manifest.json. Read by
+    digtk.models.digital_website.item_record.build().
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :returns: VideoObject entries, each tagged with its source's filename stem
+        as 'identifier' (see captions.attach_captions()).
+    :rtype: list[dict]
+    :raises FileNotFoundError: If a video's stream hasn't been published.
+    """
+    objects = []
+    for path in pipeline.filter_binaries_by_format(item.bronze_binary_paths, "video"):
+        filename = os.path.basename(path)
+        stream_dir = pipeline.derivative_dir(item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}/streaming")
+        manifest = json.loads(fs.read(f"{stream_dir}/manifest.json"))
+        if "playlist.m3u8" not in manifest.get("outputs", []):
+            raise FileNotFoundError(f"no HLS playlist published for {filename} of {items.item_id(item)}")
+        objects.append({
+            "@type": "VideoObject",
+            "identifier": os.path.splitext(filename)[0],
+            "contentUrl": pipeline.cask_public_ref(f"{stream_dir}/playlist.m3u8"),
+            "encodingFormat": "application/vnd.apple.mpegurl",
+        })
+    return objects

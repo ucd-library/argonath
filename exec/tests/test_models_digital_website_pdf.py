@@ -185,7 +185,7 @@ def fake_compare_orientations(selected):
 
 def test_page_count_reports_per_source(fake_fs, fake_pdf_render):
     result = pd.page_count(ARK)
-    assert result == {"status": "success", "ark": ARK, "pages": {"document": 2}}
+    assert result == {"status": "success", "item": "/bronze/g/c/latest/item", "pages": {"document": 2}}
 
 
 def test_page_count_multi_pdf_item(fake_fs, fake_pdf_render, monkeypatch):
@@ -356,15 +356,25 @@ def test_derivatives_decides_orientation_independently_per_page(fake_fs, fake_pd
     assert orientation["2"]["deskew"] is False
 
 
-def test_derivatives_associated_media_covers_every_page_with_position(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
+def _written(calls, suffix):
+    return [c for c in calls if c["rel_path"].endswith(suffix)]
+
+
+def test_media_objects_covers_every_page_with_position(fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
     pd.derivatives(ARK, opts={"widths": WIDTHS})
+    assert not _written(fake_derivative, "item.jsonld.json")
+    published = {
+        f"cask:/silver/g/c/latest/{c['rel_path']}": c["data"]
+        for c in _written(fake_derivative, "/images/manifest.json")
+    }
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: published[path])
 
-    sidecar_write = next(c for c in fake_derivative if c["rel_path"].endswith("item.jsonld.json"))
-    doc = json.loads(sidecar_write["data"])
-    assert len(doc["associatedMedia"]) == 6  # 2 pages x 3 sizes each
-    assert sorted(m["position"] for m in doc["associatedMedia"]) == [0, 0, 0, 1, 1, 1]
-    for m in doc["associatedMedia"]:
+    media = pd.media_objects(ITEM)
+
+    assert len(media) == 6  # 2 pages x 3 sizes each
+    assert sorted(m["position"] for m in media) == [0, 0, 0, 1, 1, 1]
+    for m in media:
         assert m["@type"] == "ImageObject"
 
 
@@ -381,10 +391,6 @@ def test_derivatives_multi_pdf_item_nests_by_filename(fake_fs, fake_pdf_render, 
 
 
 # --- per-file mode + finalize ------------------------------------------------
-
-def _written(calls, suffix):
-    return [c for c in calls if c["rel_path"].endswith(suffix)]
-
 
 def test_derivatives_per_file_processes_only_that_pdf_and_skips_associated_media(
     fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch,
@@ -404,15 +410,11 @@ def test_derivatives_per_file_processes_only_that_pdf_and_skips_associated_media
     assert not _written(fake_derivative, "item.jsonld.json")
 
 
-def test_per_pdf_runs_then_finalize_match_a_whole_item_run(
+def test_per_pdf_runs_then_finalize_checks_every_pdf_and_writes_nothing(
     fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch,
 ):
     use_multi_item(monkeypatch)
     monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
-
-    pd.derivatives(ARK, opts={"widths": WIDTHS})
-    whole_sidecar = _written(fake_derivative, "item.jsonld.json")[0]
-    fake_derivative.clear()
 
     for filename in ("doc-a.pdf", "doc-b.pdf"):
         pd.derivatives(ARK, opts={"widths": WIDTHS, "files": [filename]})
@@ -425,10 +427,8 @@ def test_per_pdf_runs_then_finalize_match_a_whole_item_run(
 
     result = pd.finalize(ARK)
 
-    sidecar_write = _written(fake_derivative, "item.jsonld.json")[0]
-    assert json.loads(sidecar_write["data"]) == json.loads(whole_sidecar["data"])
-    assert sidecar_write["source_files"] == whole_sidecar["source_files"]
-    assert result == {"status": "success", "ark": ARK, "pdfs": 2, "associated_media": 6}
+    assert fake_derivative == []
+    assert result == {"status": "success", "item": "/bronze/g/c/latest/box-1/folder-3", "pdfs": 2}
 
 
 def test_pdf_finalize_writes_nothing_if_a_pdfs_derivatives_are_missing(fake_fs, fake_derivative, monkeypatch):

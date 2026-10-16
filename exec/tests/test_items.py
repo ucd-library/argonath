@@ -59,7 +59,7 @@ def test_resolve_raises_on_malformed_bronze_path_missing_segments(monkeypatch):
 
 def test_resolve_raises_on_no_match(monkeypatch):
     monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [])
-    with pytest.raises(LookupError, match="found 0"):
+    with pytest.raises(LookupError, match="found neither"):
         items.resolve(ARK)
 
 
@@ -104,19 +104,28 @@ def test_resolve_sets_sidecar_path_for_single_binary(monkeypatch):
     assert location.sidecar_path == "cask:/bronze/digital-collections/my-coll/latest/box-1/photo.tiff.jsonld.json"
 
 
-# --- resolve() for a standalone 'item.jsonld.json' sidecar (docs/cask-conventions.md) ---
+# --- resolve() through a gold item record (docs/cask-conventions.md) ---
 
 
-def test_resolve_standalone_sidecar_lists_real_files_under_item_path(monkeypatch):
-    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [
-        "/bronze/preservica/haeger/latest/tree/calera-formatted/item.jsonld.json",
+def _fake_gold(monkeypatch, files):
+    monkeypatch.setattr(fs, "exists", lambda path: path in files)
+    monkeypatch.setattr(fs, "read", lambda path: files[path])
+
+
+def test_resolve_through_gold_record_lists_real_files_under_its_bronze_folder(monkeypatch):
+    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [])
+    monkeypatch.setattr(fs, "find_by_graph", lambda graph, opts={}: [
+        "/silver/preservica/haeger/latest/tree/calera-formatted/item.jsonld.json",
+        "/gold/digital-dev/haeger/tree/calera-formatted/item.jsonld.json",
     ])
+    _fake_gold(monkeypatch, {"cask:/gold/digital-dev/haeger/tree/calera-formatted/manifest.json": json.dumps({
+        "bronze": "/bronze/preservica/haeger/latest/tree/calera-formatted",
+    })})
 
     def fake_ls(path, opts={}):
         if path == "cask:/bronze/preservica/haeger/latest/tree/calera-formatted":
             return [
                 _entry("identifiers.json", "/bronze/preservica/haeger/latest/tree/calera-formatted/identifiers.json", "file"),
-                _entry("item.jsonld.json", "/bronze/preservica/haeger/latest/tree/calera-formatted/item.jsonld.json", "file"),
                 _entry("metadata.json", "/bronze/preservica/haeger/latest/tree/calera-formatted/metadata.json", "file"),
                 _entry("Access", "/bronze/preservica/haeger/latest/tree/calera-formatted/Access", "directory"),
                 _entry("Preservation", "/bronze/preservica/haeger/latest/tree/calera-formatted/Preservation", "directory"),
@@ -130,31 +139,69 @@ def test_resolve_standalone_sidecar_lists_real_files_under_item_path(monkeypatch
     monkeypatch.setattr(fs, "ls", fake_ls)
     location = items.resolve(ARK)
 
+    assert location.ark == ARK
+    assert (location.group, location.collection, location.time) == ("preservica", "haeger", "latest")
     assert location.item_path == "tree/calera-formatted"
-    assert location.sidecar_path == "cask:/bronze/preservica/haeger/latest/tree/calera-formatted/item.jsonld.json"
+    assert location.sidecar_path is None
     assert location.bronze_binary_paths == [
         "cask:/bronze/preservica/haeger/latest/tree/calera-formatted/Access/page_001.jpg",
         "cask:/bronze/preservica/haeger/latest/tree/calera-formatted/Preservation/page_001.tif",
     ]
 
 
-def test_resolve_standalone_sidecar_does_not_trigger_for_a_binary_literally_named_item(monkeypatch):
-    # A single-binary item whose file happens to be named "item" (no extension)
-    # would produce the same stripped-suffix filename "item" as the standalone-
-    # sidecar convention -- resolve() can't tell these apart from the sidecar
-    # match alone, so the standalone-listing path always wins once every
-    # matching sidecar's stripped filename is "item". Documenting this as
-    # expected (not a real-world collision in practice) rather than silently
-    # asserting the opposite.
+def test_resolve_ignores_a_stale_bronze_item_jsonld(monkeypatch):
     monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [
         "/bronze/g/c/latest/i1/item.jsonld.json",
     ])
-    monkeypatch.setattr(fs, "ls", lambda path, opts={}: [
-        _entry("item", "/bronze/g/c/latest/i1/item", "file"),
-        _entry("item.jsonld.json", "/bronze/g/c/latest/i1/item.jsonld.json", "file"),
+    with pytest.raises(LookupError, match="found neither"):
+        items.resolve(ARK)
+
+
+def test_resolve_gold_record_without_a_manifest_raises(monkeypatch):
+    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [])
+    monkeypatch.setattr(fs, "find_by_graph", lambda graph, opts={}: ["/gold/digital-dev/c/i1/item.jsonld.json"])
+    _fake_gold(monkeypatch, {})
+    with pytest.raises(LookupError, match="no manifest.json"):
+        items.resolve(ARK)
+
+
+def test_resolve_rejects_more_than_one_gold_record(monkeypatch):
+    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [])
+    monkeypatch.setattr(fs, "find_by_graph", lambda graph, opts={}: [
+        "/gold/digital-dev/c/i1/item.jsonld.json", "/gold/digital-dev/c/i2/item.jsonld.json",
     ])
-    location = items.resolve(ARK)
-    assert location.bronze_binary_paths == ["cask:/bronze/g/c/latest/i1/item"]
+    with pytest.raises(LookupError, match="Expected one gold item record"):
+        items.resolve(ARK)
+
+
+def test_resolve_searches_gold_records_by_named_graph(monkeypatch):
+    graphs = []
+
+    def fake_find_by_graph(graph, opts={}):
+        graphs.append(graph)
+        return ["/gold/digital-dev/c/i1/item.jsonld.json"]
+    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [])
+    monkeypatch.setattr(fs, "find_by_graph", fake_find_by_graph)
+    _fake_gold(monkeypatch, {"cask:/gold/digital-dev/c/i1/manifest.json": json.dumps({"bronze": "/bronze/g/c/latest/i1"})})
+    monkeypatch.setattr(fs, "ls", lambda path, opts={}: [])
+
+    assert items.resolve(ARK).item_path == "i1"
+    assert graphs == [ARK]
+
+
+def test_resolve_prefers_the_gold_record_under_the_requested_project(monkeypatch):
+    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [])
+    monkeypatch.setattr(fs, "find_by_graph", lambda graph, opts={}: [
+        "/gold/digital-dev/c/i1/item.jsonld.json", "/gold/digital-prod/c/i1/item.jsonld.json",
+    ])
+    _fake_gold(monkeypatch, {
+        "cask:/gold/digital-dev/c/i1/manifest.json": json.dumps({"bronze": "/bronze/g/c/dev-snapshot/i1"}),
+        "cask:/gold/digital-prod/c/i1/manifest.json": json.dumps({"bronze": "/bronze/g/c/prod-snapshot/i1"}),
+    })
+    monkeypatch.setattr(fs, "ls", lambda path, opts={}: [])
+
+    assert items.resolve(ARK).time == "dev-snapshot"
+    assert items.resolve(ARK, {"project": "digital-prod"}).time == "prod-snapshot"
 
 
 # --- resolve_path ---------------------------------------------------------------
@@ -180,17 +227,19 @@ def test_resolve_path_lists_binaries_with_no_ark_lookup(monkeypatch):
 
 
 def test_resolve_path_attaches_ark_when_the_folder_has_one(monkeypatch):
+    identifiers = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/identifiers.json"
     monkeypatch.setattr(fs, "ls", lambda path, opts={}: [
-        _entry("item.jsonld.json", "/bronze/preservica/haeger/latest/tree/quarter-mile/item.jsonld.json", "file"),
+        _entry("identifiers.json", "/bronze/preservica/haeger/latest/tree/quarter-mile/identifiers.json", "file"),
         _entry("page_001.tif", "/bronze/preservica/haeger/latest/tree/quarter-mile/page_001.tif", "file"),
     ])
-    monkeypatch.setattr(fs, "exists", lambda path: path == "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/item.jsonld.json")
-    monkeypatch.setattr(fs, "read", lambda path: json.dumps({"ark": ARK}))
+    monkeypatch.setattr(fs, "exists", lambda path: path == identifiers)
+    monkeypatch.setattr(fs, "read", lambda path: json.dumps([{"type": None, "value": ARK}]))
 
     location = items.resolve_path("bronze/preservica/haeger/latest/tree/quarter-mile")
 
     assert location.ark == ARK
-    assert location.sidecar_path == "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/item.jsonld.json"
+    assert location.sidecar_path is None
+    assert location.bronze_binary_paths == ["cask:/bronze/preservica/haeger/latest/tree/quarter-mile/page_001.tif"]
 
 
 def test_resolve_path_raises_when_folder_has_no_binaries(monkeypatch):
@@ -204,26 +253,32 @@ def test_resolve_path_rejects_non_bronze_paths():
         items.resolve_path("/workspace/jdoe/box-12")
 
 
-def test_metadata_reads_standalone_sidecar_directly(monkeypatch):
-    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [
-        "/bronze/preservica/haeger/latest/tree/calera-formatted/item.jsonld.json",
-    ])
-    monkeypatch.setattr(fs, "ls", lambda path, opts={}: [
-        _entry("Preservation", "/bronze/preservica/haeger/latest/tree/calera-formatted/Preservation", "directory"),
-    ] if path == "cask:/bronze/preservica/haeger/latest/tree/calera-formatted" else [
-        _entry("page_001.tif", "/bronze/preservica/haeger/latest/tree/calera-formatted/Preservation/page_001.tif", "file"),
-    ])
+def test_metadata_for_maps_a_tree_items_metadata_json_dublin_core(monkeypatch):
+    location = items.ItemLocation(
+        ark=ARK, group="preservica", collection="haeger", time="latest",
+        item_path="tree/calera-formatted", bronze_binary_paths=[],
+    )
+    metadata_path = "cask:/bronze/preservica/haeger/latest/tree/calera-formatted/metadata.json"
+    monkeypatch.setattr(fs, "exists", lambda path: path == metadata_path)
+    monkeypatch.setattr(fs, "read", lambda path: json.dumps({
+        "dc": {"title": "Calera", "date": "1973", "creator": "Haeger"},
+        "preservica": {"title": "Calera_Formatted"},
+    }).encode())
 
-    seen = {}
+    assert items.metadata_for(location) == {
+        "title": "Calera", "description": None, "date": "1973", "creator": "Haeger",
+    }
 
-    def fake_read(path):
-        seen["path"] = path
-        return json.dumps({"name": "Calera"}).encode()
 
-    monkeypatch.setattr(fs, "read", fake_read)
-    metadata = items.metadata(ARK)
-    assert seen["path"] == "cask:/bronze/preservica/haeger/latest/tree/calera-formatted/item.jsonld.json"
-    assert metadata["title"] == "Calera"
+def test_metadata_for_falls_back_to_the_preservica_title(monkeypatch):
+    location = items.ItemLocation(
+        ark=None, group="preservica", collection="haeger", time="latest",
+        item_path="tree/calera-formatted", bronze_binary_paths=[],
+    )
+    monkeypatch.setattr(fs, "exists", lambda path: True)
+    monkeypatch.setattr(fs, "read", lambda path: json.dumps({"preservica": {"title": "Calera_Formatted"}}).encode())
+
+    assert items.metadata_for(location)["title"] == "Calera_Formatted"
 
 
 def test_metadata_maps_sidecar_fields(monkeypatch):
@@ -271,13 +326,14 @@ def test_metadata_defaults_missing_fields_to_none(monkeypatch):
 
 # --- metadata_for -------------------------------------------------------------
 
-def test_metadata_for_returns_all_none_without_a_sidecar(monkeypatch):
+def test_metadata_for_returns_all_none_for_a_workspace_item(monkeypatch):
     def fake_read(path):
         raise AssertionError(f"unexpected fs.read({path})")
     monkeypatch.setattr(fs, "read", fake_read)
     location = items.ItemLocation(
         ark=None, group="jdoe", collection="box-12", time=None, item_path="",
         bronze_binary_paths=["cask:/workspace/jdoe/box-12/source/photo.tiff"],
+        dest_type="workspace", dest_prefix="derivatives",
     )
     assert items.metadata_for(location) == {"title": None, "description": None, "date": None, "creator": None}
 
@@ -405,7 +461,7 @@ def test_resolve_target_rejects_anything_else(target):
         items.resolve_target(target)
 
 
-def test_item_id_is_the_ark_or_the_workspace_source_dir():
+def test_item_id_is_always_a_path_never_the_ark():
     bronze = items.ItemLocation(
         ark=ARK, group="g", collection="c", time="latest", item_path="i", bronze_binary_paths=[],
     )
@@ -413,7 +469,7 @@ def test_item_id_is_the_ark_or_the_workspace_source_dir():
         ark=None, group="jdoe", collection="box-12", time=None, item_path="folder-1",
         bronze_binary_paths=[], dest_type="workspace", dest_prefix="derivatives",
     )
-    assert items.item_id(bronze) == ARK
+    assert items.item_id(bronze) == "/bronze/g/c/latest/i"
     assert items.item_id(workspace) == "cask:/workspace/jdoe/box-12/source/folder-1"
 
 
@@ -472,9 +528,12 @@ def test_resolve_tree_item_without_media_has_no_binaries(monkeypatch):
     """A tree/ item whose media were removed resolves with an empty binary list
     (no fallback to by-ref/) — callers report it as missing media."""
     tree = "/bronze/preservica/haeger/latest/tree/quarter-mile"
-    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [f"{tree}/item.jsonld.json"])
+    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [])
+    monkeypatch.setattr(fs, "find_by_graph", lambda graph, opts={}: [
+        "/gold/digital-dev/haeger/tree/quarter-mile/item.jsonld.json",
+    ])
+    _fake_gold(monkeypatch, {"cask:/gold/digital-dev/haeger/tree/quarter-mile/manifest.json": json.dumps({"bronze": tree})})
     listing = {tree: [
-        _entry("item.jsonld.json", f"{tree}/item.jsonld.json", "file"),
         _entry("metadata.json", f"{tree}/metadata.json", "file"),
         _entry("identifiers.json", f"{tree}/identifiers.json", "file"),
     ]}
@@ -507,31 +566,14 @@ def test_normalize_bronze_path_rejects_non_item_paths(path):
         items.normalize_bronze_path(path)
 
 
-def test_ark_for_path_reads_item_sidecar(monkeypatch):
-    sidecar = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/item.jsonld.json"
-    monkeypatch.setattr(fs, "exists", lambda path: path == sidecar)
-    monkeypatch.setattr(fs, "read", lambda path: json.dumps({"ark": ARK}))
-
-    assert items.ark_for_path("bronze/preservica/haeger/latest/tree/quarter-mile") == ARK
-
-
-def test_ark_for_path_missing_sidecar_is_missing_ark(monkeypatch):
+def test_ark_for_path_missing_identifiers_json_is_missing_ark(monkeypatch):
     monkeypatch.setattr(fs, "exists", lambda path: False)
 
     with pytest.raises(LookupError, match="MISSING ARK"):
         items.ark_for_path("bronze/preservica/haeger/latest/tree/quarter-mile")
 
 
-def test_ark_for_path_sidecar_without_ark_is_missing_ark(monkeypatch):
-    monkeypatch.setattr(fs, "exists", lambda path: not path.endswith("identifiers.json"))
-    monkeypatch.setattr(fs, "read", lambda path: json.dumps({"name": "Quarter Mile"}))
-
-    with pytest.raises(LookupError, match="MISSING ARK"):
-        items.ark_for_path("bronze/preservica/haeger/latest/tree/quarter-mile")
-
-
-def test_ark_for_path_falls_back_to_identifiers_json(monkeypatch):
-    sidecar = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/item.jsonld.json"
+def test_ark_for_path_reads_identifiers_json(monkeypatch):
     identifiers = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/identifiers.json"
     monkeypatch.setattr(fs, "exists", lambda path: path == identifiers)
     monkeypatch.setattr(fs, "read", lambda path: json.dumps([
@@ -542,23 +584,7 @@ def test_ark_for_path_falls_back_to_identifiers_json(monkeypatch):
     assert items.ark_for_path("bronze/preservica/haeger/latest/tree/quarter-mile") == ARK
 
 
-def test_ark_for_path_prefers_sidecar_ark_over_identifiers_json(monkeypatch):
-    sidecar = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/item.jsonld.json"
-    identifiers = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/identifiers.json"
-    other_ark = "ark:/87287/other"
-    monkeypatch.setattr(fs, "exists", lambda path: path in (sidecar, identifiers))
-
-    def fake_read(path):
-        if path == sidecar:
-            return json.dumps({"ark": ARK})
-        return json.dumps([{"type": None, "value": other_ark}])
-    monkeypatch.setattr(fs, "read", fake_read)
-
-    assert items.ark_for_path("bronze/preservica/haeger/latest/tree/quarter-mile") == ARK
-
-
 def test_ark_for_path_raises_when_identifiers_json_has_no_ark_either(monkeypatch):
-    sidecar = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/item.jsonld.json"
     identifiers = "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/identifiers.json"
     monkeypatch.setattr(fs, "exists", lambda path: path == identifiers)
     monkeypatch.setattr(fs, "read", lambda path: json.dumps([{"type": "LocalID", "value": "abc123"}]))

@@ -191,7 +191,7 @@ class ItemRunConfig(CollectionDerivativesConfig):
     its bronze tree folder, plus CollectionDerivativesConfig's widths/max_steps.
 
     `item` defaults to "" only because lib.utils.default_run_config() builds
-    the launchpad defaults with `cls()`; plan_item rejects an empty value.
+    the launchpad defaults with `cls()`; pdc_plan_item rejects an empty value.
 
     :param str widths: Comma-separated thumbnail widths.
     :param int max_steps: Most derivative steps the item's files may produce;
@@ -199,13 +199,13 @@ class ItemRunConfig(CollectionDerivativesConfig):
     :param str item: The item's bronze folder, e.g.
         "bronze/preservica/haeger/latest/tree/quarter-mile" ('cask:/' and a
         leading '/' are accepted too).
-    :param bool index_es: Index the item into the DAMS Elasticsearch index
+    :param bool index_es: Index the item into the showcase Elasticsearch index
         (`digtk showcase es upsert`) once it's finalized.
     """
     item: str = Field(
         "", description="Bronze folder of the item, e.g. bronze/preservica/haeger/latest/tree/quarter-mile.",
     )
-    index_es: bool = Field(True, description="Index the item into the DAMS Elasticsearch index afterwards.")
+    index_es: bool = Field(True, description="Index the item into the showcase Elasticsearch index afterwards.")
 
 
 class OcrConfig(Config):

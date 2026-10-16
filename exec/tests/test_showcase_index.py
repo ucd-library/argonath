@@ -22,6 +22,7 @@ def manifest(monkeypatch):
             return served[path]
         raise FileNotFoundError(path)
     monkeypatch.setattr(showcase_index.fs, "read", fake_read)
+    monkeypatch.setattr(showcase_index.item_record.fs, "read", fake_read)
 
     def set_doc(doc):
         served[MANIFEST_PATH] = json.dumps(doc).encode()
@@ -251,8 +252,9 @@ SILVER = "cask://silver/g/c/latest/item"
 PFD = f"{SILVER}/public-frontend-derivatives"
 LOCATION = ItemLocation(
     ark=ARK, group="g", collection="c", time="latest", item_path="item",
-    bronze_binary_paths=[], sidecar_path="cask:/bronze/g/c/latest/item/item.jsonld.json",
+    bronze_binary_paths=[],
 )
+RECORD_PATH = "cask:/gold/digital-dev/c/item/item.jsonld.json"
 
 
 def _image_entries(filename):
@@ -265,20 +267,26 @@ def _image_entries(filename):
 
 @pytest.fixture
 def item_files(monkeypatch):
-    """A fake CaskFS for one item: bronze + silver sidecars, plus any extra
-    files a test adds (manifests); everything else is missing."""
-    files = {LOCATION.sidecar_path: {"name": "An item", "creator": "Someone"}}
+    """A fake CaskFS for one item: its gold item record, plus any extra
+    files a test adds (manifests); everything else is missing. set_media()
+    sets the item's published silver associatedMedia entries."""
+    files = {RECORD_PATH: {"@id": ARK, "@graph": [
+        {"@id": f"https://digital.ucdavis.edu/item/{ARK}", "name": "An item", "creator": "Someone"},
+    ]}}
+    media = []
 
     def set_media(entries):
-        files["cask:/silver/g/c/latest/item/item.jsonld.json"] = {"associatedMedia": entries}
+        media[:] = entries
 
     def fake_read(path):
         if path not in files:
             raise FileNotFoundError(path)
         return json.dumps(files[path]).encode()
 
-    monkeypatch.setattr(showcase_index.items, "resolve", lambda ark: LOCATION)
+    monkeypatch.setattr(showcase_index.items, "resolve", lambda ark, opts={}: LOCATION)
     monkeypatch.setattr(showcase_index.fs, "read", fake_read)
+    monkeypatch.setattr(showcase_index.item_record.fs, "read", fake_read)
+    monkeypatch.setattr(showcase_index, "_silver_media", lambda location: [dict(e) for e in media])
     files["set_media"] = set_media
     return files
 
@@ -373,6 +381,33 @@ def test_build_document_makes_an_image_list_for_several_images(item_files):
     assert page1["fileFormat"] == "image/tiff"
     # a page's download is a single entry — the website collects them into the list's download
     assert isinstance(page1["clientMedia"]["download"], dict)
+
+
+def test_build_document_reads_descriptive_fields_from_the_gold_root_node(item_files):
+    document = showcase_index.build_document(ARK)
+    root = document["@graph"][0]
+    assert (root["name"], document["name"]) == ("An item", "An item")
+    assert root["creator"]
+
+
+def test_silver_media_stamps_each_entry_with_its_source_group(monkeypatch):
+    location = ItemLocation(
+        ark=ARK, group="g", collection="c", time="latest", item_path="item",
+        bronze_binary_paths=["cask:/bronze/g/c/latest/item/photo.tiff", "cask:/bronze/g/c/latest/item/talk.mp3"],
+    )
+    monkeypatch.setitem(showcase_index._MEDIA_READERS, "image", lambda item: [{"contentUrl": "a"}])
+    monkeypatch.setitem(showcase_index._MEDIA_READERS, "audio", lambda item: [{"contentUrl": "b"}])
+    monkeypatch.setattr(showcase_index.captions, "attach_captions", lambda item, entries: False)
+
+    entries = showcase_index._silver_media(location)
+
+    assert [(e["contentUrl"], e["argonath:sourceGroup"]) for e in entries] == [("a", "image"), ("b", "audio")]
+
+
+def test_build_document_requires_the_gold_record(item_files):
+    del item_files[RECORD_PATH]
+    with pytest.raises(FileNotFoundError):
+        showcase_index.build_document(ARK)
 
 
 def test_build_document_without_derivatives_is_just_the_root(item_files):

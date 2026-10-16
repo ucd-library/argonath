@@ -49,7 +49,7 @@ from lib.assets import (
     generate_alt_text,
     tag_accessible_pdf,
     index_for_rag,
-    index_for_dams_search,
+    index_for_showcase_search,
 )
 from lib.jobs import (
     reconcile_collection_job,
@@ -62,7 +62,7 @@ from lib.jobs import (
     alt_text_job,
     tag_pdf_job,
     search_index_job,
-    dams_search_index_job,
+    showcase_search_index_job,
     full_pipeline_job,
 )
 from lib.sensors import (
@@ -73,7 +73,7 @@ from lib.sensors import (
     ocr_on_derivatives,
     metadata_on_ocr,
     rag_on_metadata,
-    dams_search_on_derivatives,
+    showcase_search_on_derivatives,
 )
 from lib.schedules import (
     nightly_arda_index,
@@ -101,7 +101,7 @@ defs = dg.Definitions(
         generate_alt_text,
         tag_accessible_pdf,
         index_for_rag,
-        index_for_dams_search,
+        index_for_showcase_search,
     ],
     jobs=[
         reconcile_collection_job,
@@ -114,7 +114,7 @@ defs = dg.Definitions(
         alt_text_job,
         tag_pdf_job,
         search_index_job,
-        dams_search_index_job,
+        showcase_search_index_job,
         full_pipeline_job,
         process_collection_job,
         process_workspace_job,
@@ -131,7 +131,7 @@ defs = dg.Definitions(
         ocr_on_derivatives,
         metadata_on_ocr,
         rag_on_metadata,
-        dams_search_on_derivatives,
+        showcase_search_on_derivatives,
         process_item_failure_sensor,
         item_queue_sensor,
         collection_rollup_sensor,

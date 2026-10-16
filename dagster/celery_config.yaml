@@ -4,6 +4,7 @@ execution:
     backend: rpc://
     config_source:
       worker_concurrency: 5
+      worker_prefetch_multiplier: 1
 
       worker_redirect_stdouts: false
       worker_hijack_root_logger: false

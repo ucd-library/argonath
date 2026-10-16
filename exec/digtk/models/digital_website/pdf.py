@@ -59,7 +59,7 @@ def page_count(target, opts={}):
     :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
         or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: Unused.
-    :returns: {"status": "success", "ark": str|None, "pages": {stem: count}}
+    :returns: {"status": "success", "item": str (item path), "pages": {stem: count}}
     :rtype: dict
     """
     item = items.resolve_target(target)
@@ -67,7 +67,7 @@ def page_count(target, opts={}):
     with tempfile.TemporaryDirectory() as tmp_dir:
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pdf_paths})
         pages = {src["stem"]: pdf_render.page_count(src["local_path"], opts) for src in sources}
-    return {"status": "success", "ark": item.ark, "pages": pages}
+    return {"status": "success", "item": items.item_id(item), "pages": pages}
 
 
 def thumbnail(target, opts={}):
@@ -82,7 +82,7 @@ def thumbnail(target, opts={}):
         or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'page' (int, default 0, 0-indexed), 'widths' (comma-separated str,
         default CONFIG["image"]["thumbnail_widths"]), 'quality' (int).
-    :returns: {"status": "success", "ark": str|None, "pdfs": {filename: {"dir": str,
+    :returns: {"status": "success", "item": str (item path), "pdfs": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}}
     :rtype: dict
     """
@@ -111,7 +111,7 @@ def thumbnail(target, opts={}):
                 },
             )
 
-    return {"status": "success", "ark": item.ark, "pdfs": pdfs}
+    return {"status": "success", "item": items.item_id(item), "pdfs": pdfs}
 
 
 def convert(target, opts={}):
@@ -123,7 +123,7 @@ def convert(target, opts={}):
         or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'page' (int, default 0), 'format' (str, default
         CONFIG["image"]["convert_format"]), 'quality' (int).
-    :returns: {"status": "success", "ark": str|None, "dir": str, "outputs": [...], "manifest": {...}}
+    :returns: {"status": "success", "item": str (item path), "dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
     """
     page = opts.get("page", 0)
@@ -154,7 +154,7 @@ def convert(target, opts={}):
             },
         )
 
-    return {"status": "success", "ark": item.ark, **result}
+    return {"status": "success", "item": items.item_id(item), **result}
 
 
 def deskew(target, opts={}):
@@ -167,7 +167,7 @@ def deskew(target, opts={}):
         or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'page' (int, default 0), forwarded to image_magick.deskew()
         (threshold, working_width, output_width, quality).
-    :returns: {"status": "success", "ark": str|None, "dir": str, "outputs": [...], "manifest": {...}}
+    :returns: {"status": "success", "item": str (item path), "dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
     """
     page = opts.get("page", 0)
@@ -196,7 +196,7 @@ def deskew(target, opts={}):
             },
         )
 
-    return {"status": "success", "ark": item.ark, **result}
+    return {"status": "success", "item": items.item_id(item), **result}
 
 
 def prep_ocr(target, opts={}):
@@ -209,7 +209,7 @@ def prep_ocr(target, opts={}):
         or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'page' (int, default 0), forwarded to image_magick.prep_ocr()
         (size, dpi, fuzz, quality, deskew, threshold).
-    :returns: {"status": "success", "ark": str|None, "dir": str, "outputs": [...], "manifest": {...}}
+    :returns: {"status": "success", "item": str (item path), "dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
     """
     page = opts.get("page", 0)
@@ -239,7 +239,7 @@ def prep_ocr(target, opts={}):
             },
         )
 
-    return {"status": "success", "ark": item.ark, **result}
+    return {"status": "success", "item": items.item_id(item), **result}
 
 
 def derivatives(target, opts={}):
@@ -278,10 +278,9 @@ def derivatives(target, opts={}):
 
     Per-file mode (opts['files']) — one Dagster step per PDF, see
     dagster/lib/pipeline_fanout.py — processes only the named PDF(s). Everything
-    above is already written per PDF, so the only thing skipped is the item
-    sidecar's associatedMedia, which combines every PDF; finalize() writes it
-    once every PDF is done. The ocr/ namespacing decision still follows the
-    whole item, so a per-file run writes exactly the paths a whole-item run would.
+    above is already written per PDF, so a per-file run writes exactly the
+    paths a whole-item run would (the ocr/ namespacing decision still follows
+    the whole item).
 
     :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
         or an already-resolved location — see digtk.lib.items.resolve_target().
@@ -290,7 +289,7 @@ def derivatives(target, opts={}):
         filenames, optional — per-file mode, see above; see
         pipeline.select_binaries()); forwarded to pdf_render/image_magick/ocr_utils:
         'target_pixel_width', 'default_density', 'quality', 'dpi', 'fuzz', 'threshold', etc.
-    :returns: {"status": "success", "ark": str|None, "pdfs": {filename: {"pages": int,
+    :returns: {"status": "success", "item": str (item path), "pdfs": {filename: {"pages": int,
         "derivatives": {"pages": {page_number: {...}}, "manifest": {...}}, "ocr": {...},
         "orientation": {page_number: {...}}}}, "finalized": bool (False in
         per-file mode — run finalize())}
@@ -305,7 +304,6 @@ def derivatives(target, opts={}):
     start = time.monotonic()
 
     pdfs_result = {}
-    image_objects = []
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": selected})
@@ -414,14 +412,6 @@ def derivatives(target, opts={}):
                     opts={"link_relation": _LINK_RELATION["ocr"]},
                 )
 
-                for label, (fn, local_path) in zip(pipeline.THUMBNAIL_SIZE_LABELS, thumb_set):
-                    image_objects.append({
-                        "@type": "ImageObject",
-                        "contentUrl": pipeline.cask_public_ref(f"{images_dir}/{fn}"),
-                        "encodingFormat": "image/jpeg",
-                        "position": page_index,
-                        **size_by_label[label],
-                    })
                 derivatives_pages[str(page_no)] = page_result
                 ocr_pages.append(ocr_result)
                 ocr_page_dirs.append(f"{page_tag}/")
@@ -461,33 +451,19 @@ def derivatives(target, opts={}):
                 "orientation": orientations,
             }
 
-        if not files:
-            utils.log("Updating associated-media sidecar...")
-            pipeline.update_associated_media(item, image_objects, [src["bronze_path"] for src in sources], "pdf")
-
-    return {"status": "success", "ark": item.ark, "pdfs": pdfs_result, "finalized": not files}
+    return {"status": "success", "item": items.item_id(item), "pdfs": pdfs_result, "finalized": not files}
 
 
-def finalize(target, opts={}):
-    """Write a PDF item's associatedMedia from its already-published per-PDF
-    derivatives — the step after one-per-PDF derivatives() runs (see its 'files' opt).
+def _read_manifests(item, pdf_paths):
+    """Read back each PDF's published aggregate images/manifest.json.
 
-    Reads each PDF's aggregate images/manifest.json back — its "pages" array
-    carries every page's small/medium/large urls and sizes — and writes the
-    item sidecar's "pdf" associatedMedia entries in one go, the same content a
-    whole-item derivatives() writes.
-
-    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
-        or an already-resolved location — see digtk.lib.items.resolve_target().
-    :param dict opts: Unused; present for signature symmetry.
-    :returns: {"status": "success", "ark": str|None, "pdfs": int, "associated_media": int}
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param list[str] pdf_paths: The item's PDF binaries.
+    :returns: {bronze path: manifest dict}.
     :rtype: dict
     :raises FileNotFoundError: If any PDF's aggregate manifest is missing (its
-        per-PDF run hasn't completed) — nothing is written in that case.
+        per-PDF run hasn't completed).
     """
-    item = items.resolve_target(target)
-    pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
-
     manifests, missing = {}, []
     for path in pdf_paths:
         filename = os.path.basename(path)
@@ -500,12 +476,45 @@ def finalize(target, opts={}):
         raise FileNotFoundError(
             f"no derivatives published yet for {len(missing)} PDF(s) of {items.item_id(item)}: {missing}"
         )
+    return manifests
 
-    image_objects = []
+
+def media_objects(item):
+    """The item's "pdf" associatedMedia entries — small/medium/large
+    ImageObjects for every page of every PDF, each with its 0-indexed
+    "position" — rebuilt from each PDF's aggregate images/manifest.json (its
+    "pages" array). Read by
+    digtk.models.digital_website.item_record.build().
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :returns: ImageObject entries, in PDF then page order.
+    :rtype: list[dict]
+    :raises FileNotFoundError: If any PDF's aggregate manifest is missing.
+    """
+    pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
+    manifests = _read_manifests(item, pdf_paths)
+    objects = []
     for path in pdf_paths:
         for page in manifests[path].get("pages", []):
-            image_objects += pipeline.image_objects_from_manifest(page, opts={"position": page["page"] - 1})
+            objects += pipeline.image_objects_from_manifest(page, opts={"position": page["page"] - 1})
+    return objects
 
-    utils.log("Updating associated-media sidecar...")
-    pipeline.update_associated_media(item, image_objects, pdf_paths, "pdf")
-    return {"status": "success", "ark": item.ark, "pdfs": len(pdf_paths), "associated_media": len(image_objects)}
+
+def finalize(target, opts={}):
+    """Check that every PDF of the item has its derivatives published — the
+    step after one-per-PDF derivatives() runs (see its 'files' opt). A PDF has
+    no item-level outputs of its own to write; its associatedMedia goes into
+    the gold item record (see digtk.models.digital_website.item_record).
+
+    :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
+        or an already-resolved location — see digtk.lib.items.resolve_target().
+    :param dict opts: Unused; present for signature symmetry.
+    :returns: {"status": "success", "item": str (item path), "pdfs": int}
+    :rtype: dict
+    :raises FileNotFoundError: If any PDF's aggregate manifest is missing (its
+        per-PDF run hasn't completed).
+    """
+    item = items.resolve_target(target)
+    pdf_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "pdf")
+    _read_manifests(item, pdf_paths)
+    return {"status": "success", "item": items.item_id(item), "pdfs": len(pdf_paths)}
