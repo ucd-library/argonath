@@ -208,6 +208,34 @@ class ItemRunConfig(CollectionDerivativesConfig):
     index_es: bool = Field(True, description="Index the item into the showcase Elasticsearch index afterwards.")
 
 
+class ReindexCollectionConfig(Config):
+    """Config for lib.pipeline_index.reindex_collection_job.
+
+    :param bool rebuild: Rebuild each gold item record before indexing.
+    :param bool prune: Delete indexed items no longer in bronze.
+    :param bool force_prune: Skip the prune safety guard.
+    :param int batch_size: Items per step (one bulk request each).
+    """
+    rebuild: bool = Field(False, description="Rebuild each gold item record (build-item) before indexing.")
+    prune: bool = Field(True, description="Delete indexed items no longer in the collection's bronze items.")
+    force_prune: bool = Field(False, description="Skip the prune guard (no items in bronze, or >50% deleted).")
+    batch_size: int = Field(200, description="Items per step; each step sends one bulk request.")
+
+
+class DeleteItemIndexConfig(Config):
+    """Config for lib.pipeline_index.delete_item_index_job.
+
+    `ark` defaults to "" only so default_run_config() can build launchpad defaults.
+
+    :param str ark: Item ARK to delete from the showcase indexes.
+    :param str collection: Collection key to refresh, if the item can't be resolved.
+    """
+    ark: str = Field("", description="Item ARK, e.g. ark:/87287/d7abc1234.")
+    collection: str = Field(
+        "", description="Collection key to refresh afterwards when the item is gone from cask, e.g. bronze/preservica/haeger.",
+    )
+
+
 class OcrConfig(Config):
     """Config for the run_ocr asset.
 

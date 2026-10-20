@@ -58,8 +58,8 @@ _IN_FLIGHT = [
 @op
 def enqueue_collection_items(context: OpExecutionContext):
     """Queue a process_item_job run for every item in the partition's
-    collection. Items that have left its bronze tree/ are left alone (item
-    removal isn't implemented yet).
+    collection. Items that have left its bronze tree/ are left alone here;
+    reindex_collection_job prunes their ES docs.
 
     :param context: Dagster op execution context; partitioned by collection.
     """

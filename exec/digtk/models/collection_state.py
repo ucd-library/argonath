@@ -20,7 +20,7 @@ inherit that value. Nothing tracks per-item access yet.
 The queue: enqueue_collection() writes one job_queue row per item for
 ITEM_JOB, replacing any row already pending for the same item, so the latest
 request wins. Items that have left the collection's bronze tree/ are not
-removed or unlinked (item removal isn't implemented yet). Rows aren't claimed
+removed or unlinked here (their ES docs are pruned by `digtk showcase es prune`). Rows aren't claimed
 here — Dagster's item_queue_sensor reads them with pending() and deletes them
 with ack() one tick after submitting their runs (see
 dagster/lib/pipeline_collection.py), so a crashed sensor tick never loses a row. Outcomes go to job_result via record_result() (one row per job
@@ -253,7 +253,7 @@ def enqueue_collection(key, opts={}):
     Upserts the collection and its items and links new items — all in one
     transaction. A pending row for the same item is replaced, so enqueuing
     twice doesn't run an item twice. Items no longer present are left as they
-    are (item removal isn't implemented yet).
+    are (`digtk showcase es prune` removes their ES docs).
 
     :param str key: Collection key, e.g. "bronze/preservica/haeger".
     :param dict opts: 'batch' (str — recorded on each row, e.g. the launching

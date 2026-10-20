@@ -690,6 +690,156 @@ def index_item(ark):
     return {"ark": ark, "esId": es_id, "index": ES_INDEX, "status": "indexed", "pages": pages}
 
 
+def item_es_id(ark):
+    """An item's ES document id, from its ARK alone.
+
+    :param str ark: Item ARK.
+    :returns: e.g. 'https://digital.ucdavis.edu/item/ark:/87287/d7abc1234'.
+    :rtype: str
+    """
+    return item_record._item_uri(ark)
+
+
+def bulk(actions, opts={}):
+    """Sends index/delete actions to ES's _bulk API in chunks. Per-document
+    failures are returned, not raised; a delete of a missing doc is a success.
+
+    :param list[dict] actions: {"op": "index"|"delete", "index", "id", "doc"?}.
+    :param dict opts: 'chunk_size' (int, default 500).
+    :returns: {"indexed": int, "deleted": int, "errors": [{"id", "error"}]}.
+    :rtype: dict
+    :raises httpx.HTTPStatusError: If a whole _bulk request fails.
+    """
+    chunk_size = opts.get("chunk_size", 500)
+    result = {"indexed": 0, "deleted": 0, "errors": []}
+    for start in range(0, len(actions), chunk_size):
+        lines = []
+        for action in actions[start:start + chunk_size]:
+            lines.append(json.dumps({action["op"]: {"_index": action["index"], "_id": action["id"]}}))
+            if action["op"] == "index":
+                lines.append(json.dumps(action["doc"]))
+        resp = httpx.post(
+            f"{ES_HOST}/_bulk",
+            content="\n".join(lines) + "\n",
+            headers={"Content-Type": "application/x-ndjson"},
+        )
+        resp.raise_for_status()
+        for entry in resp.json().get("items", []):
+            op, outcome = next(iter(entry.items()))
+            status = outcome.get("status", 500)
+            if op == "delete" and status in (200, 404):
+                result["deleted"] += 1 if status == 200 else 0
+            elif status < 300:
+                result["indexed"] += 1
+            else:
+                result["errors"].append({"id": outcome.get("_id"), "error": outcome.get("error")})
+    return result
+
+
+def index_items(arks, opts={}):
+    """Builds and bulk-writes several items' ES documents and their page
+    documents. An item whose document can't be built is reported in "failed"
+    and the rest still go out.
+
+    :param list[str] arks: Item ARKs.
+    :param dict opts: 'project' (see build_document()), 'chunk_size' (see bulk()).
+    :returns: {"indexed": [ark], "failed": [{"ark", "error"}], "pages": int}.
+    :rtype: dict
+    :raises httpx.HTTPStatusError: If a whole _bulk request fails.
+    """
+    failed = []
+    documents = {}
+    for ark in arks:
+        try:
+            documents[ark] = build_document(ark, {k: v for k, v in opts.items() if k == "project"})
+        except Exception as e:
+            failed.append({"ark": ark, "error": str(e)})
+
+    actions = [
+        {"op": "index", "index": ES_INDEX, "id": doc["@id"], "doc": doc}
+        for doc in documents.values()
+    ]
+    item_errors = {e["id"]: e["error"] for e in bulk(actions, opts)["errors"]}
+
+    indexed = []
+    page_actions = []
+    for ark, doc in documents.items():
+        if doc["@id"] in item_errors:
+            failed.append({"ark": ark, "error": json.dumps(item_errors[doc["@id"]])})
+            continue
+        indexed.append(ark)
+        for page in build_page_documents(doc):
+            page_actions.append({
+                "op": "index", "index": PAGE_SEARCH_INDEX, "id": page["@graph"][0]["@id"], "doc": page,
+            })
+
+    _delete_pages([documents[ark]["@id"] for ark in indexed])
+    page_result = bulk(page_actions, opts)
+    for error in page_result["errors"]:
+        utils.warn(f"page {error['id']} failed to index: {error['error']}")
+    return {"indexed": indexed, "failed": failed, "pages": page_result["indexed"]}
+
+
+def list_collection_item_ids(collection_id, opts={}):
+    """Every item document id whose isPartOf is the collection, paged
+    through with search_after.
+
+    :param str collection_id: The collection document's @id.
+    :param dict opts: 'page_size' (int, default 1000).
+    :returns: Item ES ids, sorted.
+    :rtype: list[str]
+    :raises httpx.HTTPStatusError: If a search request fails.
+    """
+    body = {
+        "size": opts.get("page_size", 1000),
+        "query": {"term": {"@graph.isPartOf.@id": collection_id}},
+        "sort": [{"@id": "asc"}],
+        "_source": False,
+    }
+    ids = []
+    while True:
+        resp = httpx.post(f"{ES_HOST}/{ES_INDEX}/_search", json=body)
+        if resp.status_code == 404:
+            return ids
+        resp.raise_for_status()
+        hits = resp.json()["hits"]["hits"]
+        ids.extend(hit["_id"] for hit in hits)
+        if len(hits) < body["size"]:
+            return ids
+        body = {**body, "search_after": hits[-1]["sort"]}
+
+
+def delete_items(item_ids, opts={}):
+    """Removes items' documents and their page-search documents.
+
+    :param list[str] item_ids: Item ES ids (see item_es_id()).
+    :param dict opts: Forwarded to bulk().
+    :returns: {"items": int, "pages": int, "errors": [{"id", "error"}]}.
+    :rtype: dict
+    :raises httpx.HTTPStatusError: If an ES request fails outright.
+    """
+    pages = _delete_pages(item_ids)
+    result = bulk([{"op": "delete", "index": ES_INDEX, "id": i} for i in item_ids], opts)
+    return {"items": result["deleted"], "pages": pages, "errors": result["errors"]}
+
+
+def delete_collection(collection_id, opts={}):
+    """Removes a collection's document, every item document that is part of
+    it, and those items' page documents.
+
+    :param str collection_id: The collection document's @id.
+    :param dict opts: Forwarded to list_collection_item_ids() and bulk().
+    :returns: {"collection": bool, "items": int, "pages": int, "errors": [...]}.
+    :rtype: dict
+    :raises httpx.HTTPStatusError: If an ES request fails outright.
+    """
+    result = delete_items(list_collection_item_ids(collection_id, opts), opts)
+    resp = httpx.delete(f"{ES_HOST}/{COLLECTION_INDEX}/_doc/{urllib.parse.quote(collection_id, safe='')}")
+    if resp.status_code != 404:
+        resp.raise_for_status()
+    return {"collection": resp.status_code != 404, **result}
+
+
 def build_collection_document(name, opts={}):
     """Builds the ES document for a collection from its gold record. Items
     link to it through their isPartOf; it has no hasPart back.
@@ -870,24 +1020,29 @@ def build_page_documents(document):
     return pages
 
 
-def _delete_pages(item_id):
-    """Removes every page-search document belonging to an item (matched on the
-    item's top-level @id) — so a re-index with fewer pages leaves none behind.
+def _delete_pages(item_ids, opts={}):
+    """Removes every page-search document belonging to the items (matched on
+    their top-level @id), so a re-index with fewer pages leaves none behind.
 
-    :param str item_id: The item's ES @id.
+    :param list[str] item_ids: Item ES @ids.
+    :param dict opts: 'chunk_size' (int, default 500) — ids per request.
     :returns: How many documents were deleted (0 if the index doesn't exist).
     :rtype: int
     :raises httpx.HTTPStatusError: If the delete fails for any other reason.
     """
-    resp = httpx.post(
-        f"{ES_HOST}/{PAGE_SEARCH_INDEX}/_delete_by_query",
-        params={"refresh": "true", "conflicts": "proceed"},
-        json={"query": {"term": {"@id": item_id}}},
-    )
-    if resp.status_code == 404:
-        return 0
-    resp.raise_for_status()
-    return resp.json().get("deleted", 0)
+    chunk_size = opts.get("chunk_size", 500)
+    deleted = 0
+    for start in range(0, len(item_ids), chunk_size):
+        resp = httpx.post(
+            f"{ES_HOST}/{PAGE_SEARCH_INDEX}/_delete_by_query",
+            params={"refresh": "true", "conflicts": "proceed"},
+            json={"query": {"terms": {"@id": item_ids[start:start + chunk_size]}}},
+        )
+        if resp.status_code == 404:
+            return deleted
+        resp.raise_for_status()
+        deleted += resp.json().get("deleted", 0)
+    return deleted
 
 
 def index_pages(document):
@@ -899,7 +1054,7 @@ def index_pages(document):
     :rtype: int
     :raises httpx.HTTPStatusError: If an ES write fails.
     """
-    _delete_pages(document["@id"])
+    _delete_pages([document["@id"]])
     pages = build_page_documents(document)
     for page in pages:
         page_id = page["@graph"][0]["@id"]

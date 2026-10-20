@@ -267,7 +267,7 @@ def test_index_pages_replaces_the_items_page_documents(monkeypatch, page_deletes
     assert showcase_index.index_pages(_image_list_document()) == 1
 
     assert page_deletes[0]["url"].endswith("/page-search-write/_delete_by_query")
-    assert page_deletes[0]["json"] == {"query": {"term": {"@id": ITEM_ID}}}
+    assert page_deletes[0]["json"] == {"query": {"terms": {"@id": [ITEM_ID]}}}
     assert puts == [f"{showcase_index.ES_HOST}/page-search-write/_doc/{showcase_index.urllib.parse.quote(GOLD_PAGE_ID, safe='')}"]
 
 
@@ -713,3 +713,203 @@ def test_find_collection_image_is_none_without_images(monkeypatch):
 def test_find_collection_image_is_none_without_an_item_index(monkeypatch):
     monkeypatch.setattr(showcase_index.httpx, "post", lambda url, json=None: _Response(404))
     assert showcase_index.find_collection_image("/collection/x") is None
+
+
+# --- bulk writes and deletes --------------------------------------------------------
+
+
+@pytest.fixture
+def bulk_posts(monkeypatch):
+    """Stub ES POSTs: _bulk echoes a status per action; others answer from `replies`."""
+    calls = []
+    replies = {"statuses": {}, "search": [], "deleted": 0}
+
+    def fake_post(url, params=None, json=None, content=None, headers=None):
+        calls.append({"url": url, "params": params, "json": json, "content": content})
+        if url.endswith("/_bulk"):
+            items = []
+            for line in content.strip().split("\n"):
+                meta = showcase_index.json.loads(line)
+                if "index" not in meta and "delete" not in meta:
+                    continue
+                op, target = next(iter(meta.items()))
+                status = replies["statuses"].get(target["_id"], 201 if op == "index" else 200)
+                outcome = {"_id": target["_id"], "status": status}
+                if status >= 400 and not (op == "delete" and status == 404):
+                    outcome["error"] = {"type": "mapper_parsing_exception"}
+                items.append({op: outcome})
+            return _Response(200, {"errors": False, "items": items})
+        if url.endswith("/_search"):
+            return _Response(200, {"hits": {"hits": replies["search"].pop(0)}})
+        return _Response(200, {"deleted": replies["deleted"]})
+    monkeypatch.setattr(showcase_index.httpx, "post", fake_post)
+    return calls, replies
+
+
+def test_item_es_id_is_the_item_uri():
+    assert showcase_index.item_es_id(ARK) == ITEM_ID
+
+
+def test_bulk_sends_ndjson_in_chunks(bulk_posts):
+    calls, _ = bulk_posts
+    actions = [
+        {"op": "index", "index": "item-write", "id": "a", "doc": {"@id": "a"}},
+        {"op": "index", "index": "item-write", "id": "b", "doc": {"@id": "b"}},
+        {"op": "delete", "index": "item-write", "id": "c"},
+    ]
+
+    result = showcase_index.bulk(actions, {"chunk_size": 2})
+
+    assert [c["url"] for c in calls] == [f"{showcase_index.ES_HOST}/_bulk"] * 2
+    assert calls[0]["content"].split("\n") == [
+        '{"index": {"_index": "item-write", "_id": "a"}}', '{"@id": "a"}',
+        '{"index": {"_index": "item-write", "_id": "b"}}', '{"@id": "b"}', "",
+    ]
+    assert calls[1]["content"] == '{"delete": {"_index": "item-write", "_id": "c"}}\n'
+    assert result == {"indexed": 2, "deleted": 1, "errors": []}
+
+
+def test_bulk_returns_per_document_errors(bulk_posts):
+    _, replies = bulk_posts
+    replies["statuses"]["bad"] = 400
+
+    result = showcase_index.bulk([
+        {"op": "index", "index": "item-write", "id": "ok", "doc": {}},
+        {"op": "index", "index": "item-write", "id": "bad", "doc": {}},
+    ])
+
+    assert result["indexed"] == 1
+    assert result["errors"] == [{"id": "bad", "error": {"type": "mapper_parsing_exception"}}]
+
+
+def test_bulk_counts_a_missing_delete_as_success(bulk_posts):
+    _, replies = bulk_posts
+    replies["statuses"]["gone"] = 404
+
+    result = showcase_index.bulk([{"op": "delete", "index": "item-write", "id": "gone"}])
+
+    assert result == {"indexed": 0, "deleted": 0, "errors": []}
+
+
+def test_bulk_sends_nothing_without_actions(bulk_posts):
+    calls, _ = bulk_posts
+
+    assert showcase_index.bulk([]) == {"indexed": 0, "deleted": 0, "errors": []}
+    assert calls == []
+
+
+def test_bulk_raises_when_the_request_fails(monkeypatch):
+    monkeypatch.setattr(showcase_index.httpx, "post", lambda url, **kw: _Response(500))
+
+    with pytest.raises(showcase_index.httpx.HTTPStatusError):
+        showcase_index.bulk([{"op": "delete", "index": "item-write", "id": "a"}])
+
+
+def test_delete_pages_chunks_the_terms_query(page_deletes):
+    assert showcase_index._delete_pages(["a", "b", "c"], {"chunk_size": 2}) == 4
+
+    assert [c["json"] for c in page_deletes] == [
+        {"query": {"terms": {"@id": ["a", "b"]}}},
+        {"query": {"terms": {"@id": ["c"]}}},
+    ]
+
+
+def test_delete_pages_sends_nothing_without_ids(page_deletes):
+    assert showcase_index._delete_pages([]) == 0
+    assert page_deletes == []
+
+
+def test_index_items_writes_items_then_replaces_their_pages(monkeypatch, bulk_posts):
+    calls, _ = bulk_posts
+    document = _image_list_document()
+    monkeypatch.setattr(showcase_index, "build_document", lambda ark, opts={}: document)
+    monkeypatch.setattr(showcase_index.fs, "read", lambda path: b"<OBJECT/>")
+
+    result = showcase_index.index_items([ARK])
+
+    assert [c["url"].rsplit("/", 1)[-1] for c in calls] == ["_bulk", "_delete_by_query", "_bulk"]
+    assert calls[1]["json"] == {"query": {"terms": {"@id": [ITEM_ID]}}}
+    assert GOLD_PAGE_ID in calls[2]["content"]
+    assert result == {"indexed": [ARK], "failed": [], "pages": 1}
+
+
+def test_index_items_reports_an_item_that_fails_to_build(monkeypatch, bulk_posts):
+    calls, _ = bulk_posts
+
+    def fake_build(ark, opts={}):
+        if ark == "ark:/87287/bad":
+            raise FileNotFoundError("no gold record")
+        return {"@id": showcase_index.item_es_id(ark), "@graph": [], "roles": ["public"]}
+    monkeypatch.setattr(showcase_index, "build_document", fake_build)
+
+    result = showcase_index.index_items(["ark:/87287/bad", ARK])
+
+    assert result["indexed"] == [ARK]
+    assert result["failed"] == [{"ark": "ark:/87287/bad", "error": "no gold record"}]
+    assert ITEM_ID in calls[0]["content"]
+
+
+def test_index_items_skips_pages_for_an_item_es_rejected(monkeypatch, bulk_posts):
+    calls, replies = bulk_posts
+    replies["statuses"][ITEM_ID] = 400
+    monkeypatch.setattr(showcase_index, "build_document", lambda ark, opts={}: _image_list_document())
+
+    result = showcase_index.index_items([ARK])
+
+    assert result["indexed"] == []
+    assert result["failed"][0]["ark"] == ARK
+    assert [c["url"].rsplit("/", 1)[-1] for c in calls] == ["_bulk"]
+
+
+def test_list_collection_item_ids_pages_with_search_after(bulk_posts):
+    calls, replies = bulk_posts
+    replies["search"] = [
+        [{"_id": "a", "sort": ["a"]}, {"_id": "b", "sort": ["b"]}],
+        [{"_id": "c", "sort": ["c"]}],
+    ]
+
+    assert showcase_index.list_collection_item_ids("/collection/x", {"page_size": 2}) == ["a", "b", "c"]
+
+    assert calls[0]["json"]["query"] == {"term": {"@graph.isPartOf.@id": "/collection/x"}}
+    assert "search_after" not in calls[0]["json"]
+    assert calls[1]["json"]["search_after"] == ["b"]
+
+
+def test_list_collection_item_ids_is_empty_without_an_item_index(monkeypatch):
+    monkeypatch.setattr(showcase_index.httpx, "post", lambda url, json=None: _Response(404))
+
+    assert showcase_index.list_collection_item_ids("/collection/x") == []
+
+
+def test_delete_items_removes_pages_then_items(bulk_posts):
+    calls, replies = bulk_posts
+    replies["deleted"] = 3
+
+    result = showcase_index.delete_items(["a", "b"])
+
+    assert [c["url"].rsplit("/", 1)[-1] for c in calls] == ["_delete_by_query", "_bulk"]
+    assert result == {"items": 2, "pages": 3, "errors": []}
+
+
+def test_delete_collection_removes_items_then_the_collection(monkeypatch, bulk_posts):
+    calls, replies = bulk_posts
+    replies["search"] = [[{"_id": "a", "sort": ["a"]}]]
+    deletes = []
+    monkeypatch.setattr(showcase_index.httpx, "delete", lambda url: deletes.append(url) or _Response(200))
+
+    result = showcase_index.delete_collection("https://digital.ucdavis.edu/collection/ark:/1/x")
+
+    assert [c["url"].rsplit("/", 1)[-1] for c in calls] == ["_search", "_delete_by_query", "_bulk"]
+    assert deletes == [
+        f"{showcase_index.ES_HOST}/{showcase_index.COLLECTION_INDEX}/_doc/"
+        + showcase_index.urllib.parse.quote("https://digital.ucdavis.edu/collection/ark:/1/x", safe="")
+    ]
+    assert result == {"collection": True, "items": 1, "pages": 0, "errors": []}
+
+
+def test_delete_collection_without_a_collection_doc(monkeypatch, bulk_posts):
+    _, replies = bulk_posts
+    replies["search"] = [[]]
+    monkeypatch.setattr(showcase_index.httpx, "delete", lambda url: _Response(404))
+
+    assert showcase_index.delete_collection("/collection/x")["collection"] is False

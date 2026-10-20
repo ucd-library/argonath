@@ -1601,6 +1601,54 @@ def _tree_siblings(root, tree_dir_rel, exclude_slug=None):
     return used
 
 
+def _reconcile_tree_children(root, collection, so_ref, root_so_ref):
+    """Match one synced SO's tree/ entries to its by-ref/ children.json.
+    Entries Preservica knew (a by-ref/ entry) but no longer lists are deleted;
+    entries added directly in bronze are kept.
+
+    :param str root: fs-compatible bronze 'latest' root.
+    :param str collection: Collection name (see _tree_partition_keys()).
+    :param str so_ref: The synced SO's ref.
+    :param str root_so_ref: The collection root SO's ref (its entry is 'tree').
+    :returns: (removed [{'ref', 'ark'}], missing [{'ref', 'type'}]).
+    :rtype: tuple[list[dict], list[dict]]
+    """
+    children = _read_bronze_json(root, f"by-ref/{so_ref}/children.json")
+    tree_rel = "tree" if so_ref == root_so_ref else _find_tree_path_for_ref(so_ref, collection, root)
+    if children is None or not tree_rel:
+        return [], []
+
+    listed = {c["ref"]: c for c in children}
+    present = set()
+    removed = []
+    try:
+        entries = fs.ls(f"{root}/{tree_rel}")
+    except FileNotFoundError:
+        entries = []
+    for entry in entries:
+        if entry.kind != "directory":
+            continue
+        meta = _read_bronze_json(root, f"{tree_rel}/{entry.name}/metadata.json", {})
+        ref = (meta.get("preservica") or {}).get("ref")
+        # unknown entries are left alone
+        if not ref:
+            continue
+        if ref in listed:
+            present.add(ref)
+            continue
+        # bronze-first, not synced yet
+        if not fs.exists(f"{root}/by-ref/{ref}/entity.json"):
+            utils.log(f"tree/{entry.name}: not in Preservica yet, kept")
+            continue
+        identifiers = _read_bronze_json(root, f"{tree_rel}/{entry.name}/identifiers.json", [])
+        ark = next((i.get("value") for i in identifiers if _is_ark(i.get("value") or "")), None)
+        fs.delete(f"{root}/{tree_rel}/{entry.name}", opts={"directory": True})
+        removed.append({"ref": ref, "ark": ark})
+
+    missing = [{"ref": ref, "type": c["type"]} for ref, c in listed.items() if ref not in present]
+    return removed, missing
+
+
 def preservica_tree_partial(collection, group, changed_entities, opts={}):
     """Incrementally patch bronze's tree/ layout for just the given changed
     Preservica entities, instead of preservica_tree()'s full delete-and-rebuild
@@ -1623,6 +1671,11 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
       via fs.move() in one call — cheap regardless of subtree size, and
       preserves lineage/partition keys so every descendant's own tag-based
       lookup stays valid afterward.
+    - **Folder children**: for each changed SO, tree/ entries whose ref has
+      left its children.json are deleted first, and listed children with no
+      entry under it are handled like any other entity (see
+      _reconcile_tree_children()). An item moved between two synced folders
+      is therefore re-placed, not lost.
     - **Added** (by-ref/ exists, no tree/ entry yet): the entity's parent SO
       is found via _find_parent_so_ref(), the entry is placed under that
       parent's current tree/ location (or directly under 'tree' if the
@@ -1643,7 +1696,8 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
         type) pairs are processed only once.
     :param dict opts: 'dest_root' (str, optional — see _bronze_collection_root()).
     :returns: {'moved': [...], 'added': [...], 'removed': [...],
-        'unresolved': [...]} — each a list of Preservica refs.
+        'unresolved': [...]} — each a list of Preservica refs — plus
+        'removedArks', the ARKs of removed items that weren't re-placed.
     :rtype: dict
     :raises FileNotFoundError: If preservica_import() has not been run yet for
         this collection.
@@ -1659,10 +1713,29 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
     root = _bronze_latest_root(collection, group, opts)
     result = {"moved": [], "added": [], "removed": [], "unresolved": []}
 
-    seen = set()
+    # drop removed children before placing
+    work = list(changed_entities)
+    relisted = set()
+    removed_arks = {}
     for entity in changed_entities:
+        if entity["type"] != "SO" or not fs.exists(f"{root}/by-ref/{entity['ref']}/entity.json"):
+            continue
+        removed, missing = _reconcile_tree_children(root, collection, entity["ref"], root_so_ref)
+        result["removed"].extend(r["ref"] for r in removed)
+        removed_arks.update((r["ref"], r["ark"]) for r in removed)
+        work.extend(missing)
+        relisted.update(m["ref"] for m in missing)
+    # removed and not listed elsewhere
+    dropped = set(result["removed"]) - relisted
+    result["removedArks"] = sorted(ark for ref, ark in removed_arks.items() if ref in dropped and ark)
+
+    seen = set()
+    for entity in work:
         pair = (entity["ref"], entity["type"])
-        if pair in seen or entity["type"] not in ("SO", "IO"):
+        if pair in seen or entity["type"] not in ("SO", "IO") or entity["ref"] in dropped:
+            continue
+        # root always stays at tree/
+        if entity["ref"] == root_so_ref:
             continue
         seen.add(pair)
         ref, entity_type = pair
@@ -1672,8 +1745,12 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
 
         if not by_ref_exists:
             if old_tree_rel:
+                identifiers = _read_bronze_json(root, f"{old_tree_rel}/identifiers.json", [])
+                ark = next((i.get("value") for i in identifiers if _is_ark(i.get("value") or "")), None)
                 fs.delete(f"{root}/{old_tree_rel}", opts={"directory": True})
                 result["removed"].append(ref)
+                if ark:
+                    result["removedArks"].append(ark)
             continue
 
         identifiers = _read_bronze_json(root, f"by-ref/{ref}/identifiers.json", [])

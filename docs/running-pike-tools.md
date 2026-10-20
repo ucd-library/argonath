@@ -325,6 +325,48 @@ The Dagster UI is at http://localhost:3000 in local dev.
     digtk showcase finalize <ark>
     ```
 
+- **Showcase search index for a whole collection:** `reindex_collection_job` sends every
+  item to Elasticsearch with the `_bulk` API. It doesn't make derivatives.
+  - **Steps:** one `reindex_batch[...]` step per `batch_size` items (default 200), each
+    running `digtk showcase es upsert-items <folders...>`. With `rebuild` set, it first
+    runs `build-item` on each item, which picks up bronze metadata edits. Items without
+    an ARK are skipped.
+  - **Prune:** `prune_collection_index` deletes indexed items whose ARK is no longer in
+    the collection's bronze items, along with their page docs. It's skipped if any
+    batch failed. It also refuses to run when bronze lists no items, or when it would
+    delete more than half of the indexed items. Set `force_prune` to override.
+  - **Collection doc:** `pdc_index_collection` then refreshes `itemCount` and the image,
+    the same step `collection_rollup_job` ends with.
+- **Items removed by a Preservica sync:** when a synced folder (SO) no longer lists a
+  child that Preservica knew about (it has a `by-ref/` entry), the tree rebuild deletes
+  that child's `tree/` entry and reports its ARK in `removedArks`. `by-ref/` is kept.
+  `reconcile_collection_job` then ends with `delete_removed_from_showcase_index`, which
+  runs `digtk showcase es delete <arks...>` for just those items and refreshes the
+  collection doc. It's skipped when nothing was removed.
+  - To remove an item, remove it in Preservica and sync its parent folder. In the
+    launchpad, `preservica_changed` names the parent with `type: SO`, not the item.
+  - Items added directly in bronze `tree/` (no `by-ref/` entry yet) are never deleted by a
+    sync, whether or not their `metadata.json` has a `preservica.ref`.
+  - An item moved between two synced folders is re-placed, and its ES doc is kept.
+  - The full bronze-vs-ES diff (`es prune`) only runs by hand or in
+    `reindex_collection_job`. It also deletes docs for bronze-first items that were
+    indexed and then removed from bronze.
+- **Removing from the search index:** `delete_collection_index_job` (collection partition)
+  deletes the collection doc, its items and their pages. `delete_item_index_job` (config
+  `ark`) deletes one item and refreshes its collection doc. Both touch ES only, so an
+  item that's still in bronze comes back on the next reindex.
+- **The same from a terminal:**
+
+  | Task | digtk (runs directly) | argonath (launches the Dagster job) |
+  |---|---|---|
+  | Reindex a collection | `digtk showcase es bulk-upsert <key> [--rebuild] [--no-prune]` | `argonath index collection <key> [--rebuild] [--no-prune] [--wait]` |
+  | Prune only | `digtk showcase es prune <key> [--dry-run] [--force]` | n/a |
+  | Delete a collection | `digtk showcase es delete-collection <key>` | `argonath index delete-collection <key> [--wait]` |
+  | Delete an item | `digtk showcase es delete <ark>` | `argonath index delete-item <ark> [--collection <key>] [--wait]` |
+
+  `<key>` is `bronze/<group>/<collection>`. `argonath` reads `DAGSTER_URL` (default
+  `http://localhost:3000/dagster`) and `DAGSTER_LOCATION` (default `defs.py`).
+
 ## Promoting workspace results to silver
 
 Once scans processed in workspace have been ingested to bronze under an ARK, you can

@@ -27,6 +27,9 @@ Submodule layout (all files live alongside this one in dagster/):
                             them with backpressure), collection_rollup_job and
                             collection_rollup_sensor (item count + failed items
                             once a collection's runs finish)
+  lib/pipeline_index.py  — reindex_collection_job (bulk ES reindex + prune, no
+                            derivatives), delete_collection_index_job and
+                            delete_item_index_job
   lib/collection_state.py — the collection_state queue/results store, via
                             `digtk state` (see digtk.models.collection_state)
 
@@ -42,6 +45,7 @@ from lib.assets import (
     detect_spreads,
     apply_spreads,
     rebuild_collection_tree,
+    delete_removed_from_showcase_index,
     ingest_item,
     generate_derivatives,
     run_ocr,
@@ -87,6 +91,11 @@ from lib.pipeline_collection import (
     item_queue_sensor,
     collection_rollup_sensor,
 )
+from lib.pipeline_index import (
+    reindex_collection_job,
+    delete_collection_index_job,
+    delete_item_index_job,
+)
 
 defs = dg.Definitions(
     assets=[
@@ -94,6 +103,7 @@ defs = dg.Definitions(
         detect_spreads,
         apply_spreads,
         rebuild_collection_tree,
+    delete_removed_from_showcase_index,
         ingest_item,
         generate_derivatives,
         run_ocr,
@@ -122,6 +132,9 @@ defs = dg.Definitions(
         process_item_job,
         collection_launch_job,
         collection_rollup_job,
+        reindex_collection_job,
+        delete_collection_index_job,
+        delete_item_index_job,
     ],
     sensors=[
         preservica_auto_sync_sensor,
