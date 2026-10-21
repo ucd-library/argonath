@@ -56,7 +56,11 @@ RUN pip install --no-cache-dir uv
 # (cached under ~/.cache/whisper) rather than baked in here — see docs/cask-conventions.md's
 # Captions/Transcripts section. The deployment environment needs a persistent volume at
 # that cache path so the model isn't re-downloaded on every container restart.
-RUN uv pip install --system --no-cache-dir openai-whisper
+# torch is installed from PyTorch's CPU-only wheel index (not PyPI's default, CUDA-bundled
+# build) since no deployment runs Whisper on a GPU — the default GPU wheel drags in the full
+# CUDA runtime (nvidia-cublas/cudnn/cufft/nccl, triton, etc.), several GB of unused libraries.
+RUN uv pip install --system --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch && \
+    uv pip install --system --no-cache-dir openai-whisper
 
 # Allow ImageMagick to read/write all formats (default policy restricts PDF etc.)
 RUN sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/' \
@@ -66,9 +70,8 @@ RUN sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/' \
 RUN mkdir -p /opt/caskfs
 WORKDIR /opt/caskfs
 COPY --from=caskfs /opt/caskfs/package.json package.json
-RUN npm install --omit=dev
 COPY --from=caskfs /opt/caskfs/src src
-RUN cd /opt/caskfs && npm install -g
+RUN npm install -g --omit=dev
 RUN mkdir -p /cork-build-info
 COPY --from=caskfs /cork-build-info/caskfs.json /cork-build-info/caskfs.json
 
