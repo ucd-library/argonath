@@ -70,8 +70,9 @@ RUN sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/' \
 RUN mkdir -p /opt/caskfs
 WORKDIR /opt/caskfs
 COPY --from=caskfs /opt/caskfs/package.json package.json
+RUN npm install --omit=dev
 COPY --from=caskfs /opt/caskfs/src src
-RUN npm install -g --omit=dev
+RUN npm install -g
 RUN mkdir -p /cork-build-info
 COPY --from=caskfs /cork-build-info/caskfs.json /cork-build-info/caskfs.json
 
