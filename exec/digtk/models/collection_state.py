@@ -289,6 +289,42 @@ def enqueue_collection(key, opts={}):
     return {"collection": key, "items": len(current), "added": len(added), "enqueued": enqueued}
 
 
+def enqueue_items(paths, opts={}):
+    """Queue an ITEM_JOB run for specific item folders, grouped by collection.
+    Items and their collections are upserted and linked like
+    enqueue_collection() does, one transaction per collection.
+
+    :param list[str] paths: Bronze item folders.
+    :param dict opts: 'trigger' (str, default "items"), 'batch' (str), 'conn'.
+    :returns: {"items": int, "enqueued": int, "collections": [key]}.
+    :rtype: dict
+    """
+    by_key = {}
+    for path in paths:
+        by_key.setdefault(collection_key(path), []).append(item_name(path))
+    extra = {"trigger": opts.get("trigger", "items")}
+    if opts.get("batch"):
+        extra["batch"] = opts["batch"]
+
+    count = enqueued = 0
+    for key, names in by_key.items():
+        current = []
+        for name in dict.fromkeys(names):
+            try:
+                ark = items.ark_for_path(name)
+            except LookupError:
+                ark = None
+            current.append((name, ark))
+        count += len(current)
+        info = registry_info(key)
+        with _transaction(opts) as cur:
+            coll = _upsert_collection(cur, key, info)
+            ids = _upsert_items(cur, current, coll["visibility"])
+            _link_items(cur, coll["id"], ids.values())
+            enqueued += _enqueue(cur, ITEM_JOB, [(ids[name], {"item": name, **extra}) for name, _ in current])
+    return {"items": count, "enqueued": enqueued, "collections": sorted(by_key)}
+
+
 def pending(job_name, limit, opts={}):
     """The oldest queued rows for a job, without removing them (see ack()).
 

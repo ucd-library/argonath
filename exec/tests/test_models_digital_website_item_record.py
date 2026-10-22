@@ -577,3 +577,41 @@ def test_build_skips_dublin_core_mapping_without_a_metadata_fragment(fake_deriva
     doc = item_record.build(TREE_ITEM)
 
     assert _node(doc, ITEM_URI)["name"] == "quarter-mile"
+
+
+# --- gold_location() ---------------------------------------------------------
+
+def test_gold_location_reads_only_gold(monkeypatch):
+    record = {"@id": "ark:/1/a", "@graph": [
+        {"@id": "https://digital.ucdavis.edu/item/ark:/1/a", "name": "A"},
+        {"@id": "https://digital.ucdavis.edu/item/ark:/1/a#imagelist/p2.tif", "contentUrl": "cask://bronze/g/c/latest/tree/a/p2.tif"},
+        {"@id": "https://digital.ucdavis.edu/item/ark:/1/a#imagelist/p1.tif", "contentUrl": "cask://bronze/g/c/latest/tree/a/p1.tif"},
+        {"@id": "https://digital.ucdavis.edu/item/ark:/1/a#x", "contentUrl": "https://example.org/x"},
+    ]}
+    files = {
+        "cask:/gold/digital-dev/c/tree/a/item.jsonld.json": record,
+        "cask:/gold/digital-dev/c/tree/a/manifest.json": {"bronze": "/bronze/g/c/latest/tree/a"},
+    }
+    reads = []
+
+    def fake_read(path):
+        reads.append(path)
+        return json.dumps(files[path]).encode()
+    monkeypatch.setattr(item_record.items, "find_gold_record", lambda ark, opts={}: "/gold/digital-dev/c/tree/a/item.jsonld.json")
+    monkeypatch.setattr(item_record.fs, "read", fake_read)
+
+    location, got = item_record.gold_location("ark:/1/a")
+
+    assert got == record
+    assert (location.group, location.collection, location.time, location.item_path) == ("g", "c", "latest", "tree/a")
+    assert location.bronze_binary_paths == [
+        "cask:/bronze/g/c/latest/tree/a/p1.tif", "cask:/bronze/g/c/latest/tree/a/p2.tif",
+    ]
+    assert all(p.startswith("cask:/gold/") for p in reads)
+
+
+def test_gold_location_without_a_record_raises(monkeypatch):
+    monkeypatch.setattr(item_record.items, "find_gold_record", lambda ark, opts={}: None)
+
+    with pytest.raises(FileNotFoundError):
+        item_record.gold_location("ark:/1/a")

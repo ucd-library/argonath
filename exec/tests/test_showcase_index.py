@@ -325,7 +325,10 @@ def item_files(monkeypatch):
             raise FileNotFoundError(path)
         return json.dumps(files[path]).encode()
 
-    monkeypatch.setattr(showcase_index.items, "resolve", lambda ark, opts={}: LOCATION)
+    monkeypatch.setattr(
+        showcase_index.item_record, "gold_location",
+        lambda ark, opts={}: (LOCATION, json.loads(fake_read(RECORD_PATH))),
+    )
     monkeypatch.setattr(showcase_index.fs, "read", fake_read)
     monkeypatch.setattr(showcase_index.item_record.fs, "read", fake_read)
     monkeypatch.setattr(showcase_index, "_silver_media", lambda location: [dict(e) for e in media])

@@ -59,6 +59,8 @@ def _cast_bool(raw):
 OCR_LANG_ENV = "DIGTK_OCR_LANG"
 OCR_PSM_ENV = "DIGTK_OCR_PSM"
 OCR_OEM_ENV = "DIGTK_OCR_OEM"
+# OpenMP threads per Tesseract process; 1 avoids oversubscribing parallel steps.
+OCR_THREADS_ENV = "DIGTK_OCR_THREADS"
 OCR_CONFIDENCE_THRESHOLD_ENV = "DIGTK_OCR_CONFIDENCE_THRESHOLD"
 # Distinct from OCR_CONFIDENCE_THRESHOLD_ENV, which gates the Tesseract->ML fallback
 # (phase 0.5): these two govern the image-derivatives orientation comparison (phase
@@ -200,6 +202,15 @@ REPORTING_PG_USER_ENV = "DIGTK_REPORTING_PG_USER"
 REPORTING_PG_PASSWORD_ENV = "DIGTK_REPORTING_PG_PASSWORD"
 REPORTING_JOB_ID_ENV = "DIGTK_REPORTING_JOB_ID"
 
+# CaskFS's own Postgres (audit_log), read by digtk.lib.cask_audit. Each
+# setting falls back to the reporting connection's, the same shared database.
+CASKFS_PG_HOST_ENV = "DIGTK_CASKFS_PG_HOST"
+CASKFS_PG_PORT_ENV = "DIGTK_CASKFS_PG_PORT"
+CASKFS_PG_DATABASE_ENV = "DIGTK_CASKFS_PG_DATABASE"
+CASKFS_PG_USER_ENV = "DIGTK_CASKFS_PG_USER"
+CASKFS_PG_PASSWORD_ENV = "DIGTK_CASKFS_PG_PASSWORD"
+CASKFS_PG_SCHEMA_ENV = "DIGTK_CASKFS_PG_SCHEMA"
+
 # argonath's own app-level Postgres schema (collection registry, etc.) — a
 # distinct database/credentials from Dagster's own run/event-log storage (see
 # dagster/lib/utils.py's `conn`, configured via dagster/dagster.yaml's
@@ -223,6 +234,7 @@ SETTINGS = [
     {"dotpath": "ocr.lang", "env": OCR_LANG_ENV, "cast": str, "secret": False},
     {"dotpath": "ocr.psm", "env": OCR_PSM_ENV, "cast": int, "secret": False},
     {"dotpath": "ocr.oem", "env": OCR_OEM_ENV, "cast": int, "secret": False},
+    {"dotpath": "ocr.threads", "env": OCR_THREADS_ENV, "cast": int, "secret": False},
     {"dotpath": "ocr.confidence_threshold", "env": OCR_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "samwise.api_url", "env": SAMWISE_API_URL_ENV, "cast": str, "secret": False},
     {"dotpath": "samwise.api_key", "env": SAMWISE_API_KEY_ENV, "cast": str, "secret": True},
@@ -440,6 +452,7 @@ CONFIG = {
         "lang": _env(OCR_LANG_ENV, "eng"),
         "psm": _env(OCR_PSM_ENV, 1, int),
         "oem": _env(OCR_OEM_ENV, 3, int),
+        "threads": _env(OCR_THREADS_ENV, 1, int),
         "confidence_threshold": _env(OCR_CONFIDENCE_THRESHOLD_ENV, 60.0, float),
         # Orientation-comparison thresholds (phase 0.4 derivatives, not the
         # ML-fallback trigger above): a deskewed candidate is only picked over the
@@ -665,6 +678,15 @@ CONFIG = {
         "database": _env(REPORTING_PG_DATABASE_ENV, "postgres"),
         "user": _env(REPORTING_PG_USER_ENV, "postgres"),
         "password_env": REPORTING_PG_PASSWORD_ENV,
+    },
+    "caskfs_db": {
+        "host": _env(CASKFS_PG_HOST_ENV, _env(REPORTING_PG_HOST_ENV, "localhost")),
+        "port": _env(CASKFS_PG_PORT_ENV, _env(REPORTING_PG_PORT_ENV, 5432, int), int),
+        "database": _env(CASKFS_PG_DATABASE_ENV, _env(REPORTING_PG_DATABASE_ENV, "postgres")),
+        "user": _env(CASKFS_PG_USER_ENV, _env(REPORTING_PG_USER_ENV, "postgres")),
+        "password_env": CASKFS_PG_PASSWORD_ENV,
+        "fallback_password_env": REPORTING_PG_PASSWORD_ENV,
+        "schema": _env(CASKFS_PG_SCHEMA_ENV, "caskfs"),
     },
 }
 

@@ -18,7 +18,6 @@ from lib.configs import (
     AltTextConfig,
     TagPdfConfig,
 )
-from lib.pipeline_fanout import _emit
 from lib.utils import exec
 
 
@@ -165,34 +164,6 @@ def rebuild_collection_tree(context: dg.AssetExecutionContext, config: RebuildTr
 
     result = exec(["digtk", "preservica", "tree", "--collection", config.collection, "--group", config.group])
     context.log.info(f"Rebuilt tree for {config.group}/{config.collection}: {result.get('items')} item(s)")
-    return dg.Output(result)
-
-
-@dg.asset(group_name="ingest")
-def delete_removed_from_showcase_index(
-    context: dg.AssetExecutionContext, reconcile_collection_items: dict, rebuild_collection_tree: dict,
-):
-    """Delete the showcase ES docs of items this sync removed from tree/
-    (`digtk showcase es delete`), then refresh the collection doc. Only those
-    items: a full diff could catch bronze-first items. Skipped when none.
-
-    :param context: Dagster asset execution context.
-    :param dict reconcile_collection_items: The reconcile step's result.
-    :param dict rebuild_collection_tree: The tree rebuild's result.
-    """
-    key = reconcile_collection_items["collection"]
-    arks = rebuild_collection_tree.get("removedArks") or []
-    if not arks:
-        context.log.info(f"Skipping ES delete for {key}: no items removed from tree/")
-        return dg.Output({"skipped": True})
-
-    result = exec(["digtk", "showcase", "es", "delete", *arks])
-    for entry in result.get("deleted", []):
-        _emit(context, "es-delete", entry["ark"], entry, partition=key)
-    if result.get("errors"):
-        raise RuntimeError(f"{len(result['errors'])} ES delete(s) failed: {result['errors']}")
-    exec(["digtk", "showcase", "es", "upsert-collection", key])
-    context.log.info(f"{key}: deleted {result.get('items', 0)} item doc(s), {result.get('pages', 0)} page doc(s)")
     return dg.Output(result)
 
 

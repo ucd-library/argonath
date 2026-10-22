@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from digtk.lib import showcase_index
@@ -23,6 +25,14 @@ def bronze(monkeypatch):
             return ARKS[path]
         raise LookupError(f"MISSING ARK: {path}")
     monkeypatch.setattr(collection_index.items, "ark_for_path", fake_ark_for_path)
+
+    def fake_gold(location, opts={}):
+        folder = f"/bronze/{location.group}/{location.collection}/{location.time}/{location.item_path}"
+        if folder in ARKS:
+            return {"@id": ARKS[folder]}
+        raise FileNotFoundError(folder)
+    monkeypatch.setattr(collection_index.item_record, "read", fake_gold)
+    monkeypatch.setattr(collection_index, "gold_item_folders", lambda key, opts={}: list(FOLDERS))
     monkeypatch.setattr(collection_index.collection_model, "get_ark", lambda name, group: COLLECTION_ARK)
     monkeypatch.setattr(collection_index.collection_model, "list_item_folders", lambda name, opts={}: list(FOLDERS))
     monkeypatch.setattr(
@@ -218,14 +228,151 @@ def test_delete_collection_uses_the_collection_es_id(monkeypatch, bronze):
 
 
 def test_delete_items_reports_each_collection(monkeypatch, es):
-    def fake_resolve(ark, opts={}):
+    def fake_gold_location(ark, opts={}):
         if ark == "ark:/87287/gone":
-            raise LookupError(ark)
-        return ItemLocation(ark=ark, group="g", collection="c", time="latest", item_path="tree/a", bronze_binary_paths=[])
-    monkeypatch.setattr(collection_index.items, "resolve", fake_resolve)
+            raise FileNotFoundError(ark)
+        location = ItemLocation(ark=ark, group="g", collection="c", time="latest", item_path="tree/a", bronze_binary_paths=[])
+        return location, {"@id": ark}
+    monkeypatch.setattr(collection_index.item_record, "gold_location", fake_gold_location)
+
+    def no_bronze(ark, opts={}):
+        raise AssertionError("read bronze")
+    monkeypatch.setattr(collection_index.items, "resolve", no_bronze)
 
     result = collection_index.delete_items(["ark:/87287/a", "ark:/87287/gone"])
 
     assert es["delete_items"] == [[_id("ark:/87287/a"), _id("ark:/87287/gone")]]
     assert [d["collection"] for d in result["deleted"]] == [KEY, None]
     assert result["collections"] == [KEY]
+
+
+class _Entry:
+    def __init__(self, name, path, kind):
+        self.name, self.path, self.kind = name, path, kind
+
+
+@pytest.fixture
+def outputs(monkeypatch):
+    """Fake CaskFS holding one item's silver and gold directories."""
+    tree = {
+        "cask:/gold": [_Entry("digital-dev", "/gold/digital-dev", "directory"), _Entry("arda", "/gold/arda", "directory")],
+        "cask:/silver/g/c/latest/tree/gone": [
+            _Entry("public-frontend-derivatives", "/silver/g/c/latest/tree/gone/public-frontend-derivatives", "directory"),
+            _Entry("ocr.json", "/silver/g/c/latest/tree/gone/ocr.json", "file"),
+        ],
+        "cask:/silver/g/c/latest/tree/gone/public-frontend-derivatives": [
+            _Entry("a.jpg", "/silver/g/c/latest/tree/gone/public-frontend-derivatives/a.jpg", "file"),
+            _Entry("b.jpg", "/silver/g/c/latest/tree/gone/public-frontend-derivatives/b.jpg", "file"),
+        ],
+        "cask:/gold/digital-dev/c/tree/gone": [_Entry("item.jsonld.json", "/gold/digital-dev/c/tree/gone/item.jsonld.json", "file")],
+    }
+    state = {"exists": set(tree) - {"cask:/gold"}, "deleted": []}
+    monkeypatch.setattr(collection_index.fs, "ls", lambda path, opts={}: tree[path])
+    monkeypatch.setattr(collection_index.fs, "exists", lambda path: path in state["exists"])
+    monkeypatch.setattr(
+        collection_index.fs, "delete", lambda path, opts={}: state["deleted"].append((path, opts)),
+    )
+    return state
+
+
+def test_item_output_dirs_covers_silver_and_every_gold_project(outputs):
+    assert collection_index.item_output_dirs("/bronze/g/c/latest/tree/gone") == [
+        "cask:/silver/g/c/latest/tree/gone",
+        "cask:/gold/arda/c/tree/gone",
+        "cask:/gold/digital-dev/c/tree/gone",
+    ]
+
+
+def test_item_output_dirs_refuses_a_collection_root():
+    with pytest.raises(ValueError):
+        collection_index.item_output_dirs("/bronze/g/c/latest")
+
+
+def test_remove_item_outputs_deletes_and_reports_what_existed(outputs):
+    result = collection_index.remove_item_outputs(["/bronze/g/c/latest/tree/gone"])
+
+    assert outputs["deleted"] == [
+        ("cask:/silver/g/c/latest/tree/gone", {"directory": True}),
+        ("cask:/gold/digital-dev/c/tree/gone", {"directory": True}),
+    ]
+    assert result["removed"] == [
+        {"folder": "/bronze/g/c/latest/tree/gone", "path": "cask:/silver/g/c/latest/tree/gone", "files": 3},
+        {"folder": "/bronze/g/c/latest/tree/gone", "path": "cask:/gold/digital-dev/c/tree/gone", "files": 1},
+    ]
+
+
+def test_remove_item_outputs_dry_run_deletes_nothing(outputs):
+    result = collection_index.remove_item_outputs(["/bronze/g/c/latest/tree/gone"], {"dry_run": True})
+
+    assert outputs["deleted"] == []
+    assert len(result["removed"]) == 2
+    assert result["dryRun"] is True
+
+
+def test_remove_item_outputs_keeps_an_item_back_in_bronze(outputs):
+    outputs["exists"].add("cask:/bronze/g/c/latest/tree/gone")
+
+    result = collection_index.remove_item_outputs(["/bronze/g/c/latest/tree/gone"])
+
+    assert result["kept"] == ["/bronze/g/c/latest/tree/gone"]
+    assert outputs["deleted"] == []
+
+
+def test_reindex_items_without_rebuild_never_reads_bronze(monkeypatch, bronze, es):
+    def no_bronze(path):
+        raise AssertionError(f"read bronze: {path}")
+    monkeypatch.setattr(collection_index.items, "ark_for_path", no_bronze)
+
+    result = collection_index.reindex_items(FOLDERS)
+
+    assert es["index_items"] == [["ark:/87287/a", "ark:/87287/b"]]
+    assert result["skipped"] == [FOLDERS[2]]
+
+
+def test_reindex_collection_lists_bronze_only_with_rebuild(monkeypatch, bronze, es):
+    listed = []
+    monkeypatch.setattr(
+        collection_index.collection_model, "list_item_folders",
+        lambda name, opts={}: listed.append("bronze") or list(FOLDERS),
+    )
+    monkeypatch.setattr(collection_index, "gold_item_folders", lambda key, opts={}: listed.append("gold") or list(FOLDERS))
+    monkeypatch.setattr(collection_index.item_record, "build", lambda target, opts={}: None)
+
+    collection_index.reindex_collection(KEY, {"prune": False})
+    collection_index.reindex_collection(KEY, {"prune": False, "rebuild": True})
+
+    assert listed == ["gold", "bronze"]
+
+
+def test_gold_item_folders_walks_gold_for_records(monkeypatch):
+    tree = {
+        "cask:/gold/digital-dev/c": [
+            _Entry("collection.jsonld.json", "/gold/digital-dev/c/collection.jsonld.json", "file"),
+            _Entry("tree", "/gold/digital-dev/c/tree", "directory"),
+        ],
+        "cask:/gold/digital-dev/c/tree": [
+            _Entry("a", "/gold/digital-dev/c/tree/a", "directory"),
+            _Entry("b", "/gold/digital-dev/c/tree/b", "directory"),
+        ],
+        "cask:/gold/digital-dev/c/tree/a": [
+            _Entry("item.jsonld.json", "/gold/digital-dev/c/tree/a/item.jsonld.json", "file"),
+            _Entry("manifest.json", "/gold/digital-dev/c/tree/a/manifest.json", "file"),
+        ],
+        "cask:/gold/digital-dev/c/tree/b": [
+            _Entry("item.jsonld.json", "/gold/digital-dev/c/tree/b/item.jsonld.json", "file"),
+        ],
+    }
+    manifests = {"cask:/gold/digital-dev/c/tree/a/manifest.json": {"bronze": "/bronze/g/c/latest/tree/a"}}
+    monkeypatch.setattr(collection_index.fs, "ls", lambda path, opts={}: tree[path])
+    monkeypatch.setattr(collection_index.fs, "exists", lambda path: path in manifests)
+    monkeypatch.setattr(collection_index.fs, "read", lambda path: json.dumps(manifests[path]).encode())
+
+    assert collection_index.gold_item_folders(KEY, {"project": "digital-dev"}) == ["/bronze/g/c/latest/tree/a"]
+
+
+def test_gold_item_folders_without_a_gold_collection(monkeypatch):
+    def missing(path, opts={}):
+        raise FileNotFoundError(path)
+    monkeypatch.setattr(collection_index.fs, "ls", missing)
+
+    assert collection_index.gold_item_folders(KEY) == []

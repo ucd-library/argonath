@@ -1,6 +1,11 @@
 """
 Collection-level orchestration of item runs, through the collection_state
-queue (see lib.collection_state and digtk.models.collection_state):
+queue (see lib.collection_state and digtk.models.collection_state).
+
+Not wired up: collection_launch_job, item_queue_sensor and
+collection_rollup_sensor aren't registered in defs.py, since
+bronze_cask_audit_sensor drives bronze changes now. collection_rollup_job
+can still be launched by hand. The original design:
 
   collection_launch_job (collection partition)
       -> `digtk state enqueue-collection`: one job_queue row per item in the

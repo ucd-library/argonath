@@ -12,8 +12,9 @@ Subcommands:
   finalize   — write an item's item-level outputs after one-file-at-a-time derivatives
   build-item — assemble and write the item's complete, canonical gold item.jsonld.json
   build-collection — write the collection's gold collection.jsonld.json
+  clean-item — delete a removed bronze item's silver and gold directories
 """
-from typing import Annotated
+from typing import Annotated, List
 
 import typer
 
@@ -23,7 +24,7 @@ from digtk.lib.config import (
     CONFIG, ReportingCollectionOption, ReportingJobIdOption, ShowcaseGoldProjectOption, TargetArgument,
 )
 from digtk.models.digital_website import finalize as finalize_model
-from digtk.models.digital_website import collection_record, item_record
+from digtk.models.digital_website import collection_index, collection_record, item_record
 from digtk.models.digital_website import pipeline
 
 app = typer.Typer(help="Public Digital Collections website commands.", no_args_is_help=True)
@@ -126,5 +127,21 @@ def build_collection(
         group, name = collection_record.parse_key(key)
         utils.log(f"Building collection record for {group}/{name} (project={project})")
         utils.result(collection_record.build(name, group, opts={"project": project}))
+    except _ERRORS as e:
+        utils.error(str(e))
+
+
+@app.command("clean-item")
+def clean_item(
+    folders: Annotated[List[str], typer.Argument(help="Bronze item folder(s) no longer in bronze.")],
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="List what would be removed.")] = False,
+):
+    """Delete the silver directory and every gold project's directory of items
+    removed from bronze. A folder still in bronze is skipped."""
+    try:
+        result = collection_index.remove_item_outputs(folders, {"dry_run": dry_run})
+        files = sum(r["files"] for r in result["removed"])
+        utils.log(f"{'Would remove' if dry_run else 'Removed'} {len(result['removed'])} director(ies), {files} file(s)")
+        utils.result({"status": "success", **result})
     except _ERRORS as e:
         utils.error(str(e))

@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 
+from digtk.lib import utils
 from digtk.lib.config import CONFIG
 
 CONFIDENCE_THRESHOLD = CONFIG["ocr"]["confidence_threshold"]
@@ -54,8 +55,10 @@ def run_tesseract(image_path, output_base, opts={}):
     :param dict opts: 'lang' (str, default CONFIG["ocr"]["lang"]), 'psm' (int,
         default CONFIG["ocr"]["psm"]), 'oem' (int, default CONFIG["ocr"]["oem"]),
         'dpi' (int, default CONFIG["image"]["dpi"]), 'timeout' (float, default
-        CONFIG["image"]["timeout_s"]), plus anything analyze_words() accepts
-        (forwarded when computing 'confidence').
+        CONFIG["image"]["timeout_s"]), 'retries' (int, default 1 — extra tries
+        after a timeout), 'threads' (int, default CONFIG["ocr"]["threads"] —
+        OMP_THREAD_LIMIT unless the environment already sets it), plus anything
+        analyze_words() accepts (forwarded when computing 'confidence').
     :returns: {"hocr_path": str, "txt_path": str, "confidence": float}
     :rtype: dict
     :raises TesseractError: If `tesseract` fails, times out, or exits 0
@@ -74,13 +77,23 @@ def run_tesseract(image_path, output_base, opts={}):
         "--dpi", str(dpi), "-l", lang, "--psm", str(psm), "--oem", str(oem),
         "hocr", "txt",
     ]
-    try:
-        result = subprocess.run(argv, shell=False, check=True, timeout=timeout, capture_output=True)
-    except subprocess.CalledProcessError as e:
-        stderr = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else e.stderr
-        raise TesseractError(argv, e.returncode, stderr) from e
-    except subprocess.TimeoutExpired as e:
-        raise TesseractError(argv, None, "", timed_out=True) from e
+    threads = opts.get("threads", CONFIG["ocr"]["threads"])
+    env = {**os.environ}
+    env.setdefault("OMP_THREAD_LIMIT", str(threads))
+    retries = opts.get("retries", 1)
+    for attempt in range(retries + 1):
+        try:
+            result = subprocess.run(
+                argv, shell=False, check=True, timeout=timeout, capture_output=True, env=env,
+            )
+            break
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else e.stderr
+            raise TesseractError(argv, e.returncode, stderr) from e
+        except subprocess.TimeoutExpired as e:
+            if attempt >= retries:
+                raise TesseractError(argv, None, "", timed_out=True) from e
+            utils.warn(f"tesseract timed out after {timeout}s on {image_path}, retrying")
 
     hocr_path = f"{output_base}.hocr"
     txt_path = f"{output_base}.txt"

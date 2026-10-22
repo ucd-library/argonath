@@ -5,6 +5,7 @@ Subcommands:
   upsert             — index a single item by ark
   upsert-collection  — index a collection from its gold record
   upsert-items       — bulk-index items by bronze folder
+  gold-items         — list the bronze folders of a collection's gold item records
   bulk-upsert        — bulk-index a whole collection, prune orphans, refresh the collection
   prune              — delete indexed items no longer in bronze
   delete             — delete one or more items by ark
@@ -60,7 +61,7 @@ def upsert_items(
     rebuild: RebuildOption = False,
     project: ShowcaseGoldProjectOption = CONFIG["showcase"]["gold_project"],
 ):
-    """Bulk-index items by bronze folder; folders without an ARK are skipped.
+    """Bulk-index items by bronze folder from their gold records; folders without one are skipped.
     Exits 0 with failures listed in the result, so callers can report each item."""
     try:
         result = collection_index.reindex_items(folders, {"rebuild": rebuild, "project": project})
@@ -68,6 +69,20 @@ def upsert_items(
             utils.warn(f"{failure['folder']}: {failure['error']}")
         status = "partial" if result["failed"] else "success"
         utils.result({"status": status, **result})
+    except _ERRORS as e:
+        utils.error(str(e))
+
+
+@app.command("gold-items")
+def gold_items(
+    key: CollectionKeyArgument,
+    project: ShowcaseGoldProjectOption = CONFIG["showcase"]["gold_project"],
+):
+    """List the bronze folder of every item with a gold record in the collection."""
+    try:
+        folders = collection_index.gold_item_folders(key, {"project": project})
+        utils.log(f"{len(folders)} gold item record(s)")
+        utils.result({"status": "success", "collection": key, "items": folders})
     except _ERRORS as e:
         utils.error(str(e))
 

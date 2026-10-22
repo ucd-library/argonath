@@ -98,6 +98,37 @@ def enqueue_collection(key, opts={}):
     return _state(args)
 
 
+def enqueue_items(paths, opts={}):
+    """Queue item runs for specific item folders (`digtk state enqueue-items`).
+
+    :param list[str] paths: Bronze item folders.
+    :param dict opts: 'trigger' (str), 'batch' (str).
+    :returns: {"items", "enqueued", "collections"}.
+    :rtype: dict
+    """
+    args = ["enqueue-items"]
+    for path in paths:
+        args += ["--item", path]
+    if opts.get("trigger"):
+        args += ["--trigger", opts["trigger"]]
+    if opts.get("batch"):
+        args += ["--batch", opts["batch"]]
+    return _state(args)
+
+
+def cask_changes(cursor):
+    """Settled bronze item changes from the CaskFS audit log (`digtk state cask-changes`).
+
+    :param dict|None cursor: The previous result's cursor; None starts at the newest event.
+    :returns: {"process", "reindex", "delete", "collections", "skipped", "deferred", "cursor"}.
+    :rtype: dict
+    """
+    args = ["cask-changes"]
+    if cursor is not None:
+        args += ["--cursor", json.dumps(cursor)]
+    return _state(args)
+
+
 def pending(job_name, limit):
     """The oldest queued rows for a job, without removing them.
 

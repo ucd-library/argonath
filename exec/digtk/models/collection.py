@@ -519,23 +519,35 @@ def list_item_folders(collection, opts={}):
     :rtype: list[str]
     """
     group = opts.get("group") or _group_for_collection(collection, opts)
+    entries = fs.ls(items_root(collection, group, opts))
+    paths = [entry.path[len("cask:"):] if entry.path.startswith("cask:") else entry.path
+             for entry in entries if entry.kind == "directory"]
+    return sorted(paths)
+
+
+def items_root(collection, group, opts={}):
+    """The folder whose immediate children are a collection's items, from its
+    manifest.json 'itemsRoot'. Falls back to the flat 'latest' root, with a
+    warning, when the manifest or key is missing.
+
+    :param str collection: Collection name.
+    :param str group: Bronze group namespace.
+    :param dict opts: 'dest_root' (see _bronze_collection_root()).
+    :returns: fs-compatible path, e.g. 'cask:/bronze/preservica/haeger/latest/tree'.
+    :rtype: str
+    """
     collection_root = _bronze_collection_root(collection, group, opts)
     manifest = _read_bronze_json(collection_root, "manifest.json")
     if manifest is None:
         utils.warn(f"no manifest.json for collection {collection!r} at {collection_root} — assuming a flat item layout")
-        items_root = ""
+        root = ""
     elif "itemsRoot" not in manifest:
         utils.warn(f"manifest.json for collection {collection!r} has no itemsRoot — assuming a flat item layout")
-        items_root = ""
+        root = ""
     else:
-        items_root = manifest["itemsRoot"]
-
+        root = manifest["itemsRoot"]
     latest_root = _bronze_latest_root(collection, group, opts)
-    list_root = f"{latest_root}/{items_root}" if items_root else latest_root
-    entries = fs.ls(list_root)
-    paths = [entry.path[len("cask:"):] if entry.path.startswith("cask:") else entry.path
-             for entry in entries if entry.kind == "directory"]
-    return sorted(paths)
+    return f"{latest_root}/{root}" if root else latest_root
 
 
 def list_item_arks(collection, opts={}):

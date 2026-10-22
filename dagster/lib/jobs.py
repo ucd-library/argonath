@@ -10,7 +10,6 @@ from lib.assets import (
     detect_spreads,
     apply_spreads,
     rebuild_collection_tree,
-    delete_removed_from_showcase_index,
     ingest_item,
     generate_derivatives,
     run_ocr,
@@ -23,9 +22,9 @@ from lib.assets import (
 
 reconcile_collection_job = dg.define_asset_job(
     name="reconcile_collection_job",
-    selection=[reconcile_collection_items, rebuild_collection_tree, delete_removed_from_showcase_index],
+    selection=[reconcile_collection_items, rebuild_collection_tree],
     description="Reconcile a collection's bronze item list against its source, register/prune "
-    "partitions, and (Preservica sources) rebuild its tree/ layout and delete removed items from ES.",
+    "partitions, and (Preservica sources) rebuild its tree/ layout. bronze_cask_audit_sensor updates ES from the changes.",
 )
 
 detect_spreads_job = dg.define_asset_job(

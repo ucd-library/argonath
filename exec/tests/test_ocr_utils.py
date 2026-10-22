@@ -125,6 +125,61 @@ def test_run_tesseract_raises_tesseract_error_on_timeout(fake_run, tmp_path):
     assert exc_info.value.timed_out is True
 
 
+def test_run_tesseract_limits_openmp_threads(fake_run, tmp_path, monkeypatch):
+    monkeypatch.delenv("OMP_THREAD_LIMIT", raising=False)
+    calls = fake_run()
+
+    ocr_utils.run_tesseract(str(tmp_path / "img.jpg"), str(tmp_path / "out"))
+
+    assert calls[0]["kwargs"]["env"]["OMP_THREAD_LIMIT"] == "1"
+
+
+def test_run_tesseract_keeps_an_existing_thread_limit(fake_run, tmp_path, monkeypatch):
+    monkeypatch.setenv("OMP_THREAD_LIMIT", "4")
+    calls = fake_run()
+
+    ocr_utils.run_tesseract(str(tmp_path / "img.jpg"), str(tmp_path / "out"), {"threads": 2})
+
+    assert calls[0]["kwargs"]["env"]["OMP_THREAD_LIMIT"] == "4"
+
+
+def test_run_tesseract_retries_a_timeout_once(monkeypatch, tmp_path):
+    attempts = []
+
+    def fake(argv, **kwargs):
+        attempts.append(argv)
+        if len(attempts) == 1:
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=120)
+        for ext in (".hocr", ".txt"):
+            open(argv[2] + ext, "w").close()
+        return FakeCompletedProcess()
+    monkeypatch.setattr(subprocess, "run", fake)
+
+    result = ocr_utils.run_tesseract(str(tmp_path / "img.jpg"), str(tmp_path / "out"))
+
+    assert len(attempts) == 2
+    assert result["hocr_path"] == str(tmp_path / "out") + ".hocr"
+
+
+def test_run_tesseract_raises_after_the_retry_also_times_out(fake_run, tmp_path):
+    calls = fake_run(raises=subprocess.TimeoutExpired(cmd=["tesseract"], timeout=120))
+
+    with pytest.raises(ocr_utils.TesseractError) as exc_info:
+        ocr_utils.run_tesseract(str(tmp_path / "img.jpg"), str(tmp_path / "out"))
+
+    assert exc_info.value.timed_out is True
+    assert len(calls) == 2
+
+
+def test_run_tesseract_does_not_retry_a_failed_exit(fake_run, tmp_path):
+    calls = fake_run(raises=subprocess.CalledProcessError(1, ["tesseract"], stderr="bad ocr"))
+
+    with pytest.raises(ocr_utils.TesseractError):
+        ocr_utils.run_tesseract(str(tmp_path / "img.jpg"), str(tmp_path / "out"))
+
+    assert len(calls) == 1
+
+
 def test_compare_orientations_rejects_wrong_keys():
     with pytest.raises(ValueError, match="original.*deskewed"):
         ocr_utils.compare_orientations({"foo": "a", "bar": "b"})

@@ -222,6 +222,23 @@ class ReindexCollectionConfig(Config):
     batch_size: int = Field(200, description="Items per step; each step sends one bulk request.")
 
 
+class CaskChangesConfig(CollectionDerivativesConfig):
+    """Config for lib.pipeline_index.apply_cask_changes_job, filled in by
+    bronze_cask_audit_sensor. Inherits derivative widths and max_steps.
+
+    :param list[str] process: Bronze item folders to fully process.
+    :param list[str] reindex: Bronze item folders to rebuild and reindex.
+    :param list[str] delete: Item ARKs to delete from the showcase index.
+    :param list[str] cleanup: Deleted bronze item folders whose silver/gold to remove.
+    :param int batch_size: Items per reindex step.
+    """
+    process: list[str] = Field([], description="Bronze item folders to fully process (derivatives, gold, ES).")
+    reindex: list[str] = Field([], description="Bronze item folders to rebuild and reindex.")
+    delete: list[str] = Field([], description="Item ARKs to delete from the showcase index.")
+    cleanup: list[str] = Field([], description="Deleted bronze item folders whose silver/gold to remove.")
+    batch_size: int = Field(200, description="Items per reindex step.")
+
+
 class DeleteItemIndexConfig(Config):
     """Config for lib.pipeline_index.delete_item_index_job.
 

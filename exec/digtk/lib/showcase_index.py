@@ -462,14 +462,13 @@ def build_document(ark, opts={}):
 
     :param str ark: Item ARK.
     :param dict opts: 'project' — the gold app segment to read the record
-        from (see item_record.read()); also forwarded to items.resolve().
+        from (see item_record.gold_location(), which never reads bronze).
     :returns: ES document body: {"@id", "@graph", "clientMedia",
         "displayImage", "name", "roles"}.
     :rtype: dict
     :raises FileNotFoundError: If the item's record hasn't been built yet.
     """
-    location = items.resolve(ark, opts)
-    gold = item_record.read(location, opts)
+    location, gold = item_record.gold_location(ark, opts)
     graph = json.loads(json.dumps(gold.get("@graph") or []))
     root = item_record.root_node({"@id": gold.get("@id"), "@graph": graph})
     if not root:

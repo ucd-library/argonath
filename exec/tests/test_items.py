@@ -59,6 +59,7 @@ def test_resolve_raises_on_malformed_bronze_path_missing_segments(monkeypatch):
 
 def test_resolve_raises_on_no_match(monkeypatch):
     monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [])
+    monkeypatch.setattr(fs, "find_by_graph", lambda graph, opts={}: [])
     with pytest.raises(LookupError, match="found neither"):
         items.resolve(ARK)
 
@@ -153,6 +154,7 @@ def test_resolve_ignores_a_stale_bronze_item_jsonld(monkeypatch):
     monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [
         "/bronze/g/c/latest/i1/item.jsonld.json",
     ])
+    monkeypatch.setattr(fs, "find_by_graph", lambda graph, opts={}: [])
     with pytest.raises(LookupError, match="found neither"):
         items.resolve(ARK)
 
@@ -591,3 +593,28 @@ def test_ark_for_path_raises_when_identifiers_json_has_no_ark_either(monkeypatch
 
     with pytest.raises(LookupError, match="MISSING ARK"):
         items.ark_for_path("bronze/preservica/haeger/latest/tree/quarter-mile")
+
+
+def test_find_gold_record_prefers_the_requested_project(monkeypatch):
+    monkeypatch.setattr(fs, "find_by_graph", lambda graph, opts={}: [
+        "/gold/digital-prod/c/i1/item.jsonld.json",
+        "/gold/digital-dev/c/i1/item.jsonld.json",
+        "/bronze/g/c/latest/i1/item.jsonld.json",
+    ])
+
+    assert items.find_gold_record(ARK, {"project": "digital-prod"}) == "/gold/digital-prod/c/i1/item.jsonld.json"
+
+
+def test_find_gold_record_is_none_without_a_record(monkeypatch):
+    monkeypatch.setattr(fs, "find_by_graph", lambda graph, opts={}: [])
+
+    assert items.find_gold_record(ARK) is None
+
+
+def test_location_for_folder_reads_nothing(monkeypatch):
+    monkeypatch.setattr(fs, "exists", lambda path: (_ for _ in ()).throw(AssertionError(path)))
+
+    location = items.location_for_folder("cask:/bronze/g/c/latest/tree/a")
+
+    assert (location.group, location.collection, location.time, location.item_path) == ("g", "c", "latest", "tree/a")
+    assert location.ark is None and location.bronze_binary_paths == []

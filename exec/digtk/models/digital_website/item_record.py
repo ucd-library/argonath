@@ -167,6 +167,39 @@ def read(item, opts={}):
     return json.loads(fs.read(record_path(item, opts)))
 
 
+def gold_location(ark, opts={}):
+    """An item's location and gold record, read from gold only. The bronze
+    folder comes from the record's manifest.json and the binary paths from
+    its media nodes' contentUrls, so bronze is never read.
+
+    :param str ark: Item ARK.
+    :param dict opts: 'project' — see items.find_gold_record().
+    :returns: (ItemLocation, record dict).
+    :rtype: tuple
+    :raises FileNotFoundError: If the item has no gold record or manifest.
+    :raises LookupError: If the manifest names no bronze folder, or several records match.
+    """
+    path = items.find_gold_record(ark, opts)
+    if not path:
+        raise FileNotFoundError(f"{ark}: no gold item record")
+    record = json.loads(fs.read(f"cask:{path}"))
+    manifest_path = f"cask:{path.rsplit('/', 1)[0]}/manifest.json"
+    bronze = json.loads(fs.read(manifest_path)).get("bronze")
+    if not bronze:
+        raise LookupError(f"{manifest_path} names no bronze folder for {ark}")
+    group, collection, time, item_path = items._parse_bronze_folder(bronze)
+    binaries = sorted({
+        "cask:" + node["contentUrl"][len("cask:/"):]
+        for node in record.get("@graph") or []
+        if str(node.get("contentUrl", "")).startswith("cask://bronze/")
+    })
+    location = items.ItemLocation(
+        ark=ark, group=group, collection=collection, time=time, item_path=item_path,
+        bronze_binary_paths=binaries,
+    )
+    return location, record
+
+
 def root_node(doc):
     """The item's own node in a built record's @graph.
 
