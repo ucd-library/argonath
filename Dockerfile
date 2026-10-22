@@ -88,6 +88,7 @@ RUN cd exec && uv pip install --system --no-cache-dir --no-deps -e .
 
 # Install dagster configuration files
 COPY dagster/lib dagster/lib
+COPY dagster/defs.py dagster/defs.py
 COPY dagster/dagster.yaml dagster/dagster.yaml
 COPY dagster/celery_config.yaml dagster/celery_config.yaml
 COPY dagster/workspace.yaml dagster/workspace.yaml
