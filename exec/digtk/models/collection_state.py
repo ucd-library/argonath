@@ -20,7 +20,7 @@ inherit that value. Nothing tracks per-item access yet.
 The queue: enqueue_collection() writes one job_queue row per item for
 ITEM_JOB, replacing any row already pending for the same item, so the latest
 request wins. Items that have left the collection's bronze tree/ are not
-removed or unlinked (item removal isn't implemented yet). Rows aren't claimed
+removed or unlinked here (their ES docs are pruned by `digtk showcase es prune`). Rows aren't claimed
 here — Dagster's item_queue_sensor reads them with pending() and deletes them
 with ack() one tick after submitting their runs (see
 dagster/lib/pipeline_collection.py), so a crashed sensor tick never loses a row. Outcomes go to job_result via record_result() (one row per job
@@ -253,7 +253,7 @@ def enqueue_collection(key, opts={}):
     Upserts the collection and its items and links new items — all in one
     transaction. A pending row for the same item is replaced, so enqueuing
     twice doesn't run an item twice. Items no longer present are left as they
-    are (item removal isn't implemented yet).
+    are (`digtk showcase es prune` removes their ES docs).
 
     :param str key: Collection key, e.g. "bronze/preservica/haeger".
     :param dict opts: 'batch' (str — recorded on each row, e.g. the launching
@@ -287,6 +287,42 @@ def enqueue_collection(key, opts={}):
         enqueued = _enqueue(cur, ITEM_JOB, requests)
 
     return {"collection": key, "items": len(current), "added": len(added), "enqueued": enqueued}
+
+
+def enqueue_items(paths, opts={}):
+    """Queue an ITEM_JOB run for specific item folders, grouped by collection.
+    Items and their collections are upserted and linked like
+    enqueue_collection() does, one transaction per collection.
+
+    :param list[str] paths: Bronze item folders.
+    :param dict opts: 'trigger' (str, default "items"), 'batch' (str), 'conn'.
+    :returns: {"items": int, "enqueued": int, "collections": [key]}.
+    :rtype: dict
+    """
+    by_key = {}
+    for path in paths:
+        by_key.setdefault(collection_key(path), []).append(item_name(path))
+    extra = {"trigger": opts.get("trigger", "items")}
+    if opts.get("batch"):
+        extra["batch"] = opts["batch"]
+
+    count = enqueued = 0
+    for key, names in by_key.items():
+        current = []
+        for name in dict.fromkeys(names):
+            try:
+                ark = items.ark_for_path(name)
+            except LookupError:
+                ark = None
+            current.append((name, ark))
+        count += len(current)
+        info = registry_info(key)
+        with _transaction(opts) as cur:
+            coll = _upsert_collection(cur, key, info)
+            ids = _upsert_items(cur, current, coll["visibility"])
+            _link_items(cur, coll["id"], ids.values())
+            enqueued += _enqueue(cur, ITEM_JOB, [(ids[name], {"item": name, **extra}) for name, _ in current])
+    return {"items": count, "enqueued": enqueued, "collections": sorted(by_key)}
 
 
 def pending(job_name, limit, opts={}):

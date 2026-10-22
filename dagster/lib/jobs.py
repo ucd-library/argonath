@@ -24,7 +24,7 @@ reconcile_collection_job = dg.define_asset_job(
     name="reconcile_collection_job",
     selection=[reconcile_collection_items, rebuild_collection_tree],
     description="Reconcile a collection's bronze item list against its source, register/prune "
-    "partitions, and (Preservica sources) rebuild its tree/ layout.",
+    "partitions, and (Preservica sources) rebuild its tree/ layout. bronze_cask_audit_sensor updates ES from the changes.",
 )
 
 detect_spreads_job = dg.define_asset_job(

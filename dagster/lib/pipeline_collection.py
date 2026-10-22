@@ -1,6 +1,11 @@
 """
 Collection-level orchestration of item runs, through the collection_state
-queue (see lib.collection_state and digtk.models.collection_state):
+queue (see lib.collection_state and digtk.models.collection_state).
+
+Not wired up: collection_launch_job, item_queue_sensor and
+collection_rollup_sensor aren't registered in defs.py, since
+bronze_cask_audit_sensor drives bronze changes now. collection_rollup_job
+can still be launched by hand. The original design:
 
   collection_launch_job (collection partition)
       -> `digtk state enqueue-collection`: one job_queue row per item in the
@@ -12,7 +17,9 @@ queue (see lib.collection_state and digtk.models.collection_state):
   item runs are still going)
       -> collection_rollup_job (collection partition): `digtk state rollup` —
          the collection's item count and failed items, recorded in
-         collection_state; the run fails if any item failed, listing them
+         collection_state; then `digtk showcase build-collection` and
+         `es upsert-collection` index the collection; the run fails if any
+         item failed, listing them
 
 Unlike lib.pipeline_fanout.process_collection_job (one run doing every item of
 a collection), every item gets its own run here, retryable on its own, and the
@@ -35,7 +42,7 @@ from dagster import AssetMaterialization, MetadataValue, OpExecutionContext, job
 from lib import collection_state
 from lib.configs import ItemRunConfig, collections_partitions
 from lib.pipeline_item import normalize_item, process_item_job
-from lib.utils import default_run_config
+from lib.utils import default_run_config, exec
 
 # Most process_item_job runs (queued or running, from any trigger) the queue
 # sensor lets exist at once. It only submits more while there's room, so the
@@ -56,8 +63,8 @@ _IN_FLIGHT = [
 @op
 def enqueue_collection_items(context: OpExecutionContext):
     """Queue a process_item_job run for every item in the partition's
-    collection. Items that have left its bronze tree/ are left alone (item
-    removal isn't implemented yet).
+    collection. Items that have left its bronze tree/ are left alone here;
+    reindex_collection_job prunes their ES docs.
 
     :param context: Dagster op execution context; partitioned by collection.
     """
@@ -147,16 +154,13 @@ def item_queue_sensor(context: dg.SensorEvaluationContext):
 
 
 @op
-def rollup_collection(context: OpExecutionContext):
+def rollup_collection(context: OpExecutionContext) -> dict:
     """Recompute the partition's collection item count and failed items, and
-    record them in collection_state. Fails if any item failed, listing them.
-
-    TODO: also write the collection's Elasticsearch document (collection-write,
-    with @graph.itemCount) once the collection's id and the items' isPartOf
-    are decided — see docs/item-fanout-handoff.md.
+    record them in collection_state.
 
     :param context: Dagster op execution context; partitioned by collection.
-    :raises RuntimeError: If any item's latest run failed.
+    :returns: collection_state.rollup()'s summary.
+    :rtype: dict
     """
     key = context.partition_key
     summary = collection_state.rollup(key)
@@ -180,16 +184,44 @@ def rollup_collection(context: OpExecutionContext):
             "failed_items": MetadataValue.md(f"| item | run | error |\n|---|---|---|\n{rows}" if failed else "none"),
         },
     ))
-    if failed:
-        raise RuntimeError(f"{len(failed)} of {summary['item_count']} item(s) failed — see the errors above")
+    return summary
+
+
+@op
+def pdc_index_collection(context: OpExecutionContext, summary: dict) -> dict:
+    """Build the collection's gold record and index it into the showcase
+    collection index. Runs even if some items failed.
+
+    :param context: Dagster op execution context; partitioned by collection.
+    :param dict summary: rollup_collection's summary, passed through.
+    :returns: The same summary.
+    :rtype: dict
+    """
+    key = context.partition_key
+    exec(["digtk", "showcase", "build-collection", key])
+    result = exec(["digtk", "showcase", "es", "upsert-collection", key])
+    context.log.info(f"{key}: indexed collection -> {result}")
+    return summary
+
+
+@op
+def check_rollup_failures(summary: dict):
+    """Fail the run if any item failed, so a partial collection isn't green.
+
+    :param dict summary: rollup_collection's summary.
+    :raises RuntimeError: If any item's latest run failed.
+    """
+    if summary["failed"]:
+        raise RuntimeError(f"{summary['failed']} of {summary['item_count']} item(s) failed — see the errors above")
 
 
 @job(partitions_def=collections_partitions, tags={"argonath/kind": "collection-rollup"})
 def collection_rollup_job():
     """A collection's rollup after its item runs: item count and failed items,
-    recorded in collection_state. Launched by collection_rollup_sensor.
+    recorded in collection_state, then the collection's ES document. Launched
+    by collection_rollup_sensor.
     """
-    rollup_collection()
+    check_rollup_failures(pdc_index_collection(rollup_collection()))
 
 
 @dg.sensor(job=collection_rollup_job, minimum_interval_seconds=300)

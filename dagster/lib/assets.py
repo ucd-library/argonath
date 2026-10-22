@@ -107,7 +107,10 @@ def reconcile_collection_items(context: dg.AssetExecutionContext, config: Reconc
     context.log.info(
         f"Reconciled {collection_key}: +{len(added)} added, -{len(removed)} removed, ~{len(changed)} changed"
     )
-    return dg.Output({"collection": collection_key, "added": added, "removed": removed, "changed": changed})
+    return dg.Output({
+        "collection": collection_key, "source_type": config.source_type,
+        "added": added, "removed": removed, "changed": changed,
+    })
 
 
 @dg.asset(

@@ -128,7 +128,8 @@ def ls(path, opts={}):
     """List entries in a directory, on either the local filesystem or CaskFS.
 
     :param str path: Directory path. A 'cask:/' prefix routes to CaskFS.
-    :param dict opts: CaskFS-only: 'limit', 'offset', 'query' (server defaults limit to 20).
+    :param dict opts: CaskFS-only: 'limit', 'offset', 'query'. Without 'limit',
+        every entry is returned.
     :returns: Directory entries.
     :rtype: list[digtk.lib.fs.paths.DirEntry]
     :raises ValueError: If a CaskFS-only opt is passed for a local directory.

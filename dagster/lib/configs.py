@@ -208,6 +208,51 @@ class ItemRunConfig(CollectionDerivativesConfig):
     index_es: bool = Field(True, description="Index the item into the showcase Elasticsearch index afterwards.")
 
 
+class ReindexCollectionConfig(Config):
+    """Config for lib.pipeline_index.reindex_collection_job.
+
+    :param bool rebuild: Rebuild each gold item record before indexing.
+    :param bool prune: Delete indexed items no longer in bronze.
+    :param bool force_prune: Skip the prune safety guard.
+    :param int batch_size: Items per step (one bulk request each).
+    """
+    rebuild: bool = Field(False, description="Rebuild each gold item record (build-item) before indexing.")
+    prune: bool = Field(True, description="Delete indexed items no longer in the collection's bronze items.")
+    force_prune: bool = Field(False, description="Skip the prune guard (no items in bronze, or >50% deleted).")
+    batch_size: int = Field(200, description="Items per step; each step sends one bulk request.")
+
+
+class CaskChangesConfig(CollectionDerivativesConfig):
+    """Config for lib.pipeline_index.apply_cask_changes_job, filled in by
+    bronze_cask_audit_sensor. Inherits derivative widths and max_steps.
+
+    :param list[str] process: Bronze item folders to fully process.
+    :param list[str] reindex: Bronze item folders to rebuild and reindex.
+    :param list[str] delete: Item ARKs to delete from the showcase index.
+    :param list[str] cleanup: Deleted bronze item folders whose silver/gold to remove.
+    :param int batch_size: Items per reindex step.
+    """
+    process: list[str] = Field([], description="Bronze item folders to fully process (derivatives, gold, ES).")
+    reindex: list[str] = Field([], description="Bronze item folders to rebuild and reindex.")
+    delete: list[str] = Field([], description="Item ARKs to delete from the showcase index.")
+    cleanup: list[str] = Field([], description="Deleted bronze item folders whose silver/gold to remove.")
+    batch_size: int = Field(200, description="Items per reindex step.")
+
+
+class DeleteItemIndexConfig(Config):
+    """Config for lib.pipeline_index.delete_item_index_job.
+
+    `ark` defaults to "" only so default_run_config() can build launchpad defaults.
+
+    :param str ark: Item ARK to delete from the showcase indexes.
+    :param str collection: Collection key to refresh, if the item can't be resolved.
+    """
+    ark: str = Field("", description="Item ARK, e.g. ark:/87287/d7abc1234.")
+    collection: str = Field(
+        "", description="Collection key to refresh afterwards when the item is gone from cask, e.g. bronze/preservica/haeger.",
+    )
+
+
 class OcrConfig(Config):
     """Config for the run_ocr asset.
 

@@ -21,6 +21,9 @@ from digtk.lib.fs.paths import DirEntry
 CHUNK_SIZE = CONFIG["fs"]["chunk_size"]
 
 
+# Entries per listing request when no limit is given.
+LS_PAGE_SIZE = 1000
+
 class CaskFsError(RuntimeError):
     """An unexpected (non-mapped) error response from the CaskFS HTTP API.
 
@@ -240,24 +243,25 @@ class CaskBackend:
         return True
 
     def ls(self, path, opts={}):
-        """List entries in a CaskFS directory.
+        """List entries in a CaskFS directory. Without a 'limit', every entry
+        is returned, not the server's default page of 20.
 
         :param str path: CaskFS-absolute path.
-        :param dict opts: 'limit', 'offset', 'query' (all optional; server defaults limit to 20).
+        :param dict opts: 'limit', 'offset', 'query' (all optional).
         :returns: Directory entries.
         :rtype: list[DirEntry]
         """
-        params = {}
-        if opts.get("limit") is not None:
-            params["limit"] = opts["limit"]
+        params = {"limit": opts["limit"] if opts.get("limit") is not None else LS_PAGE_SIZE}
         if opts.get("offset") is not None:
             params["offset"] = opts["offset"]
         if opts.get("query") is not None:
             params["query"] = opts["query"]
 
-        res = self._client.get(f"{self.base_url}/dir{path}", params=params)
-        self._raise_for_status(res)
-        body = res.json()
+        body = self._ls_page(path, params)
+        returned = len(body.get("files", [])) + len(body.get("directories", []))
+        # server pages dirs then files unevenly
+        if opts.get("limit") is None and opts.get("offset") is None and body.get("totalCount", 0) > returned:
+            body = self._ls_page(path, {**params, "limit": body["totalCount"], "offset": 0})
 
         entries = []
         for f in body.get("files", []):
@@ -279,6 +283,18 @@ class CaskBackend:
                 raw=d,
             ))
         return entries
+
+    def _ls_page(self, path, params):
+        """One CaskFS directory listing request.
+
+        :param str path: CaskFS-absolute path.
+        :param dict params: Query params ('limit', 'offset', 'query').
+        :returns: The listing body.
+        :rtype: dict
+        """
+        res = self._client.get(f"{self.base_url}/dir{path}", params=params)
+        self._raise_for_status(res)
+        return res.json()
 
     def delete(self, path, opts={}):
         """Delete a CaskFS file or directory.

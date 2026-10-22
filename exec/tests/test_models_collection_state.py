@@ -166,6 +166,22 @@ def test_enqueue_collection_still_queues_items_with_no_ark(pg, folders):
 
 
 @needs_pg
+def test_enqueue_items_queues_just_those_items(pg, folders):
+    folders.update({ITEM_A: "ark:/1/a", ITEM_B: "ark:/1/b"})
+
+    result = collection_state.enqueue_items([f"/{ITEM_B}", f"cask:/{ITEM_B}"], {"trigger": "cask-audit"})
+
+    assert result == {"items": 1, "enqueued": 1, "collections": [KEY]}
+    rows = collection_state.pending("process_item_job", 10)
+    assert [r["item"] for r in rows] == [ITEM_B]
+    assert rows[0]["config"] == {"item": ITEM_B, "trigger": "cask-audit"}
+    assert collection_state.item_ark(ITEM_B) == "ark:/1/b"
+
+    collection_state.enqueue_items([ITEM_B])
+    assert len(collection_state.pending("process_item_job", 10)) == 1
+
+
+@needs_pg
 def test_enqueue_collection_twice_replaces_pending_rows(pg, folders):
     folders.update({ITEM_A: "ark:/1/a"})
     collection_state.enqueue_collection(KEY)

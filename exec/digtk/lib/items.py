@@ -189,6 +189,30 @@ def _resolve_gold_record(ark, record_path):
     )
 
 
+def find_gold_record(ark, opts={}):
+    """The gold item record for an ARK, found by named graph. When several
+    projects hold one, the record under opts['project'] wins.
+
+    :param str ark: ARK identifier.
+    :param dict opts: 'project' (str, default CONFIG["showcase"]["gold_project"]);
+        everything else is forwarded to fs.find_by_graph().
+    :returns: '/gold/.../item.jsonld.json', or None if there is none.
+    :rtype: str|None
+    :raises LookupError: If more than one record matches in the chosen project.
+    """
+    find_opts = {k: v for k, v in opts.items() if k != "project"}
+    records = sorted(
+        m for m in fs.find_by_graph(ark, find_opts)
+        if m.startswith(GOLD_PREFIX) and m.endswith(f"/{ITEM_RECORD_FILENAME}")
+    )
+    if len(records) > 1:
+        project = opts.get("project") or CONFIG["showcase"]["gold_project"]
+        records = [r for r in records if r.startswith(f"{GOLD_PREFIX}{project}/")] or records
+    if len(records) > 1:
+        raise LookupError(f"Expected one gold item record for {ark}, found {len(records)}: {records}")
+    return records[0] if records else None
+
+
 def resolve(ark, opts={}):
     """Resolve an ARK to its bronze item location (one or more binaries).
 
@@ -228,17 +252,9 @@ def resolve(ark, opts={}):
     )
 
     if not sidecar_paths:
-        record_matches = fs.find_by_graph(ark, find_opts)
-        records = sorted(
-            m for m in record_matches if m.startswith(GOLD_PREFIX) and m.endswith(f"/{ITEM_RECORD_FILENAME}")
-        )
-        if len(records) > 1:
-            project = opts.get("project") or CONFIG["showcase"]["gold_project"]
-            records = [r for r in records if r.startswith(f"{GOLD_PREFIX}{project}/")] or records
-        if len(records) > 1:
-            raise LookupError(f"Expected one gold item record for {ark}, found {len(records)}: {records}")
-        if records:
-            return _resolve_gold_record(ark, records[0])
+        record = find_gold_record(ark, opts)
+        if record:
+            return _resolve_gold_record(ark, record)
         raise LookupError(f"Expected a bronze sidecar or gold item record for {ark}, found neither")
 
     binary_paths = [p[: -len(SIDECAR_SUFFIX)] for p in sidecar_paths]
@@ -322,6 +338,20 @@ def _parse_bronze_folder(path):
         raise ValueError(f"bronze path needs at least /bronze/[group]/[collection]/[time]: {path}")
     group, collection, time = segments[0], segments[1], segments[2]
     return group, collection, time, "/".join(segments[3:])
+
+
+def location_for_folder(path):
+    """An ItemLocation for a bronze item folder, built from the path alone.
+    Nothing is read, so ark is None and there are no binary paths.
+
+    :param str path: Any form normalize_bronze_path() accepts.
+    :rtype: ItemLocation
+    :raises ValueError: If path isn't a bronze folder.
+    """
+    group, collection, time, item_path = _parse_bronze_folder(path)
+    return ItemLocation(
+        ark=None, group=group, collection=collection, time=time, item_path=item_path, bronze_binary_paths=[],
+    )
 
 
 def resolve_path(path, opts={}):

@@ -167,6 +167,39 @@ def read(item, opts={}):
     return json.loads(fs.read(record_path(item, opts)))
 
 
+def gold_location(ark, opts={}):
+    """An item's location and gold record, read from gold only. The bronze
+    folder comes from the record's manifest.json and the binary paths from
+    its media nodes' contentUrls, so bronze is never read.
+
+    :param str ark: Item ARK.
+    :param dict opts: 'project' — see items.find_gold_record().
+    :returns: (ItemLocation, record dict).
+    :rtype: tuple
+    :raises FileNotFoundError: If the item has no gold record or manifest.
+    :raises LookupError: If the manifest names no bronze folder, or several records match.
+    """
+    path = items.find_gold_record(ark, opts)
+    if not path:
+        raise FileNotFoundError(f"{ark}: no gold item record")
+    record = json.loads(fs.read(f"cask:{path}"))
+    manifest_path = f"cask:{path.rsplit('/', 1)[0]}/manifest.json"
+    bronze = json.loads(fs.read(manifest_path)).get("bronze")
+    if not bronze:
+        raise LookupError(f"{manifest_path} names no bronze folder for {ark}")
+    group, collection, time, item_path = items._parse_bronze_folder(bronze)
+    binaries = sorted({
+        "cask:" + node["contentUrl"][len("cask:/"):]
+        for node in record.get("@graph") or []
+        if str(node.get("contentUrl", "")).startswith("cask://bronze/")
+    })
+    location = items.ItemLocation(
+        ark=ark, group=group, collection=collection, time=time, item_path=item_path,
+        bronze_binary_paths=binaries,
+    )
+    return location, record
+
+
 def root_node(doc):
     """The item's own node in a built record's @graph.
 
@@ -547,6 +580,8 @@ def _image_nodes(item, item_uri, filenames, bronze_by_filename):
     suffix (schema:position — see pipeline.parse_sequence_number()); if any
     filename in the group has no parseable number, every child falls back to
     stable enumeration order instead, rather than guessing a partial order.
+    If two filenames parse to the same number, children keep the parsed
+    order but are numbered 1..n so positions stay unique.
     The root item's own schema:image is the lowest-position child.
 
     :param digtk.lib.items.ItemLocation item: Resolved item location.
@@ -569,6 +604,9 @@ def _image_nodes(item, item_uri, filenames, bronze_by_filename):
     if all(v is not None for v in parsed.values()):
         ordered = sorted(filenames, key=lambda f: parsed[f])
         positions = {f: parsed[f] for f in filenames}
+        if len(set(parsed.values())) < len(filenames):
+            # duplicate numbers, so number in order
+            positions = {f: i for i, f in enumerate(ordered, start=1)}
     else:
         ordered = filenames
         positions = {f: i for i, f in enumerate(filenames, start=1)}

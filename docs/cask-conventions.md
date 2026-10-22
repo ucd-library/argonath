@@ -115,7 +115,7 @@ Silver holds two kinds of output side by side:
   (`item.jsonld.json`) is not in silver — it's built afterward, into gold (see
   "Gold Layout"). They are **not app-scoped**: dc-showcase dev and prod (and any other
   app) reference the identical files, served through the dc-showcase gateway's
-  `/cask/file/<path>` prefix (e.g. `/cask/file/silver/preservica/haeger/latest/tree/<item>/public-frontend-derivatives/...`).
+  `/cask/api/fs/<path>` prefix (e.g. `/cask/api/fs/silver/preservica/haeger/latest/tree/<item>/public-frontend-derivatives/...`).
   Whether the public can see them is decided per collection/item, not per
   environment, so a public item is equally visible from dev and prod.
 - **Intermediate work product** — `ocr/`, `text/`, `metadata/`, `rag/`, and the other
@@ -347,7 +347,7 @@ below), with two deliberate differences:
   File" convention — the same scheme `associatedMedia.contentUrl` already uses),
   not a Fin-proxy/GCS-proxy/IIIF-server path. Serving URLs are derived from it
   later: `digtk.lib.showcase_index` turns these into the dc-showcase gateway's
-  `/cask/file/<path>` URLs (and a deep-zoom `clientMedia.tiled.iiif` URL) when it
+  `/cask/api/fs/<path>` URLs (and a deep-zoom `images.tiled.iiif` URL) when it
   builds an item's Elasticsearch document, so `tiled` has no `iiif` field here.
 
 `ocr` matches legacy's shape: it points at the page's DjVu XML text layer in
@@ -511,6 +511,11 @@ the consuming app/environment (`[app]`, e.g. `digital-dev`, `digital-prod` — m
 environment's records are promoted independently.
 
 ```
+gold/[app]/[collection]/
+├── collection.jsonld.json   # domain: the collection's canonical record (no hasPart)
+└── [item]/
+    └── ...                  # see below
+
 gold/[app]/[collection]/[item]/
 ├── manifest.json        # structural: which bronze/silver snapshot this was promoted from
 ├── item.jsonld.json     # domain: the item's canonical record — DC fields + associatedMedia
@@ -533,6 +538,15 @@ renditions/streams are not carried in the record — the search index
 records the bronze folder it was built from (`"bronze"`), which is how
 `digtk.lib.items.resolve()` gets from the record's ARK back to the item's bronze
 location (preferring the configured `[app]` when several hold a record).
+
+`collection.jsonld.json` is written only by `digtk showcase build-collection`
+(`digtk.models.digital_website.collection_record`, run by Dagster's
+`collection_rollup_job`). It is built from the bronze collection root's
+`tree/metadata.json` (Dublin Core, falling back to the Preservica title/description)
+and `tree/identifiers.json` (the collection ark plus any call number). Its root node's
+`@id` is the same `https://digital.ucdavis.edu/collection/<ark>` URI items point at via
+`isPartOf`. The link is one way: the collection record has no `hasPart` back to items.
+`digtk showcase es upsert-collection` indexes it into the showcase collection index.
 
 `[collection]` mirrors bronze and silver, minus the time segment. As everywhere
 else, gold entries reference the underlying blobs via `cask://` (CaskFS is
@@ -610,6 +624,7 @@ kinds of file, never merged into one:
 |---|---|---|
 | `manifest.json` | Structural/system: CaskFS layout facts, pipeline run records, item lists + hashes, promotion status | schema.org / descriptive fields |
 | `metadata.jsonld.json` / `<item>.jsonld.json` | Domain: schema.org descriptive metadata about the collection or item | Pipeline state, run history, promotion status |
+| `gold/[app]/[collection]/collection.jsonld.json` | Domain: the collection's canonical record — one collection node (descriptive fields, identifiers), no `hasPart` | Pipeline state, run history, item lists |
 | `gold/[app]/[collection]/[item]/item.jsonld.json` | Domain: the item's canonical record — an `@graph` of the item node (descriptive fields, identifiers, `isPartOf`) and one node per bronze preservation master (referenced via `cask://` rather than copied — see "Gold Layout" above) | Pipeline state, run history, promotion status |
 
 This is a deliberate reaction against LDP's convention of mixing container/structural

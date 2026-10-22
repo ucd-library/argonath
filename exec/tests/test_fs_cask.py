@@ -592,3 +592,49 @@ def test_add_derivative_link_empty_success_body_returns_empty_dict():
 
     b = backend(handler)
     assert b.add_derivative_link("/silver/x.jpg", "/bronze/x.tiff") == {}
+
+
+def test_ls_without_a_limit_asks_for_a_large_page():
+    seen = []
+
+    def handler(request):
+        seen.append(dict(request.url.params))
+        return httpx.Response(200, json={"files": [], "directories": [{"name": "a", "fullname": "/x/a"}], "totalCount": 1})
+
+    assert [e.name for e in backend(handler).ls("/x")] == ["a"]
+    assert seen == [{"limit": "1000"}]
+
+
+def test_ls_refetches_everything_when_the_total_is_larger():
+    seen = []
+
+    def handler(request):
+        params = dict(request.url.params)
+        seen.append(params)
+        limit = int(params["limit"])
+        dirs = [{"name": f"d{i}", "fullname": f"/x/d{i}"} for i in range(min(limit, 3))]
+        files = [{"filename": "f", "filepath": "/x/f"}] if limit > 3 else []
+        return httpx.Response(200, json={"files": files, "directories": dirs, "totalCount": 4})
+
+    b = backend(handler)
+    from digtk.lib.fs import cask
+    original = cask.LS_PAGE_SIZE
+    cask.LS_PAGE_SIZE = 2
+    try:
+        entries = b.ls("/x")
+    finally:
+        cask.LS_PAGE_SIZE = original
+
+    assert seen == [{"limit": "2"}, {"limit": "4", "offset": "0"}]
+    assert sorted(e.name for e in entries) == ["d0", "d1", "d2", "f"]
+
+
+def test_ls_with_an_explicit_limit_makes_one_request():
+    seen = []
+
+    def handler(request):
+        seen.append(dict(request.url.params))
+        return httpx.Response(200, json={"files": [], "directories": [{"name": "a", "fullname": "/x/a"}], "totalCount": 50})
+
+    assert len(backend(handler).ls("/x", {"limit": 1, "offset": 5})) == 1
+    assert seen == [{"limit": "1", "offset": "5"}]

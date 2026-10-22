@@ -9,6 +9,9 @@
  *   list collections           — list collections in a group
  *   list items <collection>    — list items in a collection
  *   publish <collection>       — promote a collection into a gold app
+ *   index collection <key>     — bulk-reindex a collection into ES (no derivatives)
+ *   index delete-collection <key> — delete a collection from ES
+ *   index delete-item <ark>    — delete one item from ES
  */
 import { Command } from 'commander';
 import { triggerJob, pollRun, encodePartitionKey } from '../lib/dagster.js';
@@ -78,6 +81,94 @@ processCmd
         partitionKeys: [{ collection: opts.collection, item: ark }],
       });
       console.log(`Run started: ${run.runId}`);
+    } catch (err) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+
+// ---------------------------------------------------------------------------
+// argonath index
+// ---------------------------------------------------------------------------
+
+/**
+ * Launch a Dagster job and optionally wait for it to finish.
+ *
+ * @param {string} jobName - Dagster job name.
+ * @param {Object} [opts={}] - Options.
+ * @param {string} [opts.partitionKey] - Partition to run.
+ * @param {Object} [opts.config] - Run config.
+ * @param {boolean} [opts.wait] - Poll until the run finishes; exits 1 if it fails.
+ * @returns {Promise<void>}
+ */
+async function launch(jobName, opts = {}) {
+  const run = await triggerJob(jobName, { partitionKey: opts.partitionKey, config: opts.config });
+  console.log(`Run started: ${run.runId}`);
+  if (!opts.wait) return;
+  const done = await pollRun(run.runId);
+  console.log(`Run ${done.runId}: ${done.status}`);
+  if (done.status !== 'SUCCESS') process.exit(1);
+}
+
+const indexCmd = program.command('index').description('Showcase Elasticsearch index jobs (no derivatives).');
+
+indexCmd
+  .command('collection <key>')
+  .description('Bulk-reindex a collection, prune orphans and refresh the collection doc. Key: bronze/<group>/<collection>.')
+  .option('--rebuild', 'Rebuild each gold item record first.', false)
+  .option('--no-prune', 'Keep indexed items that are no longer in bronze.')
+  .option('--force-prune', 'Skip the prune safety guard.', false)
+  .option('--batch-size <n>', 'Items per step / bulk request.', '200')
+  .option('--wait', 'Wait for the run to finish.', false)
+  .action(async (key, opts) => {
+    try {
+      await launch('reindex_collection_job', {
+        partitionKey: key,
+        wait: opts.wait,
+        config: {
+          ops: {
+            fan_out_reindex_tasks: {
+              config: {
+                rebuild: opts.rebuild,
+                prune: opts.prune,
+                force_prune: opts.forcePrune,
+                batch_size: parseInt(opts.batchSize),
+              },
+            },
+          },
+        },
+      });
+    } catch (err) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+indexCmd
+  .command('delete-collection <key>')
+  .description('Delete a collection, its items and their pages from ES. Key: bronze/<group>/<collection>.')
+  .option('--wait', 'Wait for the run to finish.', false)
+  .action(async (key, opts) => {
+    try {
+      await launch('delete_collection_index_job', { partitionKey: key, wait: opts.wait });
+    } catch (err) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+indexCmd
+  .command('delete-item <ark>')
+  .description('Delete one item and its pages from ES, then refresh its collection doc.')
+  .option('--collection <key>', 'Collection key to refresh if the item is gone from cask.', '')
+  .option('--wait', 'Wait for the run to finish.', false)
+  .action(async (ark, opts) => {
+    try {
+      await launch('delete_item_index_job', {
+        wait: opts.wait,
+        config: { ops: { delete_item_index: { config: { ark, collection: opts.collection } } } },
+      });
     } catch (err) {
       console.error(`Error: ${err.message}`);
       process.exit(1);

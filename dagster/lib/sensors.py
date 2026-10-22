@@ -13,15 +13,21 @@ and exec/digtk/sql/collection_registry.sql, applied via `digtk collection init-p
                                       first successful reconcile run) is
                                       immediately visible as a partition.
 
-Plus workspace_partition_sync_sensor, which keeps the 'workspace' dynamic
+Plus bronze_cask_audit_sensor, which reads CaskFS's audit log for bronze item
+changes (see digtk.models.cask_changes), and workspace_partition_sync_sensor, which keeps the 'workspace' dynamic
 partition in sync with the collections staged under CaskFS's /workspace (see
 digtk.models.workspace) for lib.pipeline_workspace.process_workspace_job.
 """
 import datetime
+import json
 
 import dagster as dg
 
-from lib.utils import exec
+from lib import collection_state
+from lib.configs import CaskChangesConfig, collections_partitions
+from lib.pipeline_index import apply_cask_changes_job
+from lib.pipeline_item import normalize_item
+from lib.utils import default_run_config, exec
 
 
 # Default lookback for a sensor's very first tick, before it has a cursor of
@@ -185,3 +191,87 @@ def showcase_search_on_derivatives(context: dg.SensorEvaluationContext):
     :param context: Dagster sensor evaluation context.
     """
     raise NotImplementedError("not yet wired - new asset, added alongside the fin/argonath migration's dams-router work, not part of the original phased buildout")
+
+
+# Longest folder list shown in one tag.
+_TAG_MAX_LENGTH = 200
+
+
+def _names_tag(folders):
+    """Item folder names for a run tag, shortened with a '+N more' tail.
+
+    :param list[str] folders: Bronze item folders.
+    :returns: e.g. "audio-example, quarter-mile +3 more", or "" for none.
+    :rtype: str
+    """
+    names = [f.rstrip("/").rsplit("/", 1)[-1] for f in folders]
+    shown = []
+    for i, name in enumerate(names):
+        tail = f" +{len(names) - i} more"
+        if shown and len(", ".join(shown + [name])) + len(tail) > _TAG_MAX_LENGTH:
+            return ", ".join(shown) + tail
+        shown.append(name)
+    return ", ".join(shown)
+
+
+def _change_tags(process, reindex, cleanup):
+    """Run tags naming the items a run changes, one tag per action.
+
+    :param list[str] process: Folders to process.
+    :param list[str] reindex: Folders to reindex.
+    :param list[str] cleanup: Deleted folders.
+    :rtype: dict
+    """
+    tags = {"argonath/changes": f"{len(process)} processed, {len(reindex)} reindexed, {len(cleanup)} deleted"}
+    for name, folders in (("processed", process), ("reindexed", reindex), ("deleted", cleanup)):
+        if folders:
+            tags[f"argonath/{name}"] = _names_tag(folders)
+    return tags
+
+
+@dg.sensor(job=apply_cask_changes_job, minimum_interval_seconds=300)
+def bronze_cask_audit_sensor(context: dg.SensorEvaluationContext):
+    """Act on settled bronze item changes from the CaskFS audit log: one
+    apply_cask_changes_job run per changed collection processes, reindexes,
+    deletes (ES, silver and gold) and refreshes the collection doc.
+
+    :param context: Dagster sensor evaluation context.
+    """
+    cursor = json.loads(context.cursor) if context.cursor else None
+    result = collection_state.cask_changes(cursor)
+    if cursor is None:
+        context.update_cursor(json.dumps(result["cursor"]))
+        return dg.SkipReason(f"Starting at audit event {result['cursor']['after']}")
+
+    for skipped in result["skipped"]:
+        context.log.info(f"[{skipped['folder']}] skipped: {skipped['reason']}")
+
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    requests = []
+    process = {}
+    for folder in result["process"]:
+        process.setdefault(normalize_item(folder)[1], []).append(folder)
+    keys = set(process) | set(result["reindex"]) | set(result["delete"]) | set(result["cleanup"]) | set(result["collections"])
+    for key in sorted(keys):
+        if not context.instance.has_dynamic_partition(collections_partitions.name, key):
+            context.instance.add_dynamic_partitions(collections_partitions.name, [key])
+        run_config = default_run_config({"fan_out_cask_changes": CaskChangesConfig})
+        changes = {
+            "process": process.get(key, []),
+            "reindex": result["reindex"].get(key, []),
+            "delete": result["delete"].get(key, []),
+            "cleanup": result["cleanup"].get(key, []),
+        }
+        run_config["ops"]["fan_out_cask_changes"]["config"].update(changes)
+        tags = {
+            "argonath/collection": key, "argonath/trigger": "cask-audit",
+            **_change_tags(changes["process"], changes["reindex"], changes["cleanup"]),
+        }
+        requests.append(dg.RunRequest(
+            run_key=f"cask-changes-{key}-{now}", partition_key=key, run_config=run_config, tags=tags,
+        ))
+
+    context.update_cursor(json.dumps(result["cursor"]))
+    if not requests:
+        return dg.SkipReason(f"no settled changes, {result['deferred']} still settling")
+    return requests

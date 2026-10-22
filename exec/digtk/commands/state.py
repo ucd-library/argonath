@@ -7,6 +7,8 @@ Subcommands:
   init-pg            — apply the collection_state Postgres schema. Safe to run repeatedly.
   enqueue-collection — queue an item run for every item in a collection's bronze
                        tree/
+  enqueue-items      — queue an item run for specific item folders
+  cask-changes       — settled bronze item changes from the CaskFS audit log
   pending            — list the oldest queued rows for a job (doesn't remove them)
   ack                — remove queued rows once their runs were submitted
   result             — record a job's latest result for an item or a collection
@@ -21,7 +23,7 @@ import psycopg2
 import typer
 
 from digtk.lib import utils
-from digtk.models import collection_state
+from digtk.models import cask_changes, collection_state
 
 app = typer.Typer(help="collection_state queue and job results.", no_args_is_help=True)
 
@@ -56,6 +58,48 @@ def enqueue_collection(
         utils.log(
             f"{result['collection']}: {result['items']} item(s) ({result['added']} new), "
             f"{result['enqueued']} queued"
+        )
+        utils.result({"status": "success", **result})
+    except _ERRORS as e:
+        utils.error(str(e))
+
+
+@app.command("enqueue-items")
+def enqueue_items(
+    items: Annotated[list[str], typer.Option("--item", help="Bronze item folder (repeatable).")],
+    trigger: Annotated[str, typer.Option(help="Recorded on each row and as a run tag.")] = "items",
+    batch: Annotated[str | None, typer.Option(help="Batch id recorded on every queued row.")] = None,
+):
+    """Queue a process_item_job run for each item folder."""
+    try:
+        opts = {"trigger": trigger, **({"batch": batch} if batch else {})}
+        result = collection_state.enqueue_items(items, opts)
+        utils.log(f"{result['enqueued']} item run(s) queued")
+        utils.result({"status": "success", **result})
+    except _ERRORS as e:
+        utils.error(str(e))
+
+
+@app.command("cask-changes")
+def cask_changes_cmd(
+    cursor: Annotated[str | None, typer.Option(help="Cursor JSON from the previous call; omit to start now.")] = None,
+    settle_seconds: Annotated[int, typer.Option(help="Quiet time before an item is acted on.")] = cask_changes.DEFAULT_SETTLE_SECONDS,
+    limit: Annotated[int, typer.Option(help="Most audit rows to read.")] = 5000,
+):
+    """List settled bronze item changes from the CaskFS audit log. Read-only;
+    with no cursor it returns a starting cursor at the newest event."""
+    try:
+        if cursor is None:
+            utils.result({"status": "success", "process": [], "reindex": {}, "delete": {}, "cleanup": {}, "collections": [],
+                          "skipped": [], "deferred": 0, "cursor": cask_changes.start_cursor()})
+        result = cask_changes.changes(json.loads(cursor), {"settle_seconds": settle_seconds, "limit": limit})
+        reindex = sum(len(v) for v in result["reindex"].values())
+        delete = sum(len(v) for v in result["delete"].values())
+        cleanup = sum(len(v) for v in result["cleanup"].values())
+        utils.log(
+            f"{len(result['process'])} to process, {reindex} to reindex, {delete} to delete, "
+            f"{cleanup} to clean up, "
+            f"{len(result['collections'])} collection(s), {result['deferred']} deferred"
         )
         utils.result({"status": "success", **result})
     except _ERRORS as e:

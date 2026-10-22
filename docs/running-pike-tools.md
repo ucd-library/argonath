@@ -325,6 +325,82 @@ The Dagster UI is at http://localhost:3000 in local dev.
     digtk showcase finalize <ark>
     ```
 
+- **What the index reads:** an item's ES doc is built from its gold `item.jsonld.json`
+  (descriptive metadata, media nodes, and the bronze folder named in the gold
+  `manifest.json`) plus silver (renditions, captions, OCR). Indexing never reads bronze.
+  Only `--rebuild` / `rebuild` does, because it runs `build-item` to rebuild gold first.
+- **Showcase search index for a whole collection:** `reindex_collection_job` sends every
+  item with a gold record to Elasticsearch with the `_bulk` API. It doesn't make
+  derivatives. With `rebuild`, it lists the collection's bronze items instead and
+  rebuilds each gold record first. The prune still compares ES with bronze.
+  - **Steps:** one `reindex_batch[...]` step per `batch_size` items (default 200), each
+    running `digtk showcase es upsert-items <folders...>`. With `rebuild` set, it first
+    runs `build-item` on each item, which picks up bronze metadata edits. Items without
+    an ARK are skipped.
+  - **Prune:** `prune_collection_index` deletes indexed items whose ARK is no longer in
+    the collection's bronze items, along with their page docs. It's skipped if any
+    batch failed. It also refuses to run when bronze lists no items, or when it would
+    delete more than half of the indexed items. Set `force_prune` to override.
+  - **Collection doc:** `pdc_index_collection` then refreshes `itemCount` and the image,
+    the same step `collection_rollup_job` ends with.
+- **Automatic updates from the CaskFS audit log:** `bronze_cask_audit_sensor` (every
+  5 minutes; turn it on in the UI) is the only sensor that reacts to bronze `tree/`
+  changes. It reads `caskfs.audit_log` straight from Postgres for writes, deletes and
+  moves under each active collection's bronze items root. Once an item has had no new
+  events for 5 minutes, the sensor launches one `apply_cask_changes_job` run per changed
+  collection, which does all of it in order:
+  - **New item, or binaries changed (`process`):** derivatives (one step per image/PDF
+    file, batched by `max_steps`), finalize, `build-item`, then the ES upsert from the
+    fresh gold record. An item with a failed derivative isn't finalized, and the run
+    fails at the end.
+  - **Only `metadata.json`, `identifiers.json` or `*.jsonld.json` changed (`reindex`):**
+    `build-item` and the ES upsert, with no derivatives.
+  - **Folder deleted (`delete` + `cleanup`):** its ES docs are deleted (using the ARK
+    from its gold record), then its silver directory and its directory in every gold
+    project (`digtk showcase clean-item`). Each removed directory is logged with its
+    file count and recorded as an `argonath_fanout_cleanup` event.
+  - **Folder renamed:** processed at its new path. Its ES doc is kept, since the ARK is
+    the same, but the old path's silver and gold are removed. The doc's images point at
+    the old silver files until the new path's derivatives are done, later in the same run.
+  - **Collection `tree/metadata.json` or `tree/identifiers.json` changed:** the run has
+    empty lists and only rebuilds the collection doc.
+  - Every run ends by rebuilding and reindexing the collection doc.
+  - To preview a cleanup by hand:
+    `digtk showcase clean-item <bronze item folder> --dry-run`.
+  - Preservica syncs feed it too, through the `tree/` writes and deletes they make.
+  - Settings: `DIGTK_CASKFS_PG_*` (host, port, database, user, password, schema)
+    point at CaskFS's database; each falls back to the `DIGTK_REPORTING_PG_*` value.
+    CaskFS must run with `CASKFS_AUDIT_ENABLED=true`.
+  - Only registered collections are watched, so onboard a new one with
+    `process_collection_job` first.
+  - The other jobs (`process_item_job`, `reindex_collection_job`, the delete jobs,
+    `collection_rollup_job`) are manual only. No other sensor launches them.
+- **Items removed by a Preservica sync:** when a synced folder (SO) no longer lists a
+  child that Preservica knew about (it has a `by-ref/` entry), the tree rebuild deletes
+  that child's `tree/` entry. `by-ref/` is kept. `bronze_cask_audit_sensor` then sees the
+  delete and removes its ES docs.
+  - To remove an item, remove it in Preservica and sync its parent folder. In the
+    launchpad, `preservica_changed` names the parent with `type: SO`, not the item.
+  - Items added directly in bronze `tree/` (no `by-ref/` entry yet) are never deleted by a
+    sync, whether or not their `metadata.json` has a `preservica.ref`.
+  - The full bronze-vs-ES diff (`es prune`) only runs by hand or in
+    `reindex_collection_job`.
+- **Removing from the search index:** `delete_collection_index_job` (collection partition)
+  deletes the collection doc, its items and their pages. `delete_item_index_job` (config
+  `ark`) deletes one item and refreshes its collection doc. Both touch ES only, so an
+  item that's still in bronze comes back on the next reindex.
+- **The same from a terminal:**
+
+  | Task | digtk (runs directly) | argonath (launches the Dagster job) |
+  |---|---|---|
+  | Reindex a collection | `digtk showcase es bulk-upsert <key> [--rebuild] [--no-prune]` | `argonath index collection <key> [--rebuild] [--no-prune] [--wait]` |
+  | Prune only | `digtk showcase es prune <key> [--dry-run] [--force]` | n/a |
+  | Delete a collection | `digtk showcase es delete-collection <key>` | `argonath index delete-collection <key> [--wait]` |
+  | Delete an item | `digtk showcase es delete <ark>` | `argonath index delete-item <ark> [--collection <key>] [--wait]` |
+
+  `<key>` is `bronze/<group>/<collection>`. `argonath` reads `DAGSTER_URL` (default
+  `http://localhost:3000/dagster`) and `DAGSTER_LOCATION` (default `defs.py`).
+
 ## Promoting workspace results to silver
 
 Once scans processed in workspace have been ingested to bronze under an ARK, you can
@@ -423,6 +499,14 @@ failed. Set `replace: true` to overwrite outputs already in silver.
 [Items that already have an ARK](#items-that-already-have-an-ark)). This repeats the
 OCR and vision calls, but alt text then gets the catalog metadata that the workspace
 run didn't have.
+
+## Tesseract timeouts
+
+Every Tesseract call is limited to `DIGTK_IMAGE_TIMEOUT_S` (default 120 s) and retried
+once after a timeout. Each call runs with `OMP_THREAD_LIMIT=1` (`DIGTK_OCR_THREADS`,
+default 1) so parallel celery steps don't fight over CPU. An `OMP_THREAD_LIMIT` already
+in the environment wins. Without the limit, each Tesseract process starts a thread per
+core, and parallel PDF steps time out during "deciding orientation".
 
 ## Samwise timeouts
 
