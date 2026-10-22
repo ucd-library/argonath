@@ -77,7 +77,7 @@ RUN mkdir -p /cork-build-info
 COPY --from=caskfs /cork-build-info/caskfs.json /cork-build-info/caskfs.json
 
 # Install argonath
-RUN mkdir -p /opt/dagster
+RUN mkdir -p /opt/dagster/dagster_home
 RUN mkdir -p /opt/argonath/exec
 WORKDIR /opt/argonath
 
@@ -88,7 +88,7 @@ COPY exec/digtk exec/digtk
 RUN cd exec && uv pip install --system --no-cache-dir --no-deps -e .
 
 # Install dagster configuration files
-WORKDIR /opt/dagster
+WORKDIR /opt/dagster/dagster_home
 COPY dagster/lib lib
 COPY dagster/defs.py defs.py
 COPY dagster/dagster.yaml dagster.yaml
