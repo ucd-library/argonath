@@ -332,6 +332,13 @@ def item_files(monkeypatch):
     monkeypatch.setattr(showcase_index.fs, "read", fake_read)
     monkeypatch.setattr(showcase_index.item_record.fs, "read", fake_read)
     monkeypatch.setattr(showcase_index, "_silver_media", lambda location: [dict(e) for e in media])
+    roles = {"value": ["admin"], "calls": []}
+
+    def fake_roles(collection_id, opts={}):
+        roles["calls"].append(collection_id)
+        return list(roles["value"])
+    monkeypatch.setattr(showcase_index.visibility, "roles", fake_roles)
+    files["roles"] = roles
     files["set_media"] = set_media
     files["set_gold"] = set_gold
     return files
@@ -545,6 +552,30 @@ def test_build_document_omits_is_part_of_without_a_collection(item_files):
     assert "isPartOf" not in showcase_index.build_document(ARK)["@graph"][0]
 
 
+def test_build_document_takes_its_collections_roles(item_files):
+    collection_id = f"https://digital.ucdavis.edu/collection/{COLLECTION_ARK}"
+    item_files[RECORD_PATH]["@graph"][0]["isPartOf"] = [
+        {"@id": "https://example.org/series/1"}, {"@id": collection_id},
+    ]
+    assert showcase_index.build_document(ARK)["roles"] == ["admin"]
+    item_files["roles"]["value"] = ["public", "admin"]
+    assert showcase_index.build_document(ARK)["roles"] == ["public", "admin"]
+    assert item_files["roles"]["calls"] == [collection_id] * 2
+
+
+def test_build_document_without_a_collection_looks_up_none(item_files):
+    showcase_index.build_document(ARK)
+    assert item_files["roles"]["calls"] == [None]
+
+
+def test_build_document_passes_the_roles_cache_through(item_files, monkeypatch):
+    seen = []
+    monkeypatch.setattr(showcase_index.visibility, "roles", lambda cid, opts={}: seen.append(opts) or ["admin"])
+    opts = {"roles_cache": {}}
+    showcase_index.build_document(ARK, opts)
+    assert seen[0]["roles_cache"] is opts["roles_cache"]
+
+
 def test_silver_media_stamps_each_entry_with_its_source_group(monkeypatch):
     location = ItemLocation(
         ark=ARK, group="g", collection="c", time="latest", item_path="item",
@@ -608,8 +639,13 @@ COLLECTION_RECORD = {"@id": COLLECTION_ARK, "@graph": [{
 
 @pytest.fixture
 def collection_gold(monkeypatch):
-    """Stub the collection's gold record read."""
+    """Stub the collection's gold record read and its (private) visibility."""
+    calls = []
     monkeypatch.setattr(showcase_index.collection_record, "read", lambda name, opts={}: COLLECTION_RECORD)
+    monkeypatch.setattr(
+        showcase_index.visibility, "roles", lambda cid, opts={}: calls.append(cid) or ["admin"],
+    )
+    return calls
 
 
 def test_build_collection_document_shape(collection_gold):
@@ -618,12 +654,30 @@ def test_build_collection_document_shape(collection_gold):
 
     assert document["@id"] == root["@id"] == f"https://digital.ucdavis.edu/collection/{COLLECTION_ARK}"
     assert root["@type"] == ["http://schema.org/Collection"]
-    assert (document["name"], document["roles"], document["clientMedia"]) == ("Haeger Collection", ["public"], {})
+    assert (document["name"], document["roles"], document["clientMedia"]) == ("Haeger Collection", ["admin"], {})
     assert root["identifier"] == [COLLECTION_ARK, "MC-165"]
     assert root["subjects"] == [{"@id": "Aerial photographs"}]
     assert root["creator"] == {"name": "Haeger, John Winthrop"}
     assert root["itemCount"] == 4
+    assert root["visibility"] == "private"
     assert "hasPart" not in root and "publisher" not in root
+    assert collection_gold == [root["@id"]]
+
+
+def test_build_collection_document_is_public_when_dc_showcase_says_so(collection_gold, monkeypatch):
+    monkeypatch.setattr(showcase_index.visibility, "roles", lambda cid, opts={}: ["public", "admin"])
+
+    document = showcase_index.build_collection_document("c")
+
+    assert document["roles"] == ["public", "admin"]
+    assert document["@graph"][0]["visibility"] == "public"
+
+
+def test_build_page_documents_is_private_without_roles(monkeypatch):
+    document = _image_list_document()
+    del document["roles"]
+    monkeypatch.setattr(showcase_index.fs, "read", lambda path: b"<OBJECT/>")
+    assert showcase_index.build_page_documents(document)[0]["roles"] == ["admin"]
 
 
 def test_count_collection_items_queries_is_part_of(monkeypatch):
@@ -834,6 +888,20 @@ def test_index_items_writes_items_then_replaces_their_pages(monkeypatch, bulk_po
     assert calls[1]["json"] == {"query": {"terms": {"@id": [ITEM_ID]}}}
     assert GOLD_PAGE_ID in calls[2]["content"]
     assert result == {"indexed": [ARK], "failed": [], "pages": 1}
+
+
+def test_index_items_shares_one_roles_cache(monkeypatch, bulk_posts):
+    seen = []
+
+    def fake_build(ark, opts={}):
+        seen.append(opts)
+        return {"@id": showcase_index.item_es_id(ark), "@graph": [], "roles": ["admin"]}
+    monkeypatch.setattr(showcase_index, "build_document", fake_build)
+
+    showcase_index.index_items([ARK, "ark:/87287/other"], {"project": "digital-dev", "chunk_size": 10})
+
+    assert seen[0] is seen[1]
+    assert seen[0] == {"project": "digital-dev", "roles_cache": {}}
 
 
 def test_index_items_reports_an_item_that_fails_to_build(monkeypatch, bulk_posts):

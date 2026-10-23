@@ -1,37 +1,21 @@
 """
 Collection-level orchestration of item runs, through the collection_state
 queue (see lib.collection_state and digtk.models.collection_state).
+bronze_cask_audit_sensor queues changed items, item_queue_sensor runs them
+as process_item_job, and collection_rollup_sensor rolls each collection up.
 
-Not wired up: collection_launch_job, item_queue_sensor and
-collection_rollup_sensor aren't registered in defs.py, since
-bronze_cask_audit_sensor drives bronze changes now. collection_rollup_job
-can still be launched by hand. The original design:
-
-  collection_launch_job (collection partition)
-      -> `digtk state enqueue-collection`: one job_queue row per item in the
-         collection's bronze tree/
+  collection_launch_job (collection partition, not registered)
+      -> `digtk state enqueue-collection`: one job_queue row per item
   item_queue_sensor
       -> one process_item_job run per queued row, at most
          MAX_ITEM_RUNS_IN_FLIGHT item runs at a time
-  collection_rollup_sensor (once a collection's queue is empty and none of its
-  item runs are still going)
-      -> collection_rollup_job (collection partition): `digtk state rollup` —
-         the collection's item count and failed items, recorded in
-         collection_state; then `digtk showcase build-collection` and
-         `es upsert-collection` index the collection; the run fails if any
-         item failed, listing them
+  collection_rollup_sensor (queue empty, no item runs in flight)
+      -> collection_rollup_job: `digtk state rollup`, then the collection's
+         gold record and ES doc; fails if any item failed
 
-Unlike lib.pipeline_fanout.process_collection_job (one run doing every item of
-a collection), every item gets its own run here, retryable on its own, and the
-same queue can take items from other producers later (e.g. Preservica change
-polling — see docs/item-fanout-handoff.md).
-
-The queue is read without being claimed: item_queue_sensor submits runs for
-the oldest rows and stores their ids in its cursor, and the NEXT tick deletes
-them (`digtk state ack`). Dagster saves a tick's cursor together with its run
-requests, so a tick that crashes before submitting leaves its rows queued, and
-a row submitted twice is dropped by Dagster because its run_key
-("job_queue-<id>") was already used.
+The queue is read without being claimed: item_queue_sensor stores submitted
+row ids in its cursor and the next tick deletes them (`digtk state ack`).
+A row submitted twice is dropped by Dagster's run_key ("job_queue-<id>").
 """
 import json
 import os
