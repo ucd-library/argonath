@@ -56,7 +56,11 @@ RUN pip install --no-cache-dir uv
 # (cached under ~/.cache/whisper) rather than baked in here — see docs/cask-conventions.md's
 # Captions/Transcripts section. The deployment environment needs a persistent volume at
 # that cache path so the model isn't re-downloaded on every container restart.
-RUN uv pip install --system --no-cache-dir openai-whisper
+# torch is installed from PyTorch's CPU-only wheel index (not PyPI's default, CUDA-bundled
+# build) since no deployment runs Whisper on a GPU — the default GPU wheel drags in the full
+# CUDA runtime (nvidia-cublas/cudnn/cufft/nccl, triton, etc.), several GB of unused libraries.
+RUN uv pip install --system --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch && \
+    uv pip install --system --no-cache-dir openai-whisper
 
 # Allow ImageMagick to read/write all formats (default policy restricts PDF etc.)
 RUN sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/' \
@@ -68,12 +72,12 @@ WORKDIR /opt/caskfs
 COPY --from=caskfs /opt/caskfs/package.json package.json
 RUN npm install --omit=dev
 COPY --from=caskfs /opt/caskfs/src src
-RUN cd /opt/caskfs && npm install -g
+RUN npm install -g
 RUN mkdir -p /cork-build-info
 COPY --from=caskfs /cork-build-info/caskfs.json /cork-build-info/caskfs.json
 
 # Install argonath
-RUN mkdir -p /opt/argonath/dagster
+RUN mkdir -p /opt/dagster/dagster_home
 RUN mkdir -p /opt/argonath/exec
 WORKDIR /opt/argonath
 
@@ -84,7 +88,9 @@ COPY exec/digtk exec/digtk
 RUN cd exec && uv pip install --system --no-cache-dir --no-deps -e .
 
 # Install dagster configuration files
-COPY dagster/lib dagster/lib
-COPY dagster/dagster.yaml dagster/dagster.yaml
-COPY dagster/celery_config.yaml dagster/celery_config.yaml
-COPY dagster/workspace.yaml dagster/workspace.yaml
+WORKDIR /opt/dagster/dagster_home
+COPY dagster/lib lib
+COPY dagster/defs.py defs.py
+COPY dagster/dagster.yaml dagster.yaml
+COPY dagster/celery_config.yaml celery_config.yaml
+COPY dagster/workspace.yaml workspace.yaml
