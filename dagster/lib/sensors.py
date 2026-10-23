@@ -26,7 +26,6 @@ import dagster as dg
 from lib import collection_state
 from lib.configs import CaskChangesConfig, collections_partitions
 from lib.pipeline_index import apply_cask_changes_job
-from lib.pipeline_item import normalize_item
 from lib.utils import default_run_config, exec
 
 
@@ -214,16 +213,15 @@ def _names_tag(folders):
     return ", ".join(shown)
 
 
-def _change_tags(process, reindex, cleanup):
+def _change_tags(reindex, cleanup):
     """Run tags naming the items a run changes, one tag per action.
 
-    :param list[str] process: Folders to process.
     :param list[str] reindex: Folders to reindex.
     :param list[str] cleanup: Deleted folders.
     :rtype: dict
     """
-    tags = {"argonath/changes": f"{len(process)} processed, {len(reindex)} reindexed, {len(cleanup)} deleted"}
-    for name, folders in (("processed", process), ("reindexed", reindex), ("deleted", cleanup)):
+    tags = {"argonath/changes": f"{len(reindex)} reindexed, {len(cleanup)} deleted"}
+    for name, folders in (("reindexed", reindex), ("deleted", cleanup)):
         if folders:
             tags[f"argonath/{name}"] = _names_tag(folders)
     return tags
@@ -231,9 +229,9 @@ def _change_tags(process, reindex, cleanup):
 
 @dg.sensor(job=apply_cask_changes_job, minimum_interval_seconds=300)
 def bronze_cask_audit_sensor(context: dg.SensorEvaluationContext):
-    """Act on settled bronze item changes from the CaskFS audit log: one
-    apply_cask_changes_job run per changed collection processes, reindexes,
-    deletes (ES, silver and gold) and refreshes the collection doc.
+    """Act on settled bronze item changes from the CaskFS audit log.
+    Items to process are queued for item_queue_sensor's process_item_job runs.
+    Other changes get one apply_cask_changes_job run per collection.
 
     :param context: Dagster sensor evaluation context.
     """
@@ -246,26 +244,28 @@ def bronze_cask_audit_sensor(context: dg.SensorEvaluationContext):
     for skipped in result["skipped"]:
         context.log.info(f"[{skipped['folder']}] skipped: {skipped['reason']}")
 
+    # Before the cursor moves, so failures retry.
+    queued = 0
+    if result["process"]:
+        queued = collection_state.enqueue_items(result["process"], {"trigger": "cask-audit"})["enqueued"]
+        context.log.info(f"{queued} item(s) queued for process_item_job")
+
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     requests = []
-    process = {}
-    for folder in result["process"]:
-        process.setdefault(normalize_item(folder)[1], []).append(folder)
-    keys = set(process) | set(result["reindex"]) | set(result["delete"]) | set(result["cleanup"]) | set(result["collections"])
+    keys = set(result["reindex"]) | set(result["delete"]) | set(result["cleanup"]) | set(result["collections"])
     for key in sorted(keys):
         if not context.instance.has_dynamic_partition(collections_partitions.name, key):
             context.instance.add_dynamic_partitions(collections_partitions.name, [key])
-        run_config = default_run_config({"fan_out_cask_changes": CaskChangesConfig})
+        run_config = default_run_config({"plan_cask_changes": CaskChangesConfig})
         changes = {
-            "process": process.get(key, []),
             "reindex": result["reindex"].get(key, []),
             "delete": result["delete"].get(key, []),
             "cleanup": result["cleanup"].get(key, []),
         }
-        run_config["ops"]["fan_out_cask_changes"]["config"].update(changes)
+        run_config["ops"]["plan_cask_changes"]["config"].update(changes)
         tags = {
             "argonath/collection": key, "argonath/trigger": "cask-audit",
-            **_change_tags(changes["process"], changes["reindex"], changes["cleanup"]),
+            **_change_tags(changes["reindex"], changes["cleanup"]),
         }
         requests.append(dg.RunRequest(
             run_key=f"cask-changes-{key}-{now}", partition_key=key, run_config=run_config, tags=tags,
@@ -273,5 +273,5 @@ def bronze_cask_audit_sensor(context: dg.SensorEvaluationContext):
 
     context.update_cursor(json.dumps(result["cursor"]))
     if not requests:
-        return dg.SkipReason(f"no settled changes, {result['deferred']} still settling")
+        return dg.SkipReason(f"{queued} item(s) queued, {result['deferred']} change(s) still settling")
     return requests

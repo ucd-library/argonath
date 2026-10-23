@@ -211,6 +211,13 @@ CASKFS_PG_USER_ENV = "DIGTK_CASKFS_PG_USER"
 CASKFS_PG_PASSWORD_ENV = "DIGTK_CASKFS_PG_PASSWORD"
 CASKFS_PG_SCHEMA_ENV = "DIGTK_CASKFS_PG_SCHEMA"
 
+# dc-showcase's Postgres, read-only
+SHOWCASE_PG_HOST_ENV = "DIGTK_SHOWCASE_PG_HOST"
+SHOWCASE_PG_PORT_ENV = "DIGTK_SHOWCASE_PG_PORT"
+SHOWCASE_PG_DATABASE_ENV = "DIGTK_SHOWCASE_PG_DATABASE"
+SHOWCASE_PG_USER_ENV = "DIGTK_SHOWCASE_PG_USER"
+SHOWCASE_PG_PASSWORD_ENV = "DIGTK_SHOWCASE_PG_PASSWORD"
+
 # argonath's own app-level Postgres schema (collection registry, etc.) — a
 # distinct database/credentials from Dagster's own run/event-log storage (see
 # dagster/lib/utils.py's `conn`, configured via dagster/dagster.yaml's
@@ -316,6 +323,11 @@ SETTINGS = [
     {"dotpath": "postgres.database", "env": POSTGRES_DATABASE_ENV, "cast": str, "secret": False},
     {"dotpath": "postgres.user", "env": POSTGRES_USER_ENV, "cast": str, "secret": False},
     {"dotpath": "postgres.password", "env": POSTGRES_PASSWORD_ENV, "cast": str, "secret": True},
+    {"dotpath": "showcase_db.host", "env": SHOWCASE_PG_HOST_ENV, "cast": str, "secret": False},
+    {"dotpath": "showcase_db.port", "env": SHOWCASE_PG_PORT_ENV, "cast": int, "secret": False},
+    {"dotpath": "showcase_db.database", "env": SHOWCASE_PG_DATABASE_ENV, "cast": str, "secret": False},
+    {"dotpath": "showcase_db.user", "env": SHOWCASE_PG_USER_ENV, "cast": str, "secret": False},
+    {"dotpath": "showcase_db.password", "env": SHOWCASE_PG_PASSWORD_ENV, "cast": str, "secret": True},
     {"dotpath": "preservica.tenant", "env": PRESERVICA_TENANT_ENV, "cast": str, "secret": False},
     {"dotpath": "preservica.username", "env": PRESERVICA_USERNAME_ENV, "cast": str, "secret": False},
     {"dotpath": "preservica.password", "env": PRESERVICA_PASSWORD_ENV, "cast": str, "secret": True},
@@ -687,6 +699,14 @@ CONFIG = {
         "password_env": CASKFS_PG_PASSWORD_ENV,
         "fallback_password_env": REPORTING_PG_PASSWORD_ENV,
         "schema": _env(CASKFS_PG_SCHEMA_ENV, "caskfs"),
+    },
+    "showcase_db": {
+        # defaults match dc-showcase local-dev
+        "host": _env(SHOWCASE_PG_HOST_ENV, "localhost"),
+        "port": _env(SHOWCASE_PG_PORT_ENV, 5432, int),
+        "database": _env(SHOWCASE_PG_DATABASE_ENV, "dcf"),
+        "user": _env(SHOWCASE_PG_USER_ENV, "postgres"),
+        "password_env": SHOWCASE_PG_PASSWORD_ENV,
     },
 }
 
