@@ -1,7 +1,7 @@
 import psycopg2
 import pytest
 
-from digtk.models.digital_website import visibility
+from digtk.models.digital_website import showcase_db, visibility
 
 PUBLIC_ID = "https://digital.ucdavis.edu/collection/ark:/87287/d7pub"
 PRIVATE_ID = "https://digital.ucdavis.edu/collection/ark:/87287/d7priv"
@@ -82,7 +82,7 @@ def test_roles_cache_looks_each_collection_up_once(conn):
 def test_roles_raises_when_the_database_is_unreachable(monkeypatch):
     def fail(**kwargs):
         raise psycopg2.OperationalError("connection refused")
-    monkeypatch.setattr(visibility.psycopg2, "connect", fail)
+    monkeypatch.setattr(showcase_db.psycopg2, "connect", fail)
     with pytest.raises(psycopg2.OperationalError):
         visibility.roles(PUBLIC_ID)
 
@@ -94,9 +94,9 @@ def test_connect_opens_a_read_only_session(monkeypatch):
         def set_session(self, **kwargs):
             sessions.append(kwargs)
     seen = {}
-    monkeypatch.setattr(visibility.psycopg2, "connect", lambda **kwargs: seen.update(kwargs) or FakeConn())
+    monkeypatch.setattr(showcase_db.psycopg2, "connect", lambda **kwargs: seen.update(kwargs) or FakeConn())
 
     visibility.connect()
 
     assert sessions == [{"readonly": True}]
-    assert seen["dbname"] == visibility.CONFIG["showcase_db"]["database"]
+    assert seen["dbname"] == showcase_db.CONFIG["showcase_db"]["database"]

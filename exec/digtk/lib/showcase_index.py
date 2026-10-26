@@ -23,6 +23,7 @@ es_page_search_index) - see digtk.lib.config.
 """
 import json
 import mimetypes
+import posixpath
 import re
 import urllib.parse
 
@@ -885,6 +886,8 @@ def build_collection_document(name, opts={}):
         "identifier": [i["value"] for i in record.get("identifier") or [] if i.get("value")] or [ark],
         "itemCount": opts.get("item_count", 0),
         "visibility": "public" if "public" in roles else "private",
+        # dc-showcase stores collection files here
+        "goldPath": posixpath.dirname(collection_record.record_path(name, opts).removeprefix("cask:")),
     }
     return {
         "@id": root["@id"],

@@ -660,6 +660,7 @@ def test_build_collection_document_shape(collection_gold):
     assert root["creator"] == {"name": "Haeger, John Winthrop"}
     assert root["itemCount"] == 4
     assert root["visibility"] == "private"
+    assert root["goldPath"] == f"/gold/{showcase_index.CONFIG['showcase']['gold_project']}/c"
     assert "hasPart" not in root and "publisher" not in root
     assert collection_gold == [root["@id"]]
 

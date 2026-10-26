@@ -3,11 +3,7 @@ A collection's visibility, read from dc-showcase's dcf_edits.collection_edit
 table (keyed by ES @id), and the ES roles its documents get. A collection
 with no row is private. Connection settings: CONFIG["showcase_db"].
 """
-import os
-
-import psycopg2
-
-from digtk.lib.config import CONFIG
+from digtk.models.digital_website import showcase_db
 
 DEFAULT = "private"
 
@@ -16,18 +12,12 @@ ROLES = {"public": ["public", "admin"], "private": ["admin"]}
 
 
 def connect():
-    """Opens a read-only connection to dc-showcase's Postgres (CONFIG["showcase_db"]).
+    """Opens a read-only connection to dc-showcase's Postgres (see showcase_db.connect()).
 
     :returns: A live psycopg2 connection.
     :rtype: psycopg2.extensions.connection
     """
-    cfg = CONFIG["showcase_db"]
-    conn = psycopg2.connect(
-        host=cfg["host"], port=cfg["port"], dbname=cfg["database"], user=cfg["user"],
-        password=os.getenv(cfg["password_env"]) or None,
-    )
-    conn.set_session(readonly=True)
-    return conn
+    return showcase_db.connect({"readonly": True})
 
 
 def lookup(collection_ids, opts={}):

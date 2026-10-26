@@ -217,6 +217,7 @@ SHOWCASE_PG_PORT_ENV = "DIGTK_SHOWCASE_PG_PORT"
 SHOWCASE_PG_DATABASE_ENV = "DIGTK_SHOWCASE_PG_DATABASE"
 SHOWCASE_PG_USER_ENV = "DIGTK_SHOWCASE_PG_USER"
 SHOWCASE_PG_PASSWORD_ENV = "DIGTK_SHOWCASE_PG_PASSWORD"
+SHOWCASE_PG_INIT_DIR_ENV = "DIGTK_SHOWCASE_PG_INIT_DIR"
 
 # argonath's own app-level Postgres schema (collection registry, etc.) — a
 # distinct database/credentials from Dagster's own run/event-log storage (see
@@ -328,6 +329,7 @@ SETTINGS = [
     {"dotpath": "showcase_db.database", "env": SHOWCASE_PG_DATABASE_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase_db.user", "env": SHOWCASE_PG_USER_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase_db.password", "env": SHOWCASE_PG_PASSWORD_ENV, "cast": str, "secret": True},
+    {"dotpath": "showcase_db.init_dir", "env": SHOWCASE_PG_INIT_DIR_ENV, "cast": str, "secret": False},
     {"dotpath": "preservica.tenant", "env": PRESERVICA_TENANT_ENV, "cast": str, "secret": False},
     {"dotpath": "preservica.username", "env": PRESERVICA_USERNAME_ENV, "cast": str, "secret": False},
     {"dotpath": "preservica.password", "env": PRESERVICA_PASSWORD_ENV, "cast": str, "secret": True},
@@ -707,6 +709,8 @@ CONFIG = {
         "database": _env(SHOWCASE_PG_DATABASE_ENV, "dcf"),
         "user": _env(SHOWCASE_PG_USER_ENV, "postgres"),
         "password_env": SHOWCASE_PG_PASSWORD_ENV,
+        # dc-showcase's init sql, mounted from its repo
+        "init_dir": _env(SHOWCASE_PG_INIT_DIR_ENV, "/opt/dc-showcase/init/postgres"),
     },
 }
 
