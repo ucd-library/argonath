@@ -347,12 +347,15 @@ The Dagster UI is at http://localhost:3000 in local dev.
   5 minutes; turn it on in the UI) is the only sensor that reacts to bronze `tree/`
   changes. It reads `caskfs.audit_log` straight from Postgres for writes, deletes and
   moves under each active collection's bronze items root. Once an item has had no new
-  events for 5 minutes, the sensor launches one `apply_cask_changes_job` run per changed
-  collection, which does all of it in order:
-  - **New item, or binaries changed (`process`):** derivatives (one step per image/PDF
-    file, batched by `max_steps`), finalize, `build-item`, then the ES upsert from the
-    fresh gold record. An item with a failed derivative isn't finalized, and the run
-    fails at the end.
+  events for 5 minutes, the sensor handles it:
+  - **New item, or binaries changed (`process`):** the item is queued in
+    `collection_state.job_queue` (trigger `cask-audit`). `item_queue_sensor` launches one
+    `process_item_job` run per item, at most `ARGONATH_MAX_ITEM_RUNS_IN_FLIGHT` (default
+    20) at a time. Each run fans out its own files: derivatives, finalize, `build-item`,
+    then the ES upsert. Once a collection's queue is empty and none of its item runs are
+    in flight, `collection_rollup_sensor` launches `collection_rollup_job`, which records
+    the rollup and rebuilds the collection doc. It fails if any item's latest run failed.
+  - Everything else launches one `apply_cask_changes_job` run per changed collection:
   - **Only `metadata.json`, `identifiers.json` or `*.jsonld.json` changed (`reindex`):**
     `build-item` and the ES upsert, with no derivatives.
   - **Folder deleted (`delete` + `cleanup`):** its ES docs are deleted (using the ARK
@@ -361,10 +364,10 @@ The Dagster UI is at http://localhost:3000 in local dev.
     file count and recorded as an `argonath_fanout_cleanup` event.
   - **Folder renamed:** processed at its new path. Its ES doc is kept, since the ARK is
     the same, but the old path's silver and gold are removed. The doc's images point at
-    the old silver files until the new path's derivatives are done, later in the same run.
+    the old silver files until the new path's `process_item_job` run finishes.
   - **Collection `tree/metadata.json` or `tree/identifiers.json` changed:** the run has
     empty lists and only rebuilds the collection doc.
-  - Every run ends by rebuilding and reindexing the collection doc.
+  - Every `apply_cask_changes_job` run ends by rebuilding and reindexing the collection doc.
   - To preview a cleanup by hand:
     `digtk showcase clean-item <bronze item folder> --dry-run`.
   - Preservica syncs feed it too, through the `tree/` writes and deletes they make.
@@ -373,8 +376,8 @@ The Dagster UI is at http://localhost:3000 in local dev.
     CaskFS must run with `CASKFS_AUDIT_ENABLED=true`.
   - Only registered collections are watched, so onboard a new one with
     `process_collection_job` first.
-  - The other jobs (`process_item_job`, `reindex_collection_job`, the delete jobs,
-    `collection_rollup_job`) are manual only. No other sensor launches them.
+  - The other jobs (`reindex_collection_job`, the delete jobs) are manual only.
+    `process_item_job` and `collection_rollup_job` can also be launched by hand.
 - **Items removed by a Preservica sync:** when a synced folder (SO) no longer lists a
   child that Preservica knew about (it has a `by-ref/` entry), the tree rebuild deletes
   that child's `tree/` entry. `by-ref/` is kept. `bronze_cask_audit_sensor` then sees the

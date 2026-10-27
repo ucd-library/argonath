@@ -23,6 +23,7 @@ es_page_search_index) - see digtk.lib.config.
 """
 import json
 import mimetypes
+import posixpath
 import re
 import urllib.parse
 
@@ -31,7 +32,7 @@ import httpx
 from digtk.lib import items, fs, utils
 from digtk.lib.config import CONFIG
 from digtk.models.digital_website import (
-    audio, captions, collection_record, image, item_record, pdf, pipeline, video,
+    audio, captions, collection_record, image, item_record, pdf, pipeline, video, visibility,
 )
 
 ES_HOST = CONFIG["showcase"]["es_host"]
@@ -458,11 +459,13 @@ def build_document(ark, opts={}):
     string identifiers and full @type URIs, matching the item index mapping.
     "about" is left out, since the mapping indexes it as text. Two
     document-level fields are required: "name" (search sorts by "name.raw")
-    and "roles" (["public"], or the document doesn't show up in search).
+    and "roles", from the visibility of the collection the item isPartOf
+    (see visibility.roles(); an item with no collection is private).
 
     :param str ark: Item ARK.
     :param dict opts: 'project' — the gold app segment to read the record
-        from (see item_record.gold_location(), which never reads bronze).
+        from (see item_record.gold_location(), which never reads bronze);
+        'roles_cache' — see visibility.roles().
     :returns: ES document body: {"@id", "@graph", "clientMedia",
         "displayImage", "name", "roles"}.
     :rtype: dict
@@ -515,12 +518,25 @@ def build_document(ark, opts={}):
         "@graph": graph,
         "clientMedia": client_media,
         "name": root.get("name"),
-        "roles": ["public"],
+        "roles": visibility.roles(_collection_id(root.get("isPartOf")), opts),
     }
     display_image = _display_image(graph, client_media, (root.get("image") or {}).get("@id"))
     if display_image:
         document["displayImage"] = display_image
     return document
+
+
+def _collection_id(is_part_of):
+    """The first collection @id in an item's isPartOf.
+
+    :param list|None is_part_of: _is_part_of()'s result.
+    :returns: The collection's ES @id, or None if the item has none.
+    :rtype: str|None
+    """
+    return next(
+        (n["@id"] for n in is_part_of or [] if n["@id"].startswith(item_record.COLLECTION_URI_PREFIX)),
+        None,
+    )
 
 
 def _gold_media_ids(gold):
@@ -748,9 +764,11 @@ def index_items(arks, opts={}):
     """
     failed = []
     documents = {}
+    build_opts = {k: v for k, v in opts.items() if k == "project"}
+    build_opts["roles_cache"] = {}
     for ark in arks:
         try:
-            documents[ark] = build_document(ark, {k: v for k, v in opts.items() if k == "project"})
+            documents[ark] = build_document(ark, build_opts)
         except Exception as e:
             failed.append({"ark": ark, "error": str(e)})
 
@@ -841,16 +859,19 @@ def delete_collection(collection_id, opts={}):
 
 def build_collection_document(name, opts={}):
     """Builds the ES document for a collection from its gold record. Items
-    link to it through their isPartOf; it has no hasPart back.
+    link to it through their isPartOf; it has no hasPart back. Its roles
+    come from its visibility in dc-showcase (see visibility.roles()).
 
     :param str name: Collection name.
-    :param dict opts: 'project' (see collection_record.read()) and
-        'item_count' (int, default 0).
+    :param dict opts: 'project' (see collection_record.read()),
+        'item_count' (int, default 0) and 'conn' (see visibility.lookup()).
     :returns: ES document body: {"@id", "@graph", "clientMedia", "name", "roles"}.
     :rtype: dict
     :raises FileNotFoundError: If the collection's record hasn't been built yet.
+    :raises psycopg2.Error: If dc-showcase's database can't be read.
     """
     record = collection_record.root_node(collection_record.read(name, opts))
+    roles = visibility.roles(record["@id"], opts)
     ark = record["ark"]
     root = {
         "@id": record["@id"],
@@ -864,13 +885,16 @@ def build_collection_document(name, opts={}):
         "subjects": record.get("about"),
         "identifier": [i["value"] for i in record.get("identifier") or [] if i.get("value")] or [ark],
         "itemCount": opts.get("item_count", 0),
+        "visibility": "public" if "public" in roles else "private",
+        # dc-showcase stores collection files here
+        "goldPath": posixpath.dirname(collection_record.record_path(name, opts).removeprefix("cask:")),
     }
     return {
         "@id": root["@id"],
         "@graph": [{k: v for k, v in root.items() if v is not None}],
         "clientMedia": {},
         "name": record.get("name"),
-        "roles": ["public"],
+        "roles": roles,
     }
 
 
@@ -1014,7 +1038,7 @@ def build_page_documents(document):
                 "position": position,
                 "content": _with_page_size(content, ocr["size"]),
             }],
-            "roles": document.get("roles", ["public"]),
+            "roles": document.get("roles", visibility.ROLES[visibility.DEFAULT]),
         })
     return pages
 

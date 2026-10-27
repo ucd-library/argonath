@@ -205,3 +205,15 @@ def test_es_upsert_collection_indexes_by_collection_name(monkeypatch):
     assert result.exit_code == 0
     assert seen == {"name": "haeger"}
     assert last_json_line(result.output) == {"collection": "haeger", "status": "indexed"}
+
+
+def test_init_db_reports_applied_files(monkeypatch):
+    from digtk.models.digital_website import showcase_db
+    seen = {}
+    monkeypatch.setattr(showcase_db, "init_db", lambda opts={}: seen.update(opts) or ["003-a.sql"])
+
+    result = runner.invoke(app, ["showcase", "init-db", "--init-dir", "/tmp/sql"])
+
+    assert result.exit_code == 0
+    assert seen == {"init_dir": "/tmp/sql"}
+    assert last_json_line(result.output) == {"status": "success", "files": ["003-a.sql"]}

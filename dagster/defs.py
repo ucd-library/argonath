@@ -22,13 +22,11 @@ Submodule layout (all files live alongside this one in dagster/):
                             finalize and Elasticsearch upsert, plus
                             process_item_failure_sensor
                             (see its own docstring)
-  lib/pipeline_collection.py — collection_rollup_job (item count + failed
-                            items, then the collection doc), launched by hand.
-                            Its queue sensors aren't registered.
-  lib/pipeline_index.py  — reindex_collection_job (bulk ES reindex + prune, no
-                            derivatives), apply_cask_changes_job (the audit
-                            sensor's per-collection changes), delete_collection_index_job and
-                            delete_item_index_job
+  lib/pipeline_collection.py — item_queue_sensor (process_item_job runs
+                            from the queue) and collection_rollup_job/sensor.
+  lib/pipeline_index.py  — reindex_collection_job, apply_cask_changes_job
+                            (audit reindex/delete changes),
+                            delete_collection_index_job and delete_item_index_job
   lib/collection_state.py — the collection_state queue/results store, via
                             `digtk state` (see digtk.models.collection_state)
 
@@ -81,6 +79,8 @@ from lib.pipeline_workspace import process_workspace_job, promote_workspace_job
 from lib.pipeline_item import process_item_job, process_item_failure_sensor
 from lib.pipeline_collection import (
     collection_rollup_job,
+    item_queue_sensor,
+    collection_rollup_sensor,
 )
 from lib.pipeline_index import (
     reindex_collection_job,
@@ -133,6 +133,8 @@ defs = dg.Definitions(
         bronze_cask_audit_sensor,
         workspace_partition_sync_sensor,
         process_item_failure_sensor,
+        item_queue_sensor,
+        collection_rollup_sensor,
     ],
     schedules=[
         nightly_arda_index,

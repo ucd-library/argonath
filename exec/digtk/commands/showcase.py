@@ -13,9 +13,11 @@ Subcommands:
   build-item — assemble and write the item's complete, canonical gold item.jsonld.json
   build-collection — write the collection's gold collection.jsonld.json
   clean-item — delete a removed bronze item's silver and gold directories
+  init-db    — apply dc-showcase's init SQL to its database
 """
 from typing import Annotated, List
 
+import psycopg2
 import typer
 
 from digtk.commands import audio, es, image, pdf, video
@@ -25,7 +27,7 @@ from digtk.lib.config import (
 )
 from digtk.models.digital_website import finalize as finalize_model
 from digtk.models.digital_website import collection_index, collection_record, item_record
-from digtk.models.digital_website import pipeline
+from digtk.models.digital_website import pipeline, showcase_db
 
 app = typer.Typer(help="Public Digital Collections website commands.", no_args_is_help=True)
 
@@ -144,4 +146,20 @@ def clean_item(
         utils.log(f"{'Would remove' if dry_run else 'Removed'} {len(result['removed'])} director(ies), {files} file(s)")
         utils.result({"status": "success", **result})
     except _ERRORS as e:
+        utils.error(str(e))
+
+
+@app.command("init-db")
+def init_db(
+    init_dir: Annotated[str | None, typer.Option(
+        "--init-dir", help="Directory of dc-showcase's init .sql files (default: showcase_db.init_dir).",
+    )] = None,
+):
+    """Apply dc-showcase's init SQL to its database, in filename order. The
+    SQL is dc-showcase's own, mounted from its repo. Safe to run repeatedly."""
+    try:
+        files = showcase_db.init_db({"init_dir": init_dir})
+        utils.log(f"Applied {len(files)} dc-showcase init file(s)")
+        utils.result({"status": "success", "files": files})
+    except (*_ERRORS, psycopg2.Error) as e:
         utils.error(str(e))
