@@ -23,7 +23,7 @@ from digtk.lib.config import (
     ReportingJobIdOption,
     SplitMaxPxOption,
     TargetArgument,
-    WorkspaceCollectionOption,
+    WorkspaceFolderOption,
     WorkspaceUserOption,
 )
 from digtk.models import split as split_model
@@ -39,7 +39,7 @@ _ERRORS = (LookupError, OSError, RuntimeError, ValueError, subprocess.CalledProc
 def detect(
     target: TargetArgument,
     max_px: SplitMaxPxOption = CONFIG["split"]["max_px"],
-    collection: WorkspaceCollectionOption = None,
+    folder: WorkspaceFolderOption = None,
     user: WorkspaceUserOption = None,
     reporting_job_id: ReportingJobIdOption = None,
     reporting_collection: ReportingCollectionOption = None,
@@ -57,7 +57,7 @@ def detect(
         utils.result(workspace.apply_to_targets(target, split_model.detect, opts={
             "stage": "split-detect",
             "fn_opts": {"max_px": max_px},
-            "collection": collection, "username": user,
+            "folder": folder, "username": user,
             "reporting_job_id": reporting_job_id, "reporting_collection": reporting_collection,
         }))
     except _ERRORS as e:
@@ -67,7 +67,7 @@ def detect(
 @app.command()
 def apply(
     target: TargetArgument,
-    collection: WorkspaceCollectionOption = None,
+    folder: WorkspaceFolderOption = None,
     user: WorkspaceUserOption = None,
     reporting_job_id: ReportingJobIdOption = None,
     reporting_collection: ReportingCollectionOption = None,
@@ -83,7 +83,7 @@ def apply(
         utils.log(f"Applying spread splits for {target}")
         utils.result(workspace.apply_to_targets(target, split_model.apply, opts={
             "stage": "split-apply",
-            "collection": collection, "username": user,
+            "folder": folder, "username": user,
             "reporting_job_id": reporting_job_id, "reporting_collection": reporting_collection,
         }))
     except _ERRORS as e:

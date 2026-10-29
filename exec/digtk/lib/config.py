@@ -27,7 +27,7 @@ import os
 import stat
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 
@@ -101,6 +101,7 @@ SAMWISE_MAINT_END_ENV = "DIGTK_SAMWISE_MAINT_END"
 # registry yet to back a persisted default for those.
 ALT_MAX_CHARS_ENV = "DIGTK_ALT_MAX_CHARS"
 ALT_WANT_DESCRIPTION_ENV = "DIGTK_ALT_WANT_DESCRIPTION"
+ALT_WANT_LONG_ENV = "DIGTK_ALT_WANT_LONG"
 
 CASK_API_URL_ENV = "CASK_API_URL"
 CASK_API_KEY_ENV = "CASK_API_KEY"
@@ -137,6 +138,7 @@ PDF_RASTER_FORMAT_ENV = "DIGTK_PDF_RASTER_FORMAT"
 PDF_PDFINFO_BIN_ENV = "DIGTK_PDF_PDFINFO_BIN"
 
 ACCESSIBILITY_VERAPDF_BIN_ENV = "DIGTK_VERAPDF_BIN"
+ACCESSIBILITY_GS_BIN_ENV = "DIGTK_GS_BIN"
 ACCESSIBILITY_TAG_LOOKAHEAD_ENV = "DIGTK_TAG_LOOKAHEAD"
 ACCESSIBILITY_MIN_WORD_CONFIDENCE_ENV = "DIGTK_MIN_WORD_CONFIDENCE"
 
@@ -258,6 +260,7 @@ SETTINGS = [
     {"dotpath": "samwise.maint_end", "env": SAMWISE_MAINT_END_ENV, "cast": str, "secret": False},
     {"dotpath": "alt.max_chars", "env": ALT_MAX_CHARS_ENV, "cast": int, "secret": False},
     {"dotpath": "alt.want_description", "env": ALT_WANT_DESCRIPTION_ENV, "cast": _cast_bool, "secret": False},
+    {"dotpath": "alt.want_long", "env": ALT_WANT_LONG_ENV, "cast": _cast_bool, "secret": False},
     {"dotpath": "gateway.url", "env": GATEWAY_URL_ENV, "cast": str, "secret": False},
     {"dotpath": "auth.login_timeout_s", "env": AUTH_LOGIN_TIMEOUT_ENV, "cast": float, "secret": False},
     {"dotpath": "fs.chunk_size", "env": FS_CHUNK_SIZE_ENV, "cast": int, "secret": False},
@@ -271,6 +274,7 @@ SETTINGS = [
     {"dotpath": "pdf.raster_format", "env": PDF_RASTER_FORMAT_ENV, "cast": str, "secret": False},
     {"dotpath": "pdf.pdfinfo_bin", "env": PDF_PDFINFO_BIN_ENV, "cast": str, "secret": False},
     {"dotpath": "accessibility.verapdf_bin", "env": ACCESSIBILITY_VERAPDF_BIN_ENV, "cast": str, "secret": False},
+    {"dotpath": "accessibility.gs_bin", "env": ACCESSIBILITY_GS_BIN_ENV, "cast": str, "secret": False},
     {"dotpath": "accessibility.tag_lookahead", "env": ACCESSIBILITY_TAG_LOOKAHEAD_ENV, "cast": int, "secret": False},
     {"dotpath": "accessibility.min_word_confidence", "env": ACCESSIBILITY_MIN_WORD_CONFIDENCE_ENV, "cast": float, "secret": False},
     {"dotpath": "split.max_px", "env": SPLIT_MAX_PX_ENV, "cast": int, "secret": False},
@@ -481,7 +485,7 @@ CONFIG = {
     "samwise": {
         "api_url": _env(SAMWISE_API_URL_ENV, "http://samwise.library.ucdavis.edu/api"),
         "api_key_env": SAMWISE_API_KEY_ENV,
-        "llm_model": _env(SAMWISE_LLM_MODEL_ENV, "qwen3.6-fast:35b"),
+        "llm_model": _env(SAMWISE_LLM_MODEL_ENV, "qwen3.8-fp8-fast:27b"),
         "embed_model": _env(SAMWISE_EMBED_MODEL_ENV, "qwen3-embed:4b"),
         # Proven values from the standalone digitization toolkit's vllm_client.py.
         "connect_timeout_s": _env(SAMWISE_CONNECT_TIMEOUT_S_ENV, 15.0, float),
@@ -501,6 +505,7 @@ CONFIG = {
         # max_chars matches digtk.models.alt_utils.DEFAULT_MAX_ALT_CHARS.
         "max_chars": _env(ALT_MAX_CHARS_ENV, 150, int),
         "want_description": _env(ALT_WANT_DESCRIPTION_ENV, False, _cast_bool),
+        "want_long": _env(ALT_WANT_LONG_ENV, False, _cast_bool),
     },
     "auth": {
         "credentials_path": _env(
@@ -543,6 +548,8 @@ CONFIG = {
     },
     "accessibility": {
         "verapdf_bin": _env(ACCESSIBILITY_VERAPDF_BIN_ENV, "verapdf"),
+        # Ghostscript, for embedding fonts in place
+        "gs_bin": _env(ACCESSIBILITY_GS_BIN_ENV, "gs"),
         # Matches digtk.models.pdf_tag.DEFAULT_LOOKAHEAD.
         "tag_lookahead": _env(ACCESSIBILITY_TAG_LOOKAHEAD_ENV, 40, int),
         # tag_pdf()'s searchable-PDF text layer: drop hOCR words below this
@@ -784,6 +791,52 @@ AltWantDescriptionOption = Annotated[bool, typer.Option(
     help=f"Also generate a 2-4 sentence catalog description. Env: {ALT_WANT_DESCRIPTION_ENV}.",
 )]
 
+AltWantLongOption = Annotated[bool, typer.Option(
+    "--long", envvar=ALT_WANT_LONG_ENV,
+    help=f"Also write a long description for maps, charts, posters and other "
+         f"information-dense images. Env: {ALT_WANT_LONG_ENV}.",
+)]
+
+OcrEnhanceOption = Annotated[Literal["auto", "gray"] | None, typer.Option(
+    "--ocr-enhance",
+    help="Contrast-boost the image Tesseract reads, for faded originals: "
+         "'auto' keeps color, 'gray' also converts to grayscale.",
+)]
+
+TagModeOption = Annotated[Literal["auto", "inplace", "rebuild"], typer.Option(
+    "--mode",
+    help="auto: tag in place when any page has real text, else rebuild. inplace: keep "
+         "every page as produced (fonts, vector art) and OCR only pages without text. "
+         "rebuild: render pages to images and rebuild them with an OCR text layer.",
+)]
+
+EmbedFontsOption = Annotated[bool, typer.Option(
+    help="In place only: rewrite PDFs that use unembedded fonts through Ghostscript "
+         "first, since those fail PDF/UA.",
+)]
+
+OcrTextPagesOption = Annotated[bool, typer.Option(
+    "--ocr-text-pages",
+    help="Also OCR PDF pages that already have extractable text (skipped by default).",
+)]
+
+FiguresOption = Annotated[bool, typer.Option(
+    help="Tag in-page figures (charts, photos, maps) with alt text and captions. "
+         "Pages not yet run through `digtk accessibility figures` are detected now "
+         "(one Samwise call per page plus one per figure, cached).",
+)]
+
+GeometryOption = Annotated[Literal["tesseract", "qwen"], typer.Option(
+    "--geometry",
+    help="Text-layer source: tesseract (word boxes; printed text) or qwen (vision line "
+         "boxes; handwriting and faint typescript; one Samwise call per page, cached).",
+)]
+
+SkipExistingOption = Annotated[bool, typer.Option(
+    "--skip-existing",
+    help="Skip work whose outputs already exist (resume an interrupted run).",
+)]
+
 VideoResolutionsOption = Annotated[str, typer.Option(
     "--resolutions", envvar=VIDEO_RESOLUTIONS_ENV,
     help=f"Comma-separated HLS resolution rungs (e.g. 360p,720p). Env: {VIDEO_RESOLUTIONS_ENV}.",
@@ -860,10 +913,10 @@ TargetArgument = Annotated[str, typer.Argument(
 
 # Shared by every root-level tool command that accepts a local folder target
 # (see digtk.models.workspace.stage()) — where in workspace it gets staged.
-WorkspaceCollectionOption = Annotated[str | None, typer.Option(
-    "--collection",
-    help="Workspace collection to stage a local folder into. Defaults to the "
-         "folder's own name. Ignored for an ARK or cask:/ target.",
+WorkspaceFolderOption = Annotated[str | None, typer.Option(
+    "--folder",
+    help="Workspace folder to stage a local folder into. Defaults to the "
+         "local folder's own name. Ignored for an ARK or cask:/ target.",
 )]
 
 WorkspaceUserOption = Annotated[str | None, typer.Option(

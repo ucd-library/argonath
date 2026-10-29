@@ -1,15 +1,15 @@
 """
 digtk workspace — run the root-level tools on scans before they have an ARK.
 
-Stages local folders into /workspace/[username]/[collection]/source/, runs any
-of the root-level tools over them (outputs land in that collection's
+Stages local folders into /workspace/[username]/[folder]/source/, runs any
+of the root-level tools over them (outputs land in that folder's
 derivatives/), pulls outputs back down for review, and promotes a reviewed
 item's outputs into silver once it's been ingested under an ARK. See
 digtk.models.workspace.
 
 Subcommands:
-  add      — stage a local folder into a workspace collection
-  ls       — list workspace collections
+  add      — stage a local folder into a workspace folder
+  ls       — list workspace folders
   items    — list the item directories under a workspace path
   run      — run one or more tool steps over a folder, workspace path, or ARK
   pull     — download a CaskFS directory (e.g. review sheets) to local disk
@@ -25,6 +25,14 @@ from digtk.lib.config import (
     CONFIG,
     AltMaxCharsOption,
     AltWantDescriptionOption,
+    AltWantLongOption,
+    OcrEnhanceOption,
+    EmbedFontsOption,
+    OcrTextPagesOption,
+    FiguresOption,
+    GeometryOption,
+    SkipExistingOption,
+    TagModeOption,
     OcrLangOption,
     OcrOemOption,
     OcrPsmOption,
@@ -32,7 +40,7 @@ from digtk.lib.config import (
     ReportingJobIdOption,
     SplitMaxPxOption,
     TargetArgument,
-    WorkspaceCollectionOption,
+    WorkspaceFolderOption,
     WorkspaceUserOption,
 )
 from digtk.models import workspace
@@ -46,42 +54,42 @@ _ERRORS = (LookupError, OSError, RuntimeError, ValueError, subprocess.CalledProc
 @app.command()
 def add(
     source: Annotated[str, typer.Argument(help="Local folder to upload.")],
-    collection: WorkspaceCollectionOption = None,
+    folder: WorkspaceFolderOption = None,
     user: WorkspaceUserOption = None,
     replace: Annotated[bool, typer.Option(help="Replace files that already exist.")] = False,
 ):
-    """Stage a local folder into a workspace collection's source/ directory.
+    """Stage a local folder into a workspace folder's source/ directory.
 
     Re-running over the same folder only uploads what changed.
     """
     try:
-        root = workspace.stage(source, opts={"collection": collection, "username": user, "replace": replace})
+        root = workspace.stage(source, opts={"folder": folder, "username": user, "replace": replace})
         utils.result({"status": "success", "source": source, "dest": root})
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command("ls")
-def ls(user: Annotated[str | None, typer.Option(help="Only this user's collections.")] = None):
-    """List workspace collections (used by Dagster's workspace partition sensor)."""
+def ls(user: Annotated[str | None, typer.Option(help="Only this user's folders.")] = None):
+    """List workspace folders (used by Dagster's workspace partition sensor)."""
     try:
-        collections = workspace.list_collections(opts={"username": user})
-        for c in collections:
+        folders = workspace.list_folders(opts={"username": user})
+        for c in folders:
             utils.log(f"{c['key']}  ({c['path']})")
-        utils.result({"status": "success", "collections": collections})
+        utils.result({"status": "success", "folders": folders})
     except _ERRORS as e:
         utils.error(str(e))
 
 
 @app.command("items")
 def items_cmd(
-    path: Annotated[str, typer.Argument(help="Workspace path, e.g. cask:/workspace/<user>/<collection>.")],
+    path: Annotated[str, typer.Argument(help="Workspace path, e.g. cask:/workspace/<user>/<folder>.")],
     files: Annotated[bool, typer.Option(
         "--files", help="Also list each item's image/PDF files (what Dagster fans out over, one step per file).",
     )] = False,
 ):
     """List the item directories under a workspace path (used by Dagster's
-    process_workspace_job to fan out its steps)."""
+    workspace_process_job to fan out its steps)."""
     try:
         if files:
             found = workspace.list_items(path)
@@ -105,20 +113,35 @@ def run(
     )],
     file: Annotated[list[str] | None, typer.Option(
         "--file", help="Only process this source file of each item (repeatable). "
-                       "split-detect/split-apply are skipped, since they run per folder.",
+                       "Folder steps (split-detect, split-apply, pdf-build) are skipped.",
     )] = None,
-    collection: WorkspaceCollectionOption = None,
+    folder: WorkspaceFolderOption = None,
     user: WorkspaceUserOption = None,
     max_px: SplitMaxPxOption = CONFIG["split"]["max_px"],
     lang: OcrLangOption = CONFIG["ocr"]["lang"],
     psm: OcrPsmOption = CONFIG["ocr"]["psm"],
     oem: OcrOemOption = CONFIG["ocr"]["oem"],
     vision: Annotated[bool, typer.Option(help="ocr: also run Qwen vision OCR for the transcript.")] = True,
+    ocr_enhance: OcrEnhanceOption = None,
     collection_context: Annotated[str, typer.Option(help="alt-text: collection-specific prompt context.")] = "",
     want_description: AltWantDescriptionOption = CONFIG["alt"]["want_description"],
+    want_long: AltWantLongOption = CONFIG["alt"]["want_long"],
     max_alt_chars: AltMaxCharsOption = CONFIG["alt"]["max_chars"],
     doc_lang: Annotated[str, typer.Option(help="tag-pdf: document language (BCP-47, e.g. en-US).")] = "en-US",
     tables: Annotated[bool, typer.Option(help="tag-pdf: vision layout pass to tag data tables.")] = False,
+    strict: Annotated[bool, typer.Option(help="tag-pdf: demote unmatched lines to artifacts.")] = False,
+    paragraphs: Annotated[bool, typer.Option(help="tag-pdf: one paragraph per layout text block.")] = False,
+    reuse_ocr: Annotated[bool, typer.Option(help="tag-pdf: reuse the ocr step's word boxes when they match.")] = True,
+    correct: Annotated[bool, typer.Option(help="tag-pdf: fix text-layer spelling from the vision transcript.")] = False,
+    skip_existing: SkipExistingOption = False,
+    mode: TagModeOption = "auto",
+    embed_fonts: EmbedFontsOption = True,
+    ocr_text_pages: OcrTextPagesOption = False,
+    figures: FiguresOption = False,
+    geometry: GeometryOption = "tesseract",
+    lookahead: Annotated[int, typer.Option(
+        help="tag-pdf: how far a layout block may match past the cursor.",
+    )] = CONFIG["accessibility"]["tag_lookahead"],
     min_conf: Annotated[float, typer.Option(
         "--min-conf", help="tag-pdf: drop hOCR words below this confidence (0-100) from the text layer.",
     )] = CONFIG["accessibility"]["min_word_confidence"],
@@ -132,21 +155,34 @@ def run(
     cask:/workspace/... path, or an ARK. A step that doesn't apply to an
     item (e.g. tag-pdf on a folder of images) is skipped for that item.
     """
+    tag_opts = {
+        "lang": doc_lang, "tables": tables, "strict": strict, "lookahead": lookahead,
+        "paragraphs": paragraphs, "reuse_ocr": reuse_ocr, "correct": correct,
+        "min_conf": min_conf, "validate": validate, "enhance": ocr_enhance,
+        "skip_existing": skip_existing, "figures": figures, "geometry": geometry,
+    }
     try:
         utils.result(workspace.run(target, opts={
             "steps": [s.strip() for s in steps.split(",") if s.strip()],
             "step_opts": {
                 "split-detect": {"max_px": max_px},
-                "ocr": {"lang": lang, "psm": psm, "oem": oem, "vision": vision},
+                "ocr": {
+                    "lang": lang, "psm": psm, "oem": oem, "vision": vision, "enhance": ocr_enhance,
+                    "skip_existing": skip_existing, "ocr_text_pages": ocr_text_pages,
+                },
                 "alt-text": {
                     "collection_context": collection_context,
                     "want_description": want_description,
+                    "want_long": want_long,
                     "max_alt_chars": max_alt_chars,
+                    "skip_existing": skip_existing,
                 },
-                "tag-pdf": {"lang": doc_lang, "tables": tables, "min_conf": min_conf, "validate": validate},
+                "figures": {"collection_context": collection_context, "max_alt_chars": max_alt_chars},
+                "pdf-build": tag_opts,
+                "tag-pdf": {**tag_opts, "mode": mode, "embed_fonts": embed_fonts},
             },
             "files": file or [],
-            "collection": collection, "username": user,
+            "folder": folder, "username": user,
             "reporting_job_id": reporting_job_id, "reporting_collection": reporting_collection,
         }))
     except _ERRORS as e:
@@ -155,7 +191,7 @@ def run(
 
 @app.command()
 def pull(
-    path: Annotated[str, typer.Argument(help="CaskFS directory, e.g. cask:/workspace/<user>/<collection>/derivatives.")],
+    path: Annotated[str, typer.Argument(help="CaskFS directory, e.g. cask:/workspace/<user>/<folder>/derivatives.")],
     dest: Annotated[str, typer.Argument(help="Local directory to download into.")],
 ):
     """Download every file at or under a CaskFS directory, keeping its layout."""
@@ -169,7 +205,7 @@ def pull(
 
 @app.command()
 def promote(
-    path: Annotated[str, typer.Argument(help="Workspace item directory, e.g. cask:/workspace/<user>/<collection>/source/folder-3.")],
+    path: Annotated[str, typer.Argument(help="Workspace item directory, e.g. cask:/workspace/<user>/<folder>/source/folder-3.")],
     ark: Annotated[str, typer.Option(help="The item's ARK, once ingested to bronze.")],
     replace: Annotated[bool, typer.Option(help="Overwrite outputs already in silver.")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would be copied without copying.")] = False,

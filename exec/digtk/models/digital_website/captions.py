@@ -16,7 +16,7 @@ digtk.models.digital_website.pipeline for staging/publishing. Captions only publ
 files here; attach_captions() adds them, as a 'caption' MediaObject, to whichever
 VideoObject/AudioObject entry shares their source's 'identifier' (see
 digtk.models.digital_website.video.media_objects()/audio.media_objects()) when the
-item's gold record is built (see digtk.models.digital_website.item_record).
+item is indexed for the website (see digtk.lib.showcase_index._silver_media()).
 
 There's no standalone `digtk captions transcribe` command — transcribe_sources() is
 called directly by video.derivatives()/audio.derivatives() using the sources they've
@@ -72,7 +72,7 @@ def attach_captions(item, entries):
 
 def transcribe_sources(item, sources, tmp_dir, command, opts={}):
     """Transcribe an already-staged set of source video/audio files to WebVTT
-    caption files (see attach_captions() for how they reach the item record).
+    caption files (see attach_captions() for how they reach the search index).
 
     Called directly by video.derivatives()/audio.derivatives() using the sources
     they've already staged into their own tmp_dir — never re-stages, so captions

@@ -2,15 +2,15 @@
 Collection-level orchestration of item runs, through the collection_state
 queue (see lib.collection_state and digtk.models.collection_state).
 bronze_cask_audit_sensor queues changed items, item_queue_sensor runs them
-as process_item_job, and collection_rollup_sensor rolls each collection up.
+as showcase_process_item_job, and collection_rollup_sensor rolls each collection up.
 
   collection_launch_job (collection partition, not registered)
       -> `digtk state enqueue-collection`: one job_queue row per item
   item_queue_sensor
-      -> one process_item_job run per queued row, at most
+      -> one showcase_process_item_job run per queued row, at most
          MAX_ITEM_RUNS_IN_FLIGHT item runs at a time
   collection_rollup_sensor (queue empty, no item runs in flight)
-      -> collection_rollup_job: `digtk state rollup`, then the collection's
+      -> showcase_collection_rollup_job: `digtk state rollup`, then the collection's
          gold record and ES doc; fails if any item failed
 
 The queue is read without being claimed: item_queue_sensor stores submitted
@@ -25,10 +25,10 @@ from dagster import AssetMaterialization, MetadataValue, OpExecutionContext, job
 
 from lib import collection_state
 from lib.configs import ItemRunConfig, collections_partitions
-from lib.pipeline_item import normalize_item, process_item_job
+from lib.pipeline_item import normalize_item, showcase_process_item_job
 from lib.utils import default_run_config, exec
 
-# Most process_item_job runs (queued or running, from any trigger) the queue
+# Most showcase_process_item_job runs (queued or running, from any trigger) the queue
 # sensor lets exist at once. It only submits more while there's room, so the
 # rest wait in collection_state.job_queue rather than in Dagster's run queue.
 MAX_ITEM_RUNS_IN_FLIGHT = int(os.getenv("ARGONATH_MAX_ITEM_RUNS_IN_FLIGHT", "20"))
@@ -46,9 +46,9 @@ _IN_FLIGHT = [
 
 @op
 def enqueue_collection_items(context: OpExecutionContext):
-    """Queue a process_item_job run for every item in the partition's
+    """Queue a showcase_process_item_job run for every item in the partition's
     collection. Items that have left its bronze tree/ are left alone here;
-    reindex_collection_job prunes their ES docs.
+    showcase_reindex_collection_job prunes their ES docs.
 
     :param context: Dagster op execution context; partitioned by collection.
     """
@@ -71,7 +71,7 @@ def enqueue_collection_items(context: OpExecutionContext):
 
 @job(partitions_def=collections_partitions, tags={"argonath/kind": "collection-launch"})
 def collection_launch_job():
-    """Queue one process_item_job run per item of a collection;
+    """Queue one showcase_process_item_job run per item of a collection;
     item_queue_sensor launches them. Processing always replaces existing derivatives for now. See this
     module's docstring.
     """
@@ -79,7 +79,7 @@ def collection_launch_job():
 
 
 def _item_run_request(row):
-    """A process_item_job RunRequest for one job_queue row.
+    """A showcase_process_item_job RunRequest for one job_queue row.
 
     :param dict row: collection_state.pending() row ({"id", "item", "config"}).
     :returns: RunRequest keyed "job_queue-<id>".
@@ -101,9 +101,9 @@ def _item_run_request(row):
     return dg.RunRequest(run_key=f"job_queue-{row['id']}", run_config=run_config, tags=tags)
 
 
-@dg.sensor(job=process_item_job, minimum_interval_seconds=30)
+@dg.sensor(job=showcase_process_item_job, minimum_interval_seconds=30)
 def item_queue_sensor(context: dg.SensorEvaluationContext):
-    """Launch process_item_job runs from collection_state's queue, keeping at
+    """Launch showcase_process_item_job runs from collection_state's queue, keeping at
     most MAX_ITEM_RUNS_IN_FLIGHT item runs queued or running. Rows submitted by
     one tick are removed from the queue by the next (see this module's docstring).
 
@@ -200,7 +200,7 @@ def check_rollup_failures(summary: dict):
 
 
 @job(partitions_def=collections_partitions, tags={"argonath/kind": "collection-rollup"})
-def collection_rollup_job():
+def showcase_collection_rollup_job():
     """A collection's rollup after its item runs: item count and failed items,
     recorded in collection_state, then the collection's ES document. Launched
     by collection_rollup_sensor.
@@ -208,9 +208,9 @@ def collection_rollup_job():
     check_rollup_failures(pdc_index_collection(rollup_collection()))
 
 
-@dg.sensor(job=collection_rollup_job, minimum_interval_seconds=300)
+@dg.sensor(job=showcase_collection_rollup_job, minimum_interval_seconds=300)
 def collection_rollup_sensor(context: dg.SensorEvaluationContext):
-    """Launch collection_rollup_job for every collection whose items have
+    """Launch showcase_collection_rollup_job for every collection whose items have
     results newer than its last rollup, once nothing is queued for it and none
     of its item runs are queued or running. Keyed by the newest item result, so
     the same results never roll up twice.

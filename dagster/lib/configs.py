@@ -37,11 +37,11 @@ items_partitions = dg.MultiPartitionsDefinition({
     "item": items_partitions_dim,
 })
 
-# Workspace collections — keyed "workspace/[username]/[collection]" (e.g.
-# "workspace/jdoe/box-12"), i.e. cask:/workspace/[username]/[collection]: scans
+# Workspace folders — keyed "workspace/[username]/[folder]" (e.g.
+# "workspace/jdoe/box-12"), i.e. cask:/workspace/[username]/[folder]: scans
 # staged before they have an ARK or a bronze copy (see digtk.models.workspace).
 # Kept in sync with CaskFS by lib.sensors.workspace_partition_sync_sensor; used by
-# lib.pipeline_workspace's process_workspace_job and promote_workspace_job.
+# lib.pipeline_workspace's workspace_process_job and workspace_promote_job.
 workspace_partitions = dg.DynamicPartitionsDefinition(name="workspace")
 
 
@@ -52,6 +52,10 @@ workspace_partitions = dg.DynamicPartitionsDefinition(name="workspace")
 # Gold app targets — used by promotion/indexing configs, not by ingest (ingest
 # always lands in bronze; an item only reaches a gold app once promoted).
 GOLD_APPS = Literal["arda", "digital-dev", "digital-prod"]
+# "" = no enhancement, see image_magick.prep_ocr.
+OCR_ENHANCE = Literal["", "auto", "gray"]
+TAG_MODE = Literal["auto", "inplace", "rebuild"]
+GEOMETRY = Literal["tesseract", "qwen"]
 
 
 class IngestItemConfig(Config):
@@ -173,7 +177,7 @@ class DerivativesConfig(Config):
 
 
 class CollectionDerivativesConfig(DerivativesConfig):
-    """Config for lib.pipeline_fanout.process_collection_job — DerivativesConfig
+    """Config for lib.pipeline_fanout.showcase_process_collection_job — DerivativesConfig
     plus the fan-out's step cap.
 
     :param str widths: Comma-separated thumbnail widths.
@@ -187,7 +191,7 @@ class CollectionDerivativesConfig(DerivativesConfig):
 
 
 class ItemRunConfig(CollectionDerivativesConfig):
-    """Config for lib.pipeline_item.process_item_job — one item, addressed by
+    """Config for lib.pipeline_item.showcase_process_item_job — one item, addressed by
     its bronze tree folder, plus CollectionDerivativesConfig's widths/max_steps.
 
     `item` defaults to "" only because lib.utils.default_run_config() builds
@@ -209,7 +213,7 @@ class ItemRunConfig(CollectionDerivativesConfig):
 
 
 class ReindexCollectionConfig(Config):
-    """Config for lib.pipeline_index.reindex_collection_job.
+    """Config for lib.pipeline_index.showcase_reindex_collection_job.
 
     :param bool rebuild: Rebuild each gold item record before indexing.
     :param bool prune: Delete indexed items no longer in bronze.
@@ -223,8 +227,8 @@ class ReindexCollectionConfig(Config):
 
 
 class CaskChangesConfig(Config):
-    """Config for lib.pipeline_index.apply_cask_changes_job, filled in by
-    bronze_cask_audit_sensor. Items to process are queued as process_item_job runs instead.
+    """Config for lib.pipeline_index.showcase_apply_cask_changes_job, filled in by
+    bronze_cask_audit_sensor. Items to process are queued as showcase_process_item_job runs instead.
 
     :param list[str] reindex: Bronze item folders to rebuild and reindex.
     :param list[str] delete: Item ARKs to delete from the showcase index.
@@ -238,7 +242,7 @@ class CaskChangesConfig(Config):
 
 
 class DeleteItemIndexConfig(Config):
-    """Config for lib.pipeline_index.delete_item_index_job.
+    """Config for lib.pipeline_index.showcase_delete_item_index_job.
 
     `ark` defaults to "" only so default_run_config() can build launchpad defaults.
 
@@ -260,11 +264,15 @@ class OcrConfig(Config):
     :param bool vision: Also run Qwen vision OCR for the transcript text.
         Not a quality gate (see digtk.models.ocr's module docstring) — set
         False only for cost control on a large batch.
+    :param str ocr_enhance: Contrast boost for faded originals ("", auto, gray).
+    :param bool ocr_text_pages: Also OCR PDF pages that have text.
     """
     lang: str = Field("eng", description="Tesseract language code.")
     psm: int = Field(1,     description="Page segmentation mode.")
     oem: int = Field(3,     description="OCR engine mode.")
     vision: bool = Field(True, description="Also run Qwen vision OCR for the transcript.")
+    ocr_enhance: OCR_ENHANCE = Field("", description="Contrast boost for faded originals.")
+    ocr_text_pages: bool = Field(False, description="Also OCR PDF pages that already have text.")
 
 
 class SearchIndexConfig(Config):
@@ -286,9 +294,21 @@ class AltTextConfig(Config):
         collection is), passed through to digtk.models.alt_utils.build_alt_prompt().
     :param bool want_description: Also generate a 2-4 sentence catalog description.
     :param int max_alt_chars: Maximum alt-text length in characters.
+    :param bool want_long: Long descriptions for maps, charts, posters.
     """
     collection_context: str = Field("", description="Collection-specific prompt context.")
     want_description: bool = Field(False, description="Also generate a catalog description.")
+    want_long: bool = Field(False, description="Long descriptions for information-dense images.")
+    max_alt_chars: int = Field(150, description="Maximum alt-text length in characters.")
+
+
+class FiguresConfig(Config):
+    """Config for the detect_figures asset.
+
+    :param str collection_context: Collection-specific alt-text prompt context.
+    :param int max_alt_chars: Maximum alt-text length in characters.
+    """
+    collection_context: str = Field("", description="Collection-specific prompt context.")
     max_alt_chars: int = Field(150, description="Maximum alt-text length in characters.")
 
 
@@ -302,15 +322,37 @@ class TagPdfConfig(Config):
         Table/TR/TD (one extra Samwise call per page, cached).
     :param bool validate: Run veraPDF on the tagged PDF and include the
         compliance result.
+    :param int lookahead: How far a layout block may match past the cursor.
+    :param float min_conf: Drop hOCR words below this confidence (0-100).
+    :param str ocr_enhance: Contrast boost for faded originals ("", auto, gray).
+    :param bool paragraphs: One /P per layout text block (needs tables).
+    :param bool reuse_ocr: Reuse run_ocr's word boxes when they match.
+    :param bool correct: Fix text-layer spelling from the vision transcript.
+    :param bool skip_existing: Skip documents whose outputs already exist.
+    :param str mode: tag-pdf only: auto, inplace or rebuild.
+    :param bool embed_fonts: tag-pdf in place: embed missing fonts first.
+    :param bool figures: Tag in-page figures (detects pages not yet done).
+    :param str geometry: Text layer from tesseract or qwen (handwriting).
     """
     lang: str = Field("en-US", description="Document language for tagging.")
     strict: bool = Field(False, description="Demote unaccounted-for lines to artifacts.")
     tables: bool = Field(False, description="Vision layout pass for Table/TR/TD structure.")
     validate: bool = Field(True, description="Run veraPDF on the tagged PDF.")
+    lookahead: int = Field(40, description="How far a layout block may match past the cursor.")
+    min_conf: float = Field(0.0, description="Drop hOCR words below this confidence (0-100).")
+    ocr_enhance: OCR_ENHANCE = Field("", description="Contrast boost for faded originals.")
+    paragraphs: bool = Field(False, description="One paragraph per layout text block (needs tables).")
+    reuse_ocr: bool = Field(True, description="Reuse run_ocr's word boxes when they match.")
+    correct: bool = Field(False, description="Fix text-layer spelling from the vision transcript.")
+    skip_existing: bool = Field(False, description="Skip documents whose outputs already exist.")
+    mode: TAG_MODE = Field("auto", description="tag-pdf only: auto (in place if any page has text), inplace, rebuild.")
+    embed_fonts: bool = Field(True, description="tag-pdf in place: embed missing fonts with Ghostscript first.")
+    figures: bool = Field(False, description="Tag in-page figures with alt text (detects pages not yet done).")
+    geometry: GEOMETRY = Field("tesseract", description="Text layer: tesseract, or qwen for handwriting.")
 
 
 class WorkspaceRunConfig(Config):
-    """Config for lib.pipeline_workspace.process_workspace_job's fan_out_workspace op —
+    """Config for lib.pipeline_workspace.workspace_process_job's fan_out_workspace op —
     which `digtk workspace run` steps to run, plus each step's tuning options
     (the same fields as SplitSpreadsConfig/OcrConfig/AltTextConfig/TagPdfConfig).
 
@@ -330,40 +372,70 @@ class WorkspaceRunConfig(Config):
     :param bool split_detect: Run split-spreads detect.
     :param bool split_apply: Run split-spreads apply.
     :param bool ocr: Run Tesseract + vision OCR.
+    :param bool ocr_correct: Correct OCR words from the vision transcript.
     :param bool alt_text: Generate alt text.
+    :param bool pdf_build: Build image folders into one tagged PDF.
     :param bool tag_pdf: Build tagged PDF/UA-1 PDFs (PDF items only).
     :param int max_px: split-detect render width.
     :param str lang: Tesseract language code.
     :param int psm: Page segmentation mode.
     :param int oem: OCR engine mode.
     :param bool vision: Also run Qwen vision OCR for the transcript.
+    :param str ocr_enhance: ocr/tag-pdf contrast boost ("", auto, gray).
     :param str collection_context: alt-text prompt context.
     :param bool want_description: Also generate a catalog description.
+    :param bool want_long: Long descriptions for information-dense images.
     :param int max_alt_chars: Maximum alt-text length.
     :param str doc_lang: tag-pdf document language (BCP-47).
     :param bool tables: tag-pdf vision layout pass for tables.
+    :param bool strict: tag-pdf demotes unmatched lines to artifacts.
+    :param int lookahead: tag-pdf layout match lookahead.
+    :param bool paragraphs: tag-pdf one /P per layout text block.
+    :param bool reuse_ocr: tag-pdf reuses the ocr step's word boxes.
+    :param bool correct: tag-pdf fixes spelling from the transcript.
+    :param bool skip_existing: Skip pages and documents already done.
+    :param bool ocr_text_pages: ocr also OCRs PDF pages with text.
+    :param str mode: tag-pdf mode: auto, inplace or rebuild.
+    :param bool embed_fonts: tag-pdf in place embeds missing fonts.
+    :param bool figures: Run the figures step and tag figures.
+    :param str geometry: tag-pdf/pdf-build text layer source.
     :param float min_conf: tag-pdf minimum hOCR word confidence (0-100).
     :param bool validate: Run veraPDF on each tagged PDF.
     :param int max_steps: Most steps each fan-out (files, folders) may produce;
         past that, several share a step (see lib.fanout_batching). 0 = never batch.
     """
-    split_detect: bool = Field(True, description="Run split-spreads detect.")
-    split_apply: bool = Field(True, description="Run split-spreads apply (re-run alone after correcting gutters.json).")
-    ocr: bool = Field(True, description="Run Tesseract + vision OCR.")
-    alt_text: bool = Field(True, description="Generate alt text.")
-    tag_pdf: bool = Field(True, description="Build tagged PDF/UA-1 PDFs (PDF items only).")
+    split_detect: bool = Field(False, description="Run split-spreads detect.")
+    split_apply: bool = Field(False, description="Run split-spreads apply (re-run alone after correcting gutters.json).")
+    ocr: bool = Field(False, description="Run Tesseract + vision OCR.")
+    ocr_correct: bool = Field(False, description="Correct OCR words from the vision transcript.")
+    alt_text: bool = Field(False, description="Generate alt text.")
+    pdf_build: bool = Field(False, description="Build each image folder into one tagged PDF (after the file steps).")
+    tag_pdf: bool = Field(False, description="Build tagged PDF/UA-1 PDFs (PDF items only).")
     max_px: int = Field(1400, description="split-detect: render width, in pixels.")
     lang: str = Field("eng", description="ocr: Tesseract language code.")
     psm: int = Field(1, description="ocr: page segmentation mode.")
     oem: int = Field(3, description="ocr: OCR engine mode.")
-    vision: bool = Field(True, description="ocr: also run Qwen vision OCR for the transcript.")
+    vision: bool = Field(False, description="ocr: also run Qwen vision OCR for the transcript.")
+    ocr_enhance: OCR_ENHANCE = Field("", description="ocr/tag-pdf: contrast boost for faded originals.")
     collection_context: str = Field("", description="alt-text: collection-specific prompt context.")
-    want_description: bool = Field(True, description="alt-text: also generate a catalog description.")
+    want_description: bool = Field(False, description="alt-text: also generate a catalog description.")
+    want_long: bool = Field(False, description="alt-text: long descriptions for information-dense images.")
     max_alt_chars: int = Field(150, description="alt-text: maximum alt-text length.")
     doc_lang: str = Field("en-US", description="tag-pdf: document language.")
     tables: bool = Field(False, description="tag-pdf: vision layout pass for Table/TR/TD structure.")
+    strict: bool = Field(False, description="tag-pdf: demote unmatched lines to artifacts.")
+    lookahead: int = Field(40, description="tag-pdf: how far a layout block may match past the cursor.")
+    paragraphs: bool = Field(False, description="tag-pdf: one paragraph per layout text block (needs tables).")
+    reuse_ocr: bool = Field(False, description="tag-pdf: reuse the ocr step's word boxes when they match.")
+    correct: bool = Field(False, description="tag-pdf: fix text-layer spelling from the vision transcript.")
+    skip_existing: bool = Field(False, description="Skip pages and documents whose outputs already exist.")
+    ocr_text_pages: bool = Field(False, description="ocr: also OCR PDF pages that already have text.")
+    mode: TAG_MODE = Field("auto", description="tag-pdf: auto (in place if any page has text), inplace, rebuild.")
+    embed_fonts: bool = Field(False, description="tag-pdf: embed missing fonts with Ghostscript when tagging in place.")
+    figures: bool = Field(False, description="Detect and describe in-page figures, and tag them in tag-pdf/pdf-build.")
+    geometry: GEOMETRY = Field("tesseract", description="tag-pdf/pdf-build text layer: tesseract, or qwen for handwriting.")
     min_conf: float = Field(0.0, description="tag-pdf: drop hOCR words below this confidence (0-100).")
-    validate: bool = Field(True, description="tag-pdf: run veraPDF on the tagged PDF.")
+    validate: bool = Field(False, description="tag-pdf: run veraPDF on the tagged PDF.")
     max_steps: int = Field(
         DEFAULT_MAX_STEPS, description="Most steps per fan-out; more files/folders are batched into shared steps. 0 = never batch.",
     )
@@ -372,8 +444,8 @@ class WorkspaceRunConfig(Config):
 class PromoteItemConfig(Config):
     """One workspace item to promote, and the ARK it was ingested under.
 
-    :param str source: Item folder under the collection's source/ ("" for
-        source/ itself — the usual case, a collection holding a single item).
+    :param str source: Item folder under the workspace folder's source/ (""
+        for source/ itself — the usual case, a folder holding a single item).
     :param str ark: The item's ARK in bronze, e.g. "ark:/87287/d3bv7b33r".
     """
     source: str = Field("", description="Item folder under source/ (\"\" = source/ itself).")
@@ -381,13 +453,13 @@ class PromoteItemConfig(Config):
 
 
 class PromoteWorkspaceConfig(Config):
-    """Config for lib.pipeline_workspace.promote_workspace_job — which reviewed
+    """Config for lib.pipeline_workspace.workspace_promote_job — which reviewed
     workspace items to copy into silver, and under which ARKs (see
     `digtk workspace promote`).
 
     Three ways to say what to promote, which can be combined:
-      - `ark` (+ `source`) for one item — `source` defaults to the collection's
-        source/ itself, the case where the collection is a single item;
+      - `ark` (+ `source`) for one item — `source` defaults to the workspace
+        folder's source/ itself, the case where the folder is a single item;
       - `items`, a list of {source, ark} pairs;
       - `ark_from_folder` + `naan`, for a batch whose item folders are named
         after their ARK ids (e.g. source/d3bv7b33r -> ark:/87293/d3bv7b33r):
@@ -409,7 +481,7 @@ class PromoteWorkspaceConfig(Config):
     ark: str = Field("", description="ARK for the item at `source` (the usual single-item case).")
     source: str = Field("", description="Item folder under source/ for `ark` (\"\" = source/ itself).")
     items: list[PromoteItemConfig] = Field(
-        default_factory=list, description="More {source, ark} pairs, for a collection with several items.",
+        default_factory=list, description="More {source, ark} pairs, for a workspace folder with several items.",
     )
     ark_from_folder: bool = Field(
         False, description="Promote every item folder as ark:/<naan>/<folder name> (folders named by ARK id).",

@@ -10,8 +10,8 @@ directory under PUBLIC_FRONTEND_DIR, named after the source's own bronze filenam
 flat inside, with no further nested content-kind subfolder, since this is the only
 kind of output audio produces here.
 
-Each source audio file gets one AudioObject associatedMedia entry in the item's gold
-record (see media_objects()), tagged with its own filename stem as 'identifier' so
+Each source audio file gets one AudioObject associatedMedia entry in the item's
+showcase search document (see media_objects()), tagged with its own filename stem as 'identifier' so
 digtk.models.digital_website.captions.attach_captions() can attach its caption to the
 right entry. Captions themselves are unaffected by this module's layout — they still
 publish into their own flat, shared 'captions/' directory.
@@ -51,7 +51,7 @@ def transcode(target, opts={}):
     """Transcode every source audio file to another format.
 
     Ad hoc/manual use, mirroring digtk.models.digital_website.image.convert(); derivatives()
-    is what Dagster's derivatives_job actually calls. Publishes into the same location
+    is what Dagster's showcase_derivatives_job actually calls. Publishes into the same location
     derivatives() would: `public-frontend-derivatives/<filename>/`. Note this overwrites
     that directory's manifest with one describing only the converted file — run
     derivatives() afterward to restore a manifest covering the full set if that matters.
@@ -208,7 +208,7 @@ def media_objects(item):
     """The item's "audio" associatedMedia entries — one AudioObject per source
     audio file, pointing at its published transcoded copy — rebuilt from each
     source's manifest.json. Read by
-    digtk.models.digital_website.item_record.build().
+    digtk.lib.showcase_index._silver_media().
 
     :param digtk.lib.items.ItemLocation item: Resolved item location.
     :returns: AudioObject entries, each tagged with its source's filename stem

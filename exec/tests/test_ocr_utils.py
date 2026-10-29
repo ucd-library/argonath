@@ -339,3 +339,84 @@ def test_run_tesseract_reads_rendered_text(tmp_path):
 def test_run_tesseract_missing_image_raises(tmp_path):
     with pytest.raises(ocr_utils.TesseractError):
         ocr_utils.run_tesseract(str(tmp_path / "nope.png"), str(tmp_path / "o"))
+
+
+# --- correct_words ------------------------------------------------------------
+
+def _words(text):
+    return [{"text": t, "bbox": [0, 0, 1, 1]} for t in text.split()]
+
+
+def _corrected(ocr_text, model_text, opts={}):
+    words = _words(ocr_text)
+    changes = ocr_utils.correct_words(words, model_text, opts)
+    return [w["text"] for w in words], changes
+
+
+def test_correct_words_fixes_a_misread_word():
+    texts, changes = _corrected("The quick hrown fox", "The quick brown fox")
+    assert texts == ["The", "quick", "brown", "fox"]
+    assert changes == [{"i": 2, "old": "hrown", "new": "brown"}]
+
+
+def test_correct_words_splits_an_ocr_join():
+    texts, _ = _corrected("rising further.Increasing costs", "rising further. Increasing costs")
+    assert texts == ["rising", "further. Increasing", "costs"]
+
+
+def test_correct_words_never_changes_digits():
+    texts, changes = _corrected("value 0.7220 here", "value 0.6352 here")
+    assert texts == ["value", "0.7220", "here"]
+    assert changes == []
+
+
+def test_correct_words_allows_splitting_numbers():
+    texts, _ = _corrected("in 1976.A study", "in 1976. A study")
+    assert texts == ["in", "1976. A", "study"]
+
+
+def test_correct_words_skips_short_tokens():
+    texts, _ = _corrected("see WQ there", "see w there")
+    assert texts == ["see", "WQ", "there"]
+
+
+def test_correct_words_keeps_ocr_punctuation_and_typography():
+    texts, changes = _corrected("the latter's view", "the latter’s view")
+    assert texts == ["the", "latter's", "view"]
+    assert changes == []
+
+
+def test_correct_words_case_only_needs_ocr_signature():
+    texts, _ = _corrected("a succesS story COWS", "a success story cows")
+    assert texts == ["a", "success", "story", "COWS"]
+
+
+def test_correct_words_never_drops_letters():
+    texts, _ = _corrected("about Slaughtering cattle", "about Slaughter cattle")
+    assert texts == ["about", "Slaughtering", "cattle"]
+
+
+def test_correct_words_rejects_text_outside_cp1252():
+    texts, _ = _corrected("the Na2CO3 salt", "the Na₂CO₃ salt")
+    assert texts == ["the", "Na2CO3", "salt"]
+
+
+def test_correct_words_skips_second_half_of_hyphenated_break():
+    texts, _ = _corrected("the tem- perature rose", "the temperature rose")
+    assert texts == ["the", "tem-", "perature", "rose"]
+
+
+def test_correct_words_leaves_poorly_aligned_pages_alone():
+    texts, changes = _corrected("alpha beta gamma delta", "one two three four five six")
+    assert changes == []
+
+
+def test_correct_words_ignores_blank_or_empty_transcript():
+    assert _corrected("hello wrold", "[BLANK]")[1] == []
+    assert _corrected("hello wrold", "")[1] == []
+    assert ocr_utils.correct_words([], "text") == []
+
+
+def test_correct_words_min_sim_opt():
+    _, strict = _corrected("the hrown fox", "the brown fox", {"min_sim": 0.95})
+    assert strict == []

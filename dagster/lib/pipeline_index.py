@@ -8,13 +8,12 @@ import json
 from dagster import (
     AssetMaterialization, DynamicOut, DynamicOutput, In, MetadataValue, OpExecutionContext, Out, Output, job, op,
 )
-from dagster_celery import celery_executor
 
 from lib.configs import CaskChangesConfig, DeleteItemIndexConfig, ReindexCollectionConfig, collections_partitions
-from lib.fanout_batching import log_batch, relative_id, step_key
+from lib.fanout_batching import emit, log_batch, relative_id, step_key
 from lib.pipeline_collection import pdc_index_collection
-from lib.pipeline_fanout import _emit, fetch_items_for_collection
-from lib.utils import default_run_config, exec
+from lib.pipeline_fanout import fetch_items_for_collection
+from lib.utils import celery_job_executor, default_run_config, exec
 
 
 @op(out={"batches": DynamicOut(dict, is_required=False), "settings": Out(dict)})
@@ -79,13 +78,13 @@ def _index_folders(context, task):
         result = exec(cmd)
     except Exception as e:
         for item_id in task["ids"]:
-            _emit(context, "es-index", item_id, None, status="failed", partition=key, error=str(e))
+            emit(context, "es-index", item_id, None, status="failed", partition=key, error=str(e))
         return {"indexed": 0, "skipped": 0, "failed": list(task["ids"])}
 
     for entry in result.get("indexed", []):
-        _emit(context, "es-index", relative_id(entry["folder"], key), entry, partition=key, item_ark=entry["ark"])
+        emit(context, "es-index", relative_id(entry["folder"], key), entry, partition=key, item_ark=entry["ark"])
     for entry in result.get("failed", []):
-        _emit(
+        emit(
             context, "es-index", relative_id(entry["folder"], key), None, status="failed",
             partition=key, error=entry["error"],
         )
@@ -135,7 +134,7 @@ def prune_collection_index(context: OpExecutionContext, results: list, settings:
         context.log.error(f"{key}: prune failed -> {e}")
         return {**summary, "prune_error": str(e)}
     for orphan in result.get("orphans", []):
-        _emit(context, "es-prune", orphan, result, partition=key)
+        emit(context, "es-prune", orphan, result, partition=key)
     return {**summary, "prune": {"deleted": result.get("items", 0), "pages": result.get("pages", 0)}}
 
 
@@ -159,13 +158,13 @@ def check_reindex_failures(summary: dict):
 @job(
     partitions_def=collections_partitions,
     tags={"group": "fanout", "argonath/kind": "collection-reindex", "dagster/max_runtime": "0"},
-    executor_def=celery_executor,
+    executor_def=celery_job_executor(),
     config=default_run_config({"fan_out_reindex_tasks": ReindexCollectionConfig}),
 )
-def reindex_collection_job():
+def showcase_reindex_collection_job():
     """Bulk-reindex a collection's items into the showcase ES index without
     making derivatives, prune orphans, then refresh the collection document
-    the same way collection_rollup_job does.
+    the same way showcase_collection_rollup_job does.
     """
     batches, settings = fan_out_reindex_tasks()
     results = batches.map(reindex_batch).collect()
@@ -182,7 +181,7 @@ def _log_changes(context, key, config):
     rows = [(relative_id(f, key), "reindex") for f in config.reindex]
     rows += [(relative_id(f, key), "delete") for f in config.cleanup]
     for item_id, action in rows:
-        _emit(context, "cask_change", item_id, {"action": action}, partition=key, action=action)
+        emit(context, "cask_change", item_id, {"action": action}, partition=key, action=action)
     if not rows:
         context.log.info(f"{key}: collection files changed, no items")
         return
@@ -199,7 +198,7 @@ def _log_changes(context, key, config):
 @op(out=Out(dict))
 def plan_cask_changes(context: OpExecutionContext, config: CaskChangesConfig) -> dict:
     """Log the collection's reindex, delete and cleanup changes.
-    Items to process run as process_item_job instead.
+    Items to process run as showcase_process_item_job instead.
 
     :param context: Dagster op execution context; partitioned by collection.
     :param config: CaskChangesConfig.
@@ -264,7 +263,7 @@ def delete_cask_removed(context: OpExecutionContext, summary: dict, settings: di
         context.log.error(f"{key}: delete failed -> {e}")
         return {**summary, "delete_error": str(e)}
     for entry in result.get("deleted", []):
-        _emit(context, "es-delete", entry["ark"], entry, partition=key)
+        emit(context, "es-delete", entry["ark"], entry, partition=key)
     if result.get("errors"):
         return {**summary, "delete_error": json.dumps(result["errors"])}
     return {**summary, "deleted": result.get("items", 0)}
@@ -294,7 +293,7 @@ def clean_cask_removed(context: OpExecutionContext, summary: dict, settings: dic
         return {**summary, "delete_error": f"cleanup: {e}"}
     for entry in result.get("removed", []):
         context.log.info(f"[{relative_id(entry['folder'], key)}] removed {entry['path']} ({entry['files']} file(s))")
-        _emit(
+        emit(
             context, "cleanup", relative_id(entry["folder"], key), entry, partition=key,
             path=entry["path"], files=entry["files"],
         )
@@ -306,10 +305,10 @@ def clean_cask_removed(context: OpExecutionContext, summary: dict, settings: dic
 @job(
     partitions_def=collections_partitions,
     tags={"argonath/kind": "cask-changes", "dagster/max_runtime": "0"},
-    executor_def=celery_executor,
+    executor_def=celery_job_executor(),
     config=default_run_config({"plan_cask_changes": CaskChangesConfig}),
 )
-def apply_cask_changes_job():
+def showcase_apply_cask_changes_job():
     """Apply bronze_cask_audit_sensor's non-processing changes for one collection.
     Reindexes metadata edits, deletes removed items from ES and silver/gold,
     then refreshes the collection doc.
@@ -338,7 +337,7 @@ def delete_collection_index(context: OpExecutionContext):
 
 
 @job(partitions_def=collections_partitions, tags={"argonath/kind": "collection-delete"})
-def delete_collection_index_job():
+def showcase_delete_collection_index_job():
     """Remove a collection and everything in it from the showcase ES indexes.
     Cask and Postgres are left alone.
     """
@@ -381,9 +380,9 @@ def refresh_collection_index(context: OpExecutionContext, collection_key: str):
 
 @job(
     tags={"argonath/kind": "item-delete"},
-    config=default_run_config({"delete_item_index": DeleteItemIndexConfig}, {"celery": False}),
+    config=default_run_config({"delete_item_index": DeleteItemIndexConfig}),
 )
-def delete_item_index_job():
+def showcase_delete_item_index_job():
     """Remove one item from the showcase ES indexes and refresh its collection
     doc. The item returns on the next reindex if it's still in bronze.
     """

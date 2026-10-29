@@ -133,6 +133,15 @@ def test_ocr_image_renders_the_orientation_comparisons_winner(
     assert len(fake_magick["prep_ocr"]) == 3
 
 
+def test_display_image_renders_unbinarized_with_same_opts(tmp_path, fake_magick):
+    dest = prep.display_image(PAGE, str(tmp_path), opts={"deskew": True, "enhance": "auto"})
+
+    assert dest == str(tmp_path / "document-page-001-display.jpg")
+    call = fake_magick["prep_ocr"][0]
+    assert call["src"] == PAGE["local_path"]
+    assert call["opts"] == {"deskew": True, "enhance": "auto", "binarize": False}
+
+
 def test_vision_image_defaults_to_the_largest_thumbnail_width(tmp_path, fake_magick):
     dest = prep.vision_image(PAGE, str(tmp_path))
 
@@ -149,3 +158,8 @@ def test_vision_image_honors_vision_width(tmp_path, fake_magick):
 
     assert dest == str(tmp_path / "photo-vision.jpg")
     assert fake_magick["thumbnail"][0]["width"] == 800
+
+
+def test_natural_key_orders_numbers_by_value():
+    names = ["page_10.tif", "page_2.tif", "Page_1.tif", "cover.tif"]
+    assert sorted(names, key=prep.natural_key) == ["cover.tif", "Page_1.tif", "page_2.tif", "page_10.tif"]

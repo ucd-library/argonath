@@ -22,7 +22,9 @@ def test_run_splits_steps_and_builds_step_opts(monkeypatch):
 
     result = runner.invoke(app, [
         "workspace", "run", "./scans", "--steps", "ocr, tag-pdf",
-        "--no-vision", "--tables", "--min-conf", "60", "--collection", "box-12",
+        "--no-vision", "--tables", "--min-conf", "60", "--folder", "box-12",
+        "--strict", "--lookahead", "80", "--ocr-enhance", "gray", "--long", "--paragraphs", "--correct", "--skip-existing",
+        "--mode", "inplace", "--ocr-text-pages", "--figures", "--geometry", "qwen",
         "--reporting-job-id", "run-1",
     ])
 
@@ -30,8 +32,21 @@ def test_run_splits_steps_and_builds_step_opts(monkeypatch):
     assert seen["target"] == "./scans"
     assert seen["opts"]["steps"] == ["ocr", "tag-pdf"]
     assert seen["opts"]["step_opts"]["ocr"]["vision"] is False
-    assert seen["opts"]["step_opts"]["tag-pdf"] == {"lang": "en-US", "tables": True, "min_conf": 60.0, "validate": True}
-    assert seen["opts"]["collection"] == "box-12"
+    assert seen["opts"]["step_opts"]["ocr"]["enhance"] == "gray"
+    assert seen["opts"]["step_opts"]["alt-text"]["want_long"] is True
+    assert seen["opts"]["step_opts"]["ocr"]["skip_existing"] is True
+    tag_opts = seen["opts"]["step_opts"]["tag-pdf"]
+    assert seen["opts"]["step_opts"]["pdf-build"] == {
+        k: v for k, v in tag_opts.items() if k not in ("mode", "embed_fonts")}
+    assert seen["opts"]["step_opts"]["ocr"]["ocr_text_pages"] is True
+    assert seen["opts"]["step_opts"]["figures"] == {"collection_context": "", "max_alt_chars": 150}
+    assert seen["opts"]["step_opts"]["tag-pdf"] == {
+        "lang": "en-US", "tables": True, "strict": True, "lookahead": 80, "paragraphs": True,
+        "reuse_ocr": True, "correct": True, "skip_existing": True, "figures": True, "geometry": "qwen",
+        "mode": "inplace", "embed_fonts": True,
+        "min_conf": 60.0, "validate": True, "enhance": "gray",
+    }
+    assert seen["opts"]["folder"] == "box-12"
     assert seen["opts"]["reporting_job_id"] == "run-1"
     assert seen["opts"]["files"] == []
 
@@ -63,14 +78,14 @@ def test_promote_forwards_ark_and_flags(monkeypatch):
                     "opts": {"replace": False, "dry_run": True}}
 
 
-def test_ls_returns_collections(monkeypatch):
-    collections = [{"username": "jdoe", "collection": "box-12", "key": "jdoe/box-12", "path": "cask:/workspace/jdoe/box-12"}]
-    monkeypatch.setattr(workspace_model, "list_collections", lambda opts={}: collections)
+def test_ls_returns_folders(monkeypatch):
+    folders = [{"username": "jdoe", "folder": "box-12", "key": "workspace/jdoe/box-12", "path": "cask:/workspace/jdoe/box-12"}]
+    monkeypatch.setattr(workspace_model, "list_folders", lambda opts={}: folders)
 
     result = runner.invoke(app, ["workspace", "ls"])
 
     assert result.exit_code == 0
-    assert last_json_line(result.output) == {"status": "success", "collections": collections}
+    assert last_json_line(result.output) == {"status": "success", "folders": folders}
 
 
 def test_run_routes_errors_through_utils_error(monkeypatch):

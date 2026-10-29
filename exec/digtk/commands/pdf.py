@@ -10,7 +10,7 @@ Subcommands:
   derivatives  — generate the full derivative set for every page of every source PDF,
                  with orientation auto-detection (thumbnails, deskew, OCR-prep, a
                  tiled pyramid TIFF for future IIIF-style deep-zoom serving) — this
-                 is what Dagster's derivatives_job calls; the others above are
+                 is what Dagster's showcase_derivatives_job calls; the others above are
                  deterministic single-page recipes for ad-hoc/manual use.
 """
 from typing import Annotated

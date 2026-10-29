@@ -4,7 +4,7 @@ Workspace staging for the root-level tools (ocr, accessibility, split-spreads)
 
 Layout, per docs/cask-conventions.md's workspace section:
 
-  /workspace/[username]/[collection]/
+  /workspace/[username]/[folder]/
     source/        staged source binaries (a local folder's contents, as-is)
     derivatives/   every tool output, mirroring source/'s item paths
 
@@ -22,7 +22,7 @@ outputs into silver once it has a bronze copy and an ARK (promote()).
 import os
 
 from digtk.lib import derivative, fs, items, reporting, utils
-from digtk.models import accessibility, ocr, split
+from digtk.models import accessibility, figures, ocr, split
 from digtk.models import collection as collection_model
 from digtk.models import prep
 
@@ -37,7 +37,10 @@ STEPS = {
     "split-detect": (split.detect, {"image"}),
     "split-apply": (split.apply, {"image"}),
     "ocr": (ocr.run_ocr, {"image", "pdf"}),
+    "ocr-correct": (ocr.correct_ocr, {"image", "pdf"}),
     "alt-text": (accessibility.generate_alt_text, {"image", "pdf"}),
+    "figures": (accessibility.detect_figures, {"image", "pdf"}),
+    "pdf-build": (accessibility.build_pdf, {"image"}),
     "tag-pdf": (accessibility.tag_pdf, {"pdf"}),
 }
 STEP_ORDER = list(STEPS)
@@ -45,7 +48,7 @@ STEP_ORDER = list(STEPS)
 # Steps that work across a whole item folder rather than file by file —
 # split-spreads keeps one gutters.json and one set of contact sheets per item,
 # so it can't be split into one run per file (see run()'s 'files' opt).
-FOLDER_STEPS = {"split-detect", "split-apply"}
+FOLDER_STEPS = {"split-detect", "split-apply", "pdf-build"}
 
 # Top-level output directories each tool writes under an item's derivatives/ root
 # (plus a PDF stem, for OCR's namespaced per-PDF text/ dirs — see models/ocr.py).
@@ -53,24 +56,24 @@ _TOOL_DIRS = {ocr.TEXT_DIR, "accessibility", "split-spreads"}
 
 
 def stage(local_dir, opts={}):
-    """Upload a local folder into a workspace collection's source/ directory.
+    """Upload a local folder into a workspace folder's source/ directory.
 
     Re-running over the same folder only transfers what's changed (`cask cp`
     does its own hash-based sync — see digtk.models.collection.add()).
 
     :param str local_dir: Local directory to upload.
-    :param dict opts: 'collection' (str, default the folder's own name),
+    :param dict opts: 'folder' (str, default the local folder's own name),
         'username' (str, default the current OS user), 'yes' (bool, default True
         — skip cask cp's confirmation prompt), 'env' (cask CLI environment),
         'replace' (bool), 'run' (injectable subprocess.run, for tests).
-    :returns: The workspace collection root, e.g. 'cask:/workspace/jdoe/box-12'.
+    :returns: The workspace folder root, e.g. 'cask:/workspace/jdoe/box-12'.
     :rtype: str
     :raises ValueError: If `local_dir` isn't a directory.
     :raises subprocess.CalledProcessError: If cask cp fails.
     """
     if not os.path.isdir(local_dir):
         raise ValueError(f"not a local directory: {local_dir}")
-    collection = opts.get("collection") or os.path.basename(os.path.abspath(local_dir))
+    folder = opts.get("folder") or os.path.basename(os.path.abspath(local_dir))
     add_opts = {
         "username": opts.get("username"),
         "subdir": items.WORKSPACE_SOURCE_DIR,
@@ -81,9 +84,9 @@ def stage(local_dir, opts={}):
     if opts.get("run"):
         add_opts["run"] = opts["run"]
 
-    root = collection_model.dest_path("workspace", collection, {"username": add_opts["username"]})
+    root = collection_model.dest_path("workspace", folder, {"username": add_opts["username"]})
     utils.log(f"Staging {local_dir} -> cask:{root}/{items.WORKSPACE_SOURCE_DIR}")
-    collection_model.add(local_dir, "workspace", collection, add_opts)
+    collection_model.add(local_dir, "workspace", folder, add_opts)
     return f"cask:{root}"
 
 
@@ -91,7 +94,7 @@ def resolve_targets(target, opts={}):
     """Resolve any accepted target to the item(s) it covers.
 
     :param str|digtk.lib.items.ItemLocation target: An ARK (one bronze item), a
-        bronze item folder (one bronze item, resolved by path — see
+        bronze item folder, with or without 'cask:' (one bronze item, resolved by path — see
         items.resolve_path()), a 'cask:/workspace/...' path (every item at or
         under it — see items.list_workspace_items()), a local directory
         (staged first, see stage(), then treated like its workspace path), or
@@ -106,6 +109,8 @@ def resolve_targets(target, opts={}):
         return [target]
     if target.startswith("ark:/"):
         return [items.resolve(target)]
+    if target.startswith("cask:/bronze/"):
+        return [items.resolve_path(target)]
     if not target.startswith("cask:"):
         if os.path.isdir(target):
             target = stage(target, opts)
@@ -164,13 +169,13 @@ def _overall_status(results):
     return "partial" if any(r.get("status") == "partial" for r in results) else "success"
 
 
-def list_collections(opts={}):
-    """List workspace collections (anything with a source/ directory).
+def list_folders(opts={}):
+    """List workspace folders (anything with a source/ directory).
 
-    :param dict opts: 'username' (str) — only this user's collections.
-    :returns: [{"username": str, "collection": str,
-        "key": "workspace/username/collection" (Dagster's workspace partition key),
-        "path": "cask:/workspace/username/collection"}], sorted by key.
+    :param dict opts: 'username' (str) — only this user's folders.
+    :returns: [{"username": str, "folder": str,
+        "key": "workspace/username/folder" (Dagster's workspace partition key),
+        "path": "cask:/workspace/username/folder"}], sorted by key.
     :rtype: list[dict]
     """
     base = f"cask:{items.WORKSPACE_PREFIX.rstrip('/')}"
@@ -188,7 +193,7 @@ def list_collections(opts={}):
             children = fs.ls(path, _LS_OPTS)
             if any(c.kind == "directory" and c.name == items.WORKSPACE_SOURCE_DIR for c in children):
                 found.append({
-                    "username": username, "collection": entry.name,
+                    "username": username, "folder": entry.name,
                     "key": f"workspace/{username}/{entry.name}", "path": path,
                 })
     return sorted(found, key=lambda c: c["key"])
@@ -196,9 +201,9 @@ def list_collections(opts={}):
 
 def list_items(path):
     """List every item folder under a workspace path, with its processable files
-    — what Dagster's process_workspace_job fans out over (one step per file).
+    — what Dagster's workspace_process_job fans out over (one step per file).
 
-    :param str path: Workspace collection root or any directory under its source/.
+    :param str path: Workspace folder root or any directory under its source/.
     :returns: [{"item": "cask:/workspace/.../source[/...]", "files": [image/PDF
         filenames, in item order]}], one per item folder (see
         items.list_workspace_items()).
@@ -341,9 +346,15 @@ _RELATIONS = [
     (ocr.TEXT_DIR, "ocr.hocr", ocr.HOCR_LINK_RELATION),
     (ocr.TEXT_DIR, "ocr-result.json", ocr.HOCR_LINK_RELATION),
     (ocr.TEXT_DIR, "transcript.txt", ocr.TRANSCRIPT_LINK_RELATION),
+    (ocr.TEXT_DIR, "ocr-corrected.json", ocr.CORRECTED_LINK_RELATION),
     ("accessibility", "alt-text.json", accessibility.ALT_TEXT_LINK_RELATION),
     ("accessibility", "layout.json", accessibility.LAYOUT_LINK_RELATION),
     ("accessibility", "tagged.pdf", accessibility.TAGGED_PDF_LINK_RELATION),
+    ("accessibility", "figures.json", figures.FIGURES_LINK_RELATION),
+    ("accessibility", "figure-review.csv", figures.REVIEW_LINK_RELATION),
+    (ocr.TEXT_DIR, "qwen-lines.json", ocr.LINES_LINK_RELATION),
+    ("accessibility", "searchable.pdf", accessibility.SEARCHABLE_PDF_LINK_RELATION),
+    ("accessibility", "text.txt", accessibility.DOCUMENT_TEXT_LINK_RELATION),
     ("split-spreads", "gutters.json", split.GUTTERS_LINK_RELATION),
 ]
 

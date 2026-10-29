@@ -205,6 +205,7 @@ def detect(target, opts={}):
     """Detect the gutter in every not-yet-detected image binary of this item.
 
     Reads the item's image binaries directly (bronze, or workspace source/).
+    A portrait image is recorded as not a spread without a vision call.
     Resumable: an
     interrupted run loses at most the one file it was mid-detecting on the
     next run, and re-running never touches an entry already present in
@@ -253,11 +254,15 @@ def detect(target, opts={}):
             with open(local_jpg, "rb") as f:
                 jpeg_bytes = f.read()
 
-            info = _detect_gutter(jpeg_bytes, opts)
+            dims = image_magick.probe_dimensions(local_jpg)
+            if dims["height"] > dims["width"]:
+                # Portrait can't be side-by-side pages.
+                info = {"gutter_x": 0, "is_spread": False, "confidence": "high", "reason": "portrait"}
+            else:
+                info = _detect_gutter(jpeg_bytes, opts)
             results[stem] = info
             detected += 1
 
-            dims = image_magick.probe_dimensions(local_jpg)
             review_local = os.path.join(tmp_dir, f"{stem}-review.jpg")
             _draw_review_strip(local_jpg, review_local, info, dims)
             with open(review_local, "rb") as f:

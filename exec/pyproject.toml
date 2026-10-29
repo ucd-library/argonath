@@ -20,6 +20,7 @@ dependencies = [
     "pikepdf>=9.0",
     "google-cloud-storage>=2.16",
     "xmltodict>=0.13",
+    "fonttools>=4.40",
 ]
 
 [project.optional-dependencies]

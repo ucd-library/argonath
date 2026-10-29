@@ -74,7 +74,7 @@ def thumbnail(target, opts={}):
     """Generate a small/medium/large set for one page of every source PDF in the item.
 
     Ad hoc/manual use, mirroring digtk.models.digital_website.image.thumbnails();
-    derivatives() is what Dagster's derivatives_job actually calls. Publishes into the
+    derivatives() is what Dagster's showcase_derivatives_job actually calls. Publishes into the
     same location derivatives() would for this one page:
     `public-frontend-derivatives/<pdf-filename>/images/<page-number>/` (1-indexed).
 
@@ -484,7 +484,7 @@ def media_objects(item):
     ImageObjects for every page of every PDF, each with its 0-indexed
     "position" — rebuilt from each PDF's aggregate images/manifest.json (its
     "pages" array). Read by
-    digtk.models.digital_website.item_record.build().
+    digtk.lib.showcase_index._silver_media().
 
     :param digtk.lib.items.ItemLocation item: Resolved item location.
     :returns: ImageObject entries, in PDF then page order.

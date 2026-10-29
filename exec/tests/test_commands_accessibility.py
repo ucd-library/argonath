@@ -39,7 +39,7 @@ def test_alt_text_calls_model_with_default_options(monkeypatch):
     assert seen["ark"].ark == ARK
     assert seen["opts"] == {
         "collection_context": "", "name_people": True, "transcribe_text": True,
-        "want_description": False, "max_alt_chars": 150,
+        "want_description": False, "want_long": False, "max_alt_chars": 150,
     }
     assert last_json_line(result.output) == {"status": "success"}
 
@@ -53,13 +53,14 @@ def test_alt_text_forwards_flags(monkeypatch):
         "accessibility", "alt-text", ARK,
         "--collection-context", "Wine collection papers",
         "--no-name-people", "--no-transcribe-text",
-        "--want-description", "--max-alt-chars", "100",
+        "--want-description", "--long", "--max-alt-chars", "100",
     ])
 
     assert result.exit_code == 0
     assert seen["opts"] == {
         "collection_context": "Wine collection papers", "name_people": False,
-        "transcribe_text": False, "want_description": True, "max_alt_chars": 100,
+        "transcribe_text": False, "want_description": True, "want_long": True,
+        "max_alt_chars": 100,
     }
 
 
@@ -84,8 +85,10 @@ def test_tag_pdf_calls_model_with_default_options(monkeypatch):
     assert result.exit_code == 0
     assert seen["ark"].ark == ARK
     assert seen["opts"] == {
-        "lang": "en-US", "strict": False, "lookahead": 40, "tables": False, "validate": True,
-        "min_conf": 0.0,
+        "lang": "en-US", "strict": False, "lookahead": 40, "tables": False, "paragraphs": False,
+        "reuse_ocr": True, "correct": False, "validate": True, "min_conf": 0.0, "enhance": None,
+        "skip_existing": False, "mode": "auto", "embed_fonts": True,
+        "figures": False, "geometry": "tesseract",
     }
     assert last_json_line(result.output) == {"status": "success"}
 
@@ -97,14 +100,18 @@ def test_tag_pdf_forwards_flags(monkeypatch):
 
     result = runner.invoke(app, [
         "accessibility", "tag-pdf", ARK,
-        "--lang", "en", "--strict", "--lookahead", "80", "--tables", "--no-validate",
-        "--min-conf", "65",
+        "--lang", "en", "--strict", "--lookahead", "80", "--tables", "--paragraphs", "--no-validate",
+        "--no-reuse-ocr", "--correct", "--mode", "rebuild", "--no-embed-fonts",
+        "--figures", "--geometry", "qwen",
+        "--min-conf", "65", "--ocr-enhance", "auto",
     ])
 
     assert result.exit_code == 0
     assert seen["opts"] == {
-        "lang": "en", "strict": True, "lookahead": 80, "tables": True, "validate": False,
-        "min_conf": 65.0,
+        "lang": "en", "strict": True, "lookahead": 80, "tables": True, "paragraphs": True,
+        "reuse_ocr": False, "correct": True, "validate": False, "skip_existing": False,
+        "mode": "rebuild", "embed_fonts": False, "figures": True, "geometry": "qwen",
+        "min_conf": 65.0, "enhance": "auto",
     }
 
 
@@ -128,3 +135,37 @@ def test_alt_text_and_tag_pdf_report_under_their_own_stages(monkeypatch):
     runner.invoke(app, ["accessibility", "tag-pdf", ARK, "--reporting-job-id", "run-1"])
 
     assert seen == [("alt-text", "run-1"), ("tag-pdf", "run-1")]
+
+
+def test_build_pdf_runs_model_under_its_own_stage(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(workspace_model, "apply_to_targets",
+                         lambda target, fn, opts={}: seen.update(fn=fn, opts=opts) or {"status": "success"})
+
+    result = runner.invoke(app, ["accessibility", "build-pdf", ARK, "--tables", "--correct", "--skip-existing"])
+
+    assert result.exit_code == 0, result.output
+    assert seen["fn"] is accessibility_model.build_pdf
+    assert seen["opts"]["stage"] == "pdf-build"
+    assert seen["opts"]["fn_opts"]["tables"] is True
+    assert seen["opts"]["fn_opts"]["correct"] is True
+    assert seen["opts"]["fn_opts"]["skip_existing"] is True
+
+
+def test_figures_runs_model_under_its_own_stage(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(workspace_model, "apply_to_targets",
+                         lambda target, fn, opts={}: seen.update(fn=fn, opts=opts) or {"status": "success"})
+
+    result = runner.invoke(app, ["accessibility", "figures", ARK, "--collection-context", "Wine",
+                                 "--max-alt-chars", "120", "--no-transcribe-text"])
+
+    assert result.exit_code == 0, result.output
+    assert seen["fn"] is accessibility_model.detect_figures
+    assert seen["opts"]["stage"] == "figures"
+    assert seen["opts"]["fn_opts"] == {"collection_context": "Wine", "transcribe_text": False, "max_alt_chars": 120}
+
+
+def test_tag_pdf_rejects_unknown_geometry():
+    result = runner.invoke(app, ["accessibility", "tag-pdf", ARK, "--geometry", "ruler"])
+    assert result.exit_code == 2

@@ -12,10 +12,13 @@
  *   index collection <key>     — bulk-reindex a collection into ES (no derivatives)
  *   index delete-collection <key> — delete a collection from ES
  *   index delete-item <ark>    — delete one item from ES
+ *   workspace run <folder>     — run the pike tools on a workspace folder in Dagster
  */
+import fs from 'node:fs';
 import { Command } from 'commander';
-import { triggerJob, pollRun, encodePartitionKey } from '../lib/dagster.js';
+import { triggerJob, pollRun, encodePartitionKey, listPartitions, waitForPartition, resolveConnection, runUrl } from '../lib/dagster.js';
 import { listCollections, listItems, publishCollection } from '../lib/collections.js';
+import { STEP_FIELDS, OPTION_FIELDS, workspaceLaunch } from '../lib/workspace.js';
 
 const program = new Command();
 
@@ -39,13 +42,13 @@ processCmd
   .action(async (name, opts) => {
     const jobMap = {
       full:          'full_pipeline_job',
-      derivatives:   'derivatives_job',
-      ocr:           'ocr_job',
+      derivatives:   'showcase_derivatives_job',
+      ocr:           'bronze_ocr_job',
       metadata:      'metadata_job',
-      alt:           'alt_text_job',
-      'tag-pdf':     'tag_pdf_job',
-      'split-detect': 'detect_spreads_job',
-      'split-apply':  'apply_spreads_job',
+      alt:           'bronze_alt_text_job',
+      'tag-pdf':     'bronze_tag_pdf_job',
+      'split-detect': 'bronze_detect_spreads_job',
+      'split-apply':  'bronze_apply_spreads_job',
       rag:           'search_index_job',
     };
     const jobName = jobMap[opts.job] || opts.job;
@@ -66,13 +69,13 @@ processCmd
   .action(async (ark, opts) => {
     const jobMap = {
       full:          'full_pipeline_job',
-      derivatives:   'derivatives_job',
-      ocr:           'ocr_job',
+      derivatives:   'showcase_derivatives_job',
+      ocr:           'bronze_ocr_job',
       metadata:      'metadata_job',
-      alt:           'alt_text_job',
-      'tag-pdf':     'tag_pdf_job',
-      'split-detect': 'detect_spreads_job',
-      'split-apply':  'apply_spreads_job',
+      alt:           'bronze_alt_text_job',
+      'tag-pdf':     'bronze_tag_pdf_job',
+      'split-detect': 'bronze_detect_spreads_job',
+      'split-apply':  'bronze_apply_spreads_job',
       rag:           'search_index_job',
     };
     const jobName = jobMap[opts.job] || opts.job;
@@ -93,20 +96,23 @@ processCmd
 // ---------------------------------------------------------------------------
 
 /**
- * Launch a Dagster job and optionally wait for it to finish.
+ * Launch a Dagster job, print its UI link, and optionally wait for it to finish.
  *
  * @param {string} jobName - Dagster job name.
  * @param {Object} [opts={}] - Options.
  * @param {string} [opts.partitionKey] - Partition to run.
  * @param {Object} [opts.config] - Run config.
  * @param {boolean} [opts.wait] - Poll until the run finishes; exits 1 if it fails.
+ * @param {string} [opts.baseUrl] - Dagster base URL override.
  * @returns {Promise<void>}
  */
 async function launch(jobName, opts = {}) {
-  const run = await triggerJob(jobName, { partitionKey: opts.partitionKey, config: opts.config });
+  const conn = { baseUrl: opts.baseUrl };
+  const run = await triggerJob(jobName, { partitionKey: opts.partitionKey, config: opts.config, ...conn });
   console.log(`Run started: ${run.runId}`);
+  console.log(runUrl(run.runId, conn));
   if (!opts.wait) return;
-  const done = await pollRun(run.runId);
+  const done = await pollRun(run.runId, conn);
   console.log(`Run ${done.runId}: ${done.status}`);
   if (done.status !== 'SUCCESS') process.exit(1);
 }
@@ -123,7 +129,7 @@ indexCmd
   .option('--wait', 'Wait for the run to finish.', false)
   .action(async (key, opts) => {
     try {
-      await launch('reindex_collection_job', {
+      await launch('showcase_reindex_collection_job', {
         partitionKey: key,
         wait: opts.wait,
         config: {
@@ -151,7 +157,7 @@ indexCmd
   .option('--wait', 'Wait for the run to finish.', false)
   .action(async (key, opts) => {
     try {
-      await launch('delete_collection_index_job', { partitionKey: key, wait: opts.wait });
+      await launch('showcase_delete_collection_index_job', { partitionKey: key, wait: opts.wait });
     } catch (err) {
       console.error(`Error: ${err.message}`);
       process.exit(1);
@@ -165,9 +171,54 @@ indexCmd
   .option('--wait', 'Wait for the run to finish.', false)
   .action(async (ark, opts) => {
     try {
-      await launch('delete_item_index_job', {
+      await launch('showcase_delete_item_index_job', {
         wait: opts.wait,
         config: { ops: { delete_item_index: { config: { ark, collection: opts.collection } } } },
+      });
+    } catch (err) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+
+// ---------------------------------------------------------------------------
+// argonath workspace
+// ---------------------------------------------------------------------------
+
+const workspaceCmd = program.command('workspace').description('Workspace folder jobs (scans staged with `digtk workspace add`).');
+
+workspaceCmd
+  .command('run <folder>')
+  .description('Run the pike tools on a workspace folder in Dagster (workspace_process_job). '
+    + 'Folder: cask:/workspace/<user>/<folder>.')
+  .option('--steps <steps>', `Steps to run (comma-separated): ${Object.keys(STEP_FIELDS).join(', ')}, or all. `
+    + `Also turns on options listed here: ${Object.keys(OPTION_FIELDS).join(', ')}. Required: every step defaults to off.`)
+  .option('--set <key=value>', 'Set any fan_out_workspace option, e.g. tables=true (repeatable).', (v, all) => all.concat(v), [])
+  .option('--config <file>', 'JSON file with fan_out_workspace options (--steps and --set win).')
+  .option('--wait', 'Wait for the run to finish.', false)
+  .option('--dry-run', 'Print the partition, whether it exists yet, and the run config without launching.', false)
+  .option('--dagster-url <url>', 'Dagster URL (default: DAGSTER_URL, else your digtk login\'s gateway).')
+  .action(async (folder, opts) => {
+    try {
+      const config = opts.config ? JSON.parse(fs.readFileSync(opts.config, 'utf8')) : undefined;
+      const plan = workspaceLaunch(folder, { config, steps: opts.steps, set: opts.set });
+      const conn = { baseUrl: opts.dagsterUrl };
+      if (opts.dryRun) {
+        const partitionExists = (await listPartitions(plan.jobName, conn)).includes(plan.partitionKey);
+        console.log(JSON.stringify({ dagster: resolveConnection(conn).baseUrl, partitionExists, ...plan }, null, 2));
+        return;
+      }
+      // sensor registers new folders (~2 min)
+      await waitForPartition(plan.jobName, plan.partitionKey, {
+        ...conn,
+        onWait: () => console.log(`Waiting for workspace_partition_sync_sensor to register ${plan.partitionKey}...`),
+      }).catch((err) => {
+        throw new Error(`${err.message}. Check workspace_partition_sync_sensor is on and the folder has a source/ directory.`);
+      });
+      console.log(`Partition ${plan.partitionKey}`);
+      await launch(plan.jobName, {
+        partitionKey: plan.partitionKey, config: plan.runConfig, wait: opts.wait, ...conn,
       });
     } catch (err) {
       console.error(`Error: ${err.message}`);

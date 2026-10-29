@@ -303,7 +303,7 @@ def ark_for_path(path):
     digtk.models.collection._write_tree_child()).
 
     Lets a caller address an item by its bronze folder (e.g. Dagster's
-    process_item_job, keyed by the tree/ path rather than the ARK) and still
+    showcase_process_item_job, keyed by the tree/ path rather than the ARK) and still
     know its ARK.
 
     :param str path: Item folder, e.g. 'bronze/preservica/haeger/latest/tree/quarter-mile'
