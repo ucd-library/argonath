@@ -283,6 +283,8 @@ LOCATION = ItemLocation(
 )
 RECORD_PATH = "cask:/gold/digital-dev/c/item/item.jsonld.json"
 GOLD = f"https://digital.ucdavis.edu/item/{ARK}"
+BRONZE = "cask://bronze/g/c/latest/item"
+BRONZE_URL = "/cask/api/fs/bronze/g/c/latest/item"
 
 
 def _image_entries(filename):
@@ -312,6 +314,9 @@ def item_files(monkeypatch):
         if image:
             root["image"] = {"@id": f"{GOLD}#{image}"}
         nodes = [{"@id": f"{GOLD}#{f}"} for f in fragments]
+        for n in nodes:
+            if n["@id"].startswith(f"{GOLD}#media/"):
+                n["contentUrl"] = f"{BRONZE}/{n['@id'].rsplit('/', 1)[-1]}"
         pages = [n for n in nodes if n["@id"].startswith(f"{GOLD}#imagelist/")]
         for n in nodes:
             if n["@id"] == f"{GOLD}#imagelist":
@@ -389,14 +394,14 @@ def test_build_document_gives_audio_image_and_pdf_each_a_node(item_files):
     assert audio["@type"] == ["http://schema.org/AudioObject"] and audio["fileFormatSimple"] == "audio"
     audio_media = media[audio["@id"]]
     assert audio_media["audio"]["url"] == "/cask/api/fs/silver/g/c/latest/item/public-frontend-derivatives/talk.mp3/converted.mp3"
-    assert audio_media["download"] == [{"url": audio_media["audio"]["url"], "label": "mp3"}]
+    assert audio_media["download"] == [{"url": f"{BRONZE_URL}/talk.mp3", "label": "mp3"}]
     assert audio["caption"] == [{"@id": "/cask/api/fs/silver/g/c/latest/item/captions/output-en.vtt", "language": "en"}]
 
     image = nodes[f"{item}/logo.jpg"]
     assert image["@type"] == ["http://schema.org/ImageObject"] and image["fileFormatSimple"] == "image"
     assert image["fileFormat"] == "image/jpeg"
     image_media = media[f"{GOLD}#media/logo.jpg"]
-    assert image_media["download"] == [{"url": image_media["images"]["large"]["url"], "label": "jpg"}]
+    assert image_media["download"] == [{"url": f"{BRONZE_URL}/logo.jpg", "label": "jpg"}]
 
     pdf = nodes[f"{item}/doc.pdf"]
     assert pdf["@type"] == ["http://schema.org/ImageObject"]
@@ -410,7 +415,7 @@ def test_build_document_gives_audio_image_and_pdf_each_a_node(item_files):
                 "size": {"width": "1024", "height": "1325"}, "imageSize": "large"},
     }]
     assert pdf_media["images"] == {"large": pdf_media["pages"][0]["large"]}
-    assert pdf_media["download"] == []
+    assert pdf_media["download"] == [{"url": f"{BRONZE_URL}/doc.pdf", "label": "pdf"}]
 
     assert document["displayImage"] == {"@id": f"{GOLD}#media/logo.jpg", "images": image_media["images"]}
 
@@ -435,7 +440,7 @@ def test_build_document_puts_video_first_with_its_stream_and_captions(item_files
     assert (video["fileFormat"], video["fileFormatSimple"]) == ("video/mp4", "video")
     assert document["clientMedia"][video_id] == {
         "streamingVideo": {"manifest": "/cask/api/fs/silver/g/c/latest/item/public-frontend-derivatives/movie.mp4/streaming/playlist.m3u8"},
-        "download": [],
+        "download": [{"url": f"{BRONZE_URL}/movie.mp4", "label": "mp4"}],
     }
     assert video["caption"] == [{"@id": "/cask/api/fs/silver/g/c/latest/item/captions/movie-en.vtt", "language": "en"}]
     assert document["displayImage"]["@id"] == f"{GOLD}#media/poster.jpg"
@@ -474,19 +479,19 @@ def test_build_document_makes_an_image_list_for_several_images(item_files):
     assert page1["contentUrl"] == "cask://bronze/1.tif"
     assert set(media) == {list_id, f"{list_id}/page_001.tif", f"{list_id}/page_002.tif"}
     assert media[list_id] == {"download": []}
-    # a page's download is a single entry
-    assert isinstance(media[page1["@id"]]["download"], dict)
+    # a page's download is its original, as a single entry
+    assert media[page1["@id"]]["download"] == {"url": "/cask/api/fs/bronze/1.tif", "label": "tif"}
     assert document["displayImage"] == {"@id": page1["@id"], "images": media[page1["@id"]]["images"]}
 
 
-def test_build_document_adds_file_sizes_from_cask_listings(item_files):
+def test_build_document_adds_original_file_sizes_from_cask_listings(item_files):
     item_files["set_media"]([
         *_image_entries("logo.jpg"),
         {"@type": "AudioObject", "contentUrl": f"{PFD}/talk.mp3/converted.mp3", "argonath:sourceGroup": "audio"},
     ])
     item_files["set_gold"](["media/talk.mp3", "media/logo.jpg"])
-    pfd = "cask:/silver/g/c/latest/item/public-frontend-derivatives"
-    item_files["sizes"].update({f"{pfd}/images/logo.jpg/images/large.jpg": 2048, f"{pfd}/talk.mp3/converted.mp3": 4096})
+    bronze = "cask:/bronze/g/c/latest/item"
+    item_files["sizes"].update({f"{bronze}/logo.jpg": 2048, f"{bronze}/talk.mp3": 4096})
 
     document = showcase_index.build_document(ARK)
     nodes, media = _graph(document), document["clientMedia"]
@@ -496,6 +501,16 @@ def test_build_document_adds_file_sizes_from_cask_listings(item_files):
     assert nodes[image_id]["fileSize"] == 2048
     assert media[audio_id]["download"][0]["fileSize"] == 4096
     assert nodes[audio_id]["fileSize"] == 4096
+
+
+def test_build_document_has_no_download_without_an_original(item_files):
+    item_files["set_media"](_image_entries("logo.jpg"))
+    item_files["set_gold"](["media/logo.jpg"])
+    del item_files[RECORD_PATH]["@graph"][1]["contentUrl"]
+
+    document = showcase_index.build_document(ARK)
+
+    assert document["clientMedia"][f"{GOLD}#media/logo.jpg"]["download"] == []
 
 
 def test_build_document_omits_unknown_file_sizes(item_files):

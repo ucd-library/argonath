@@ -259,19 +259,38 @@ def _caption_links(entry):
     return links or None
 
 
-def _image_download(client_media, sizes):
-    """A download entry for an image node: its largest derivative.
+def _original_download(gold_node, sizes):
+    """A download entry for a media node's original binary, from its gold
+    node's bronze contentUrl.
 
-    :param dict client_media: _build_client_media()'s result.
+    :param dict|None gold_node: The media node's gold record node.
     :param dict sizes: See _file_size().
-    :returns: {"url", "label", "fileSize"}, or None if the node has no images.
+    :returns: {"url", "label", "fileSize"}, or None without a CaskFS contentUrl.
     :rtype: dict|None
     """
-    images = client_media.get("images") or {}
-    best = images.get("large") or images.get("medium") or images.get("small")
-    if not best:
+    content_url = (gold_node or {}).get("contentUrl")
+    if not isinstance(content_url, str) or not content_url.startswith("cask://"):
         return None
-    return _with_file_size({"url": best["url"], "label": best["url"].rsplit(".", 1)[-1]}, best["url"], sizes)
+    url = _cask_url(content_url)
+    return _with_file_size({"url": url, "label": url.rsplit(".", 1)[-1].lower()}, url, sizes)
+
+
+def _set_original_download(node, client_media, gold_node, sizes):
+    """Points a media node's clientMedia.download at its original binary,
+    keeping the download's shape (a dict for image-list pages, else a list),
+    and sets the node's fileSize. Nodes without an original are left as is.
+
+    :param dict node: Website media node (see _media_nodes()), mutated.
+    :param dict client_media: The node's clientMedia, mutated.
+    :param dict|None gold_node: The node's gold record node.
+    :param dict sizes: See _file_size().
+    """
+    download = _original_download(gold_node, sizes)
+    if not download:
+        return
+    client_media["download"] = download if isinstance(client_media.get("download"), dict) else [download]
+    if "fileSize" in download:
+        node["fileSize"] = download["fileSize"]
 
 
 def _image_node(location, node_id, filename, entries, opts={}):
@@ -283,16 +302,12 @@ def _image_node(location, node_id, filename, entries, opts={}):
     :param list entries: Its associatedMedia entries.
     :param dict opts: 'position' (int — for an image-list page; also makes
         clientMedia.download a single entry, which is how the website's image
-        list collects its pages' downloads, rather than a list); 'sizes'
-        (see _file_size()).
+        list collects its pages' downloads, rather than a list). The download
+        itself is the original, set by build_document().
     :rtype: dict
     """
     client_media = _build_client_media(location, entries, filename)
-    download = _image_download(client_media, opts.get("sizes", {}))
-    if "position" in opts:
-        client_media["download"] = download or {}
-    else:
-        client_media["download"] = [download] if download else []
+    client_media["download"] = {} if "position" in opts else []
     node = {
         "@id": node_id,
         "@type": [f"{SCHEMA}ImageObject"],
@@ -301,8 +316,6 @@ def _image_node(location, node_id, filename, entries, opts={}):
         "fileFormatSimple": "image",
         "clientMedia": client_media,
     }
-    if download and "fileSize" in download:
-        node["fileSize"] = download["fileSize"]
     if "position" in opts:
         # required, not decorative: the website numbers image-list pages from
         # each hasPart node's position (client-media/model.js handleImageList).
@@ -328,14 +341,14 @@ def _video_node(node_id, filename, entries):
         "encodingFormat": entry.get("encodingFormat"),
         "clientMedia": {
             "streamingVideo": {"manifest": _cask_url(entry["contentUrl"])},
-            # an HLS ladder isn't a downloadable file
+            # original set by build_document()
             "download": [],
         },
         "caption": _caption_links(entry),
     }
 
 
-def _audio_node(node_id, filename, entries, opts={}):
+def _audio_node(node_id, filename, entries):
     """An AudioObject node for one source audio file: its transcoded copy
     (clientMedia.audio.url — the website's audio player plays this) and
     captions.
@@ -343,14 +356,12 @@ def _audio_node(node_id, filename, entries, opts={}):
     :param str node_id: The node's @id.
     :param str filename: The source audio file's filename.
     :param list entries: Its associatedMedia entries (one AudioObject).
-    :param dict opts: 'sizes' (see _file_size()).
     :rtype: dict
     """
     entry = entries[0]
     url = _cask_url(entry["contentUrl"])
     encoding = entry.get("encodingFormat") or _mime(url, "audio/mpeg")
-    download = _with_file_size({"url": url, "label": url.rsplit(".", 1)[-1]}, url, opts.get("sizes", {}))
-    node = {
+    return {
         "@id": node_id,
         "@type": [f"{SCHEMA}AudioObject"],
         "name": filename,
@@ -359,13 +370,11 @@ def _audio_node(node_id, filename, entries, opts={}):
         "encodingFormat": encoding,
         "clientMedia": {
             "audio": {"url": url, "encodingFormat": encoding},
-            "download": [download],
+            # original set by build_document()
+            "download": [],
         },
         "caption": _caption_links(entry),
     }
-    if "fileSize" in download:
-        node["fileSize"] = download["fileSize"]
-    return node
 
 
 def _pdf_pages(location, node_id, filename):
@@ -412,6 +421,7 @@ def _pdf_node(location, node_id, filename):
     :rtype: dict
     """
     pages = _pdf_pages(location, node_id, filename)
+    # original set by build_document()
     client_media = {"pages": pages, "download": []}
     if pages:
         client_media["images"] = {k: v for k, v in pages[0].items() if k in ("small", "medium", "large")}
@@ -425,7 +435,7 @@ def _pdf_node(location, node_id, filename):
     }
 
 
-def _media_nodes(location, gold_ids, groups, opts={}):
+def _media_nodes(location, gold_ids, groups):
     """Every media node for an item: one per video, audio, PDF source, and
     either one ImageObject (a single image) or an image list whose pages are
     the image nodes (two or more images). Each node takes its gold record
@@ -434,7 +444,6 @@ def _media_nodes(location, gold_ids, groups, opts={}):
     :param digtk.lib.items.ItemLocation location:
     :param dict gold_ids: _gold_media_ids()'s result.
     :param dict groups: _group_media_by_source()'s result.
-    :param dict opts: 'sizes' (see _file_size()).
     :returns: (top-level nodes in MEDIA_ORDER, child nodes) — the root links
         to the top-level ones; image-list pages are children.
     :rtype: tuple[list[dict], list[dict]]
@@ -445,27 +454,26 @@ def _media_nodes(location, gold_ids, groups, opts={}):
             utils.warn(f"no gold record node for {key or 'the image list'}, skipping it")
         return node_id
 
-    sizes = opts.get("sizes", {})
     top, children = [], []
     for group in MEDIA_ORDER:
         sources = groups.get(group) or {}
         if group == "video":
             top += [_video_node(i, f, e) for f, e in sources.items() if (i := gold_id(f))]
         elif group == "audio":
-            top += [_audio_node(i, f, e, {"sizes": sizes}) for f, e in sources.items() if (i := gold_id(f))]
+            top += [_audio_node(i, f, e) for f, e in sources.items() if (i := gold_id(f))]
         elif group == "pdf":
             top += [_pdf_node(location, i, f) for f in sources if (i := gold_id(f))]
         elif group == "image" and len(sources) == 1:
             filename, entries = next(iter(sources.items()))
             node_id = gold_id(filename)
             if node_id:
-                top.append(_image_node(location, node_id, filename, entries, {"sizes": sizes}))
+                top.append(_image_node(location, node_id, filename, entries))
         elif group == "image" and sources:
             list_id = gold_id(None)
             if not list_id:
                 continue
             pages = [
-                _image_node(location, i, f, e, {"position": n, "sizes": sizes})
+                _image_node(location, i, f, e, {"position": n})
                 for n, (f, e) in enumerate(sources.items(), start=1) if (i := gold_id(f))
             ]
             top.append({
@@ -499,7 +507,8 @@ def build_document(ark, opts={}):
 
     Website fields: media nodes get @type/name/fileFormat/fileFormatSimple
     from the item's silver derivatives (see _media_nodes()), and their
-    clientMedia moves to the root "clientMedia" map keyed by node @id. The
+    clientMedia moves to the root "clientMedia" map keyed by node @id, with
+    downloads pointing at the original bronze binaries. The
     root gets "subjects" (from about), a {name} creator and publisher,
     string identifiers and full @type URIs, matching the item index mapping.
     "about" is left out, since the mapping indexes it as text. Two
@@ -524,11 +533,13 @@ def build_document(ark, opts={}):
     by_id = {node["@id"]: node for node in graph if node.get("@id")}
 
     groups = _group_media_by_source(_silver_media(location))
-    top, children = _media_nodes(location, _gold_media_ids(gold), groups, {"sizes": {}})
+    top, children = _media_nodes(location, _gold_media_ids(gold), groups)
     client_media = {}
+    sizes = {}
     for node in top + children:
         media = node.pop("clientMedia", None)
         if media is not None:
+            _set_original_download(node, media, by_id.get(node["@id"]), sizes)
             client_media[node["@id"]] = media
         if node["@id"] in by_id:
             _merge_media(by_id[node["@id"]], node)

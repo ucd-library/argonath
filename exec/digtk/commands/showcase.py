@@ -14,6 +14,7 @@ Subcommands:
   build-collection — write the collection's gold collection.jsonld.json
   clean-item — delete a removed bronze item's silver and gold directories
   init-db    — apply dc-showcase's init SQL to its database
+  init-cask  — seed dc-showcase's gold files into CaskFS
 """
 from typing import Annotated, List
 
@@ -27,7 +28,7 @@ from digtk.lib.config import (
 )
 from digtk.models.digital_website import finalize as finalize_model
 from digtk.models.digital_website import collection_index, collection_record, item_record
-from digtk.models.digital_website import pipeline, showcase_db
+from digtk.models.digital_website import pipeline, showcase_cask, showcase_db
 
 app = typer.Typer(help="Public Digital Collections website commands.", no_args_is_help=True)
 
@@ -162,4 +163,22 @@ def init_db(
         utils.log(f"Applied {len(files)} dc-showcase init file(s)")
         utils.result({"status": "success", "files": files})
     except (*_ERRORS, psycopg2.Error) as e:
+        utils.error(str(e))
+
+
+@app.command("init-cask")
+def init_cask(
+    init_dir: Annotated[str | None, typer.Option(
+        "--init-dir", help="Directory of dc-showcase's gold seed files (default: showcase_cask.init_dir).",
+    )] = None,
+    project: ShowcaseGoldProjectOption = CONFIG["showcase"]["gold_project"],
+):
+    """Copy dc-showcase's gold seed files (hero banner and browse by images)
+    into the gold project. Existing files are skipped, so it's safe to run
+    repeatedly."""
+    try:
+        result = showcase_cask.init_cask({"init_dir": init_dir, "project": project})
+        utils.log(f"Added {len(result['added'])} file(s), skipped {len(result['skipped'])} existing (project={project})")
+        utils.result({"status": "success", **result})
+    except _ERRORS as e:
         utils.error(str(e))
