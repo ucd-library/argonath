@@ -15,6 +15,7 @@ import atexit
 import dagster as dg
 import psycopg2
 import yaml
+from dagster_celery import celery_executor
 
 
 # ---------------------------------------------------------------------------
@@ -107,16 +108,9 @@ def exec(cmd, opts={}):
 # ---------------------------------------------------------------------------
 
 def load_celery_run_config():
-    """Load celery_config.yaml as a job's default run config.
+    """Load celery_config.yaml (the celery executor's `execution:` block).
 
-    Without this, a run launched from Dagit with no run config falls back to
-    celery_executor's built-in default broker (pyamqp://guest@localhost//)
-    instead of this deployment's actual broker -- connection refused, since
-    nothing is listening on localhost:5672 wherever the run worker executes.
-    Every op-based (non-asset) job using celery_executor needs this passed as
-    its own `config=` -- see lib/pipeline_fanout.py's process_collection_job.
-
-    :returns: Parsed run config dict (the `execution:` block).
+    :returns: Parsed run config dict.
     :rtype: dict
     """
     path = os.path.join(os.path.dirname(__file__), "..", "celery_config.yaml")
@@ -124,18 +118,38 @@ def load_celery_run_config():
         return yaml.safe_load(f)
 
 
-def default_run_config(op_configs, opts={}):
-    """A job's default run config: the celery execution block plus each listed
-    op's config filled with its Config class defaults — so the launchpad opens
-    with every option (e.g. max_steps) visible, and a backfill (which never
-    sees launchpad edits) runs with the same values.
+_celery_executor = None
+
+
+def celery_job_executor():
+    """The celery executor with this deployment's broker settings built in.
+
+    Partitioned jobs don't apply their default run config to API or sensor
+    launches, so unconfigured celery would fall back to a localhost broker.
+    Use this as every celery job's `executor_def=`.
+
+    :returns: Configured executor definition.
+    :rtype: dagster.ExecutorDefinition
+    """
+    global _celery_executor
+    if _celery_executor is None:
+        _celery_executor = celery_executor.configured(
+            load_celery_run_config()["execution"]["config"], name="argonath_celery")
+    return _celery_executor
+
+
+def default_run_config(op_configs):
+    """A job's default run config: each listed op's config with its Config class defaults.
+
+    The launchpad then shows every option, and a backfill (which never sees
+    launchpad edits) runs with the same values. Broker settings live in
+    celery_job_executor(), not here.
 
     :param dict op_configs: {op name: dagster Config class}.
-    :param dict opts: 'celery' (bool, default True) — include load_celery_run_config().
     :returns: Run config dict.
     :rtype: dict
     """
-    config = dict(load_celery_run_config()) if opts.get("celery", True) else {}
+    config = {}
     config["ops"] = {
         op_name: {"config": {field: getattr(cls(), field) for field in cls.model_fields}}
         for op_name, cls in op_configs.items()

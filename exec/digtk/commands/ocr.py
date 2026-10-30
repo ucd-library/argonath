@@ -4,6 +4,8 @@ digtk ocr — OCR commands.
 Subcommands:
   tesseract  — Tesseract word geometry + Qwen vision transcript, both engines,
                every image binary and PDF page in the item
+  correct    — fix Tesseract's word text from the vision transcript, keeping
+               Tesseract's word boxes
 
 digtk.commands.ocr.ml (an ML-fallback stub for low-confidence Tesseract
 results) has been removed: there's no separate "fallback" step left for it
@@ -18,13 +20,15 @@ import typer
 from digtk.lib import utils
 from digtk.lib.config import (
     CONFIG,
+    OcrEnhanceOption,
     OcrLangOption,
+    OcrTextPagesOption,
     OcrOemOption,
     OcrPsmOption,
     ReportingCollectionOption,
     ReportingJobIdOption,
     TargetArgument,
-    WorkspaceCollectionOption,
+    WorkspaceFolderOption,
     WorkspaceUserOption,
 )
 from digtk.models import ocr as ocr_model
@@ -48,7 +52,9 @@ def tesseract(
              "the transcript; turn this off only for fast local dev without "
              "SAMWISE_API_KEY, or deliberate cost control on a large batch.",
     )] = True,
-    collection: WorkspaceCollectionOption = None,
+    ocr_enhance: OcrEnhanceOption = None,
+    ocr_text_pages: OcrTextPagesOption = False,
+    folder: WorkspaceFolderOption = None,
     user: WorkspaceUserOption = None,
     reporting_job_id: ReportingJobIdOption = None,
     reporting_collection: ReportingCollectionOption = None,
@@ -61,15 +67,44 @@ def tesseract(
     showcase` derivatives needed. Writes .../text/ocr.hocr + transcript.txt
     (+ ocr-result.json with Tesseract's confidence) per image, or the same
     per PDF page under text/page-NNN/, with CaskFS lineage to the source
-    binary — in silver for an ARK, or the workspace collection's
+    binary — in silver for an ARK, or the workspace folder's
     derivatives/ for a workspace path or local folder.
     """
     try:
         utils.log(f"Running OCR for {target}")
         utils.result(workspace.apply_to_targets(target, ocr_model.run_ocr, opts={
             "stage": "ocr",
-            "fn_opts": {"lang": lang, "psm": psm, "oem": oem, "vision": vision},
-            "collection": collection, "username": user,
+            "fn_opts": {"lang": lang, "psm": psm, "oem": oem, "vision": vision, "enhance": ocr_enhance,
+                        "ocr_text_pages": ocr_text_pages},
+            "folder": folder, "username": user,
+            "reporting_job_id": reporting_job_id, "reporting_collection": reporting_collection,
+        }))
+    except _ERRORS as e:
+        utils.error(str(e))
+
+
+@app.command()
+def correct(
+    target: TargetArgument,
+    folder: WorkspaceFolderOption = None,
+    user: WorkspaceUserOption = None,
+    reporting_job_id: ReportingJobIdOption = None,
+    reporting_collection: ReportingCollectionOption = None,
+):
+    """Correct Tesseract's words with the vision transcript, page by page.
+
+    Reads the hOCR and transcript `digtk ocr tesseract` published and makes
+    no OCR or vision calls. Only conservative substitutions are applied:
+    digits, short tokens and punctuation are never changed. Writes
+    ocr-corrected.json (corrected words plus a change log) next to each
+    page's ocr.hocr. `digtk accessibility tag-pdf --correct` uses it.
+    """
+    try:
+        utils.log(f"Correcting OCR for {target}")
+        utils.result(workspace.apply_to_targets(target, ocr_model.correct_ocr, opts={
+            "stage": "ocr-correct",
+            "fn_opts": {},
+            "folder": folder, "username": user,
             "reporting_job_id": reporting_job_id, "reporting_collection": reporting_collection,
         }))
     except _ERRORS as e:

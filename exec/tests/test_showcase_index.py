@@ -3,6 +3,7 @@ import json
 import pytest
 
 from digtk.lib import showcase_index
+from digtk.lib.fs.paths import DirEntry
 from digtk.lib.items import ItemLocation
 
 ITEM = ItemLocation(
@@ -296,7 +297,8 @@ def _image_entries(filename):
 def item_files(monkeypatch):
     """A fake CaskFS for one item: its gold item record, plus any extra
     files a test adds (manifests); everything else is missing. set_media()
-    sets the item's published silver associatedMedia entries."""
+    sets the item's published silver associatedMedia entries. files["sizes"]
+    maps cask:/ file paths to the sizes fs.ls() reports."""
     files = {RECORD_PATH: {"@id": ARK, "@graph": [
         {"@id": GOLD, "name": "An item", "creator": "Someone"},
     ]}}
@@ -329,7 +331,16 @@ def item_files(monkeypatch):
         showcase_index.item_record, "gold_location",
         lambda ark, opts={}: (LOCATION, json.loads(fake_read(RECORD_PATH))),
     )
+    sizes = {}
+
+    def fake_ls(directory):
+        return [
+            DirEntry(name=path.rsplit("/", 1)[-1], path=path, kind="file", size=size)
+            for path, size in sizes.items() if path.rsplit("/", 1)[0] == directory
+        ]
+
     monkeypatch.setattr(showcase_index.fs, "read", fake_read)
+    monkeypatch.setattr(showcase_index.fs, "ls", fake_ls)
     monkeypatch.setattr(showcase_index.item_record.fs, "read", fake_read)
     monkeypatch.setattr(showcase_index, "_silver_media", lambda location: [dict(e) for e in media])
     roles = {"value": ["admin"], "calls": []}
@@ -341,6 +352,7 @@ def item_files(monkeypatch):
     files["roles"] = roles
     files["set_media"] = set_media
     files["set_gold"] = set_gold
+    files["sizes"] = sizes
     return files
 
 
@@ -465,6 +477,58 @@ def test_build_document_makes_an_image_list_for_several_images(item_files):
     # a page's download is a single entry
     assert isinstance(media[page1["@id"]]["download"], dict)
     assert document["displayImage"] == {"@id": page1["@id"], "images": media[page1["@id"]]["images"]}
+
+
+def test_build_document_adds_file_sizes_from_cask_listings(item_files):
+    item_files["set_media"]([
+        *_image_entries("logo.jpg"),
+        {"@type": "AudioObject", "contentUrl": f"{PFD}/talk.mp3/converted.mp3", "argonath:sourceGroup": "audio"},
+    ])
+    item_files["set_gold"](["media/talk.mp3", "media/logo.jpg"])
+    pfd = "cask:/silver/g/c/latest/item/public-frontend-derivatives"
+    item_files["sizes"].update({f"{pfd}/images/logo.jpg/images/large.jpg": 2048, f"{pfd}/talk.mp3/converted.mp3": 4096})
+
+    document = showcase_index.build_document(ARK)
+    nodes, media = _graph(document), document["clientMedia"]
+
+    image_id, audio_id = f"{GOLD}#media/logo.jpg", f"{GOLD}#media/talk.mp3"
+    assert media[image_id]["download"][0]["fileSize"] == 2048
+    assert nodes[image_id]["fileSize"] == 2048
+    assert media[audio_id]["download"][0]["fileSize"] == 4096
+    assert nodes[audio_id]["fileSize"] == 4096
+
+
+def test_build_document_omits_unknown_file_sizes(item_files):
+    item_files["set_media"](_image_entries("logo.jpg"))
+    item_files["set_gold"](["media/logo.jpg"])
+
+    document = showcase_index.build_document(ARK)
+    image_id = f"{GOLD}#media/logo.jpg"
+
+    assert "fileSize" not in document["clientMedia"][image_id]["download"][0]
+    assert "fileSize" not in _graph(document)[image_id]
+
+
+def test_file_size_lists_each_directory_once(monkeypatch):
+    listed = []
+
+    def fake_ls(directory):
+        listed.append(directory)
+        return [DirEntry(name="a.jpg", path=f"{directory}/a.jpg", kind="file", size="10")]
+    monkeypatch.setattr(showcase_index.fs, "ls", fake_ls)
+    sizes = {}
+
+    assert showcase_index._file_size("/cask/api/fs/silver/x/a.jpg", sizes) == 10
+    assert showcase_index._file_size("/cask/api/fs/silver/x/b.jpg", sizes) is None
+    assert listed == ["cask:/silver/x"]
+
+
+def test_file_size_is_none_for_a_missing_directory(monkeypatch):
+    def missing(directory):
+        raise FileNotFoundError(directory)
+    monkeypatch.setattr(showcase_index.fs, "ls", missing)
+
+    assert showcase_index._file_size("/cask/api/fs/silver/x/a.jpg", {}) is None
 
 
 def test_build_document_matches_percent_encoded_gold_ids(item_files):

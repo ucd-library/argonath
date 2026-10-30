@@ -51,7 +51,7 @@ def enqueue_collection(
         help="Batch id recorded on every queued row (e.g. the launching Dagster run id).",
     )] = None,
 ):
-    """Queue a process_item_job run for every item in the collection's bronze
+    """Queue a showcase_process_item_job run for every item in the collection's bronze
     tree/."""
     try:
         result = collection_state.enqueue_collection(collection_key, {"batch": batch} if batch else {})
@@ -70,7 +70,7 @@ def enqueue_items(
     trigger: Annotated[str, typer.Option(help="Recorded on each row and as a run tag.")] = "items",
     batch: Annotated[str | None, typer.Option(help="Batch id recorded on every queued row.")] = None,
 ):
-    """Queue a process_item_job run for each item folder."""
+    """Queue a showcase_process_item_job run for each item folder."""
     try:
         opts = {"trigger": trigger, **({"batch": batch} if batch else {})}
         result = collection_state.enqueue_items(items, opts)
@@ -108,7 +108,7 @@ def cask_changes_cmd(
 
 @app.command()
 def pending(
-    job_name: Annotated[str, typer.Option("--job-name", help="Job name, e.g. process_item_job.")],
+    job_name: Annotated[str, typer.Option("--job-name", help="Queue key, e.g. process_item_job.")],
     limit: Annotated[int, typer.Option(help="Most rows to return.")] = 20,
 ):
     """List the oldest queued rows for a job, without removing them (see ack)."""
@@ -133,7 +133,7 @@ def ack(
 
 @app.command()
 def result(
-    job_name: Annotated[str, typer.Option("--job-name", help="Job name, e.g. process_item_job.")],
+    job_name: Annotated[str, typer.Option("--job-name", help="Queue key, e.g. process_item_job.")],
     result_json: Annotated[str, typer.Option("--result", help="The result, as a JSON object.")],
     item: Annotated[str | None, typer.Option(help="Item bronze folder path.")] = None,
     collection: Annotated[str | None, typer.Option(help="Collection key.")] = None,
@@ -183,7 +183,7 @@ def rollup(
     )],
 ):
     """Recompute a collection's item count and failed items, and record them as
-    its collection_rollup_job result."""
+    its showcase_collection_rollup_job result."""
     try:
         summary = collection_state.rollup(collection_key)
         utils.log(

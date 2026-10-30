@@ -16,7 +16,7 @@ and exec/digtk/sql/collection_registry.sql, applied via `digtk collection init-p
 Plus bronze_cask_audit_sensor, which reads CaskFS's audit log for bronze item
 changes (see digtk.models.cask_changes), and workspace_partition_sync_sensor, which keeps the 'workspace' dynamic
 partition in sync with the collections staged under CaskFS's /workspace (see
-digtk.models.workspace) for lib.pipeline_workspace.process_workspace_job.
+digtk.models.workspace) for lib.pipeline_workspace.workspace_process_job.
 """
 import datetime
 import json
@@ -25,7 +25,7 @@ import dagster as dg
 
 from lib import collection_state
 from lib.configs import CaskChangesConfig, collections_partitions
-from lib.pipeline_index import apply_cask_changes_job
+from lib.pipeline_index import showcase_apply_cask_changes_job
 from lib.utils import default_run_config, exec
 
 
@@ -117,18 +117,18 @@ def collection_partition_sync_sensor(context: dg.SensorEvaluationContext):
 @dg.sensor(minimum_interval_seconds=120)
 def workspace_partition_sync_sensor(context: dg.SensorEvaluationContext):
     """Keep the 'workspace' dynamic partition in sync with every workspace
-    collection (anything under /workspace/[username]/[collection] with a
+    folder (anything under /workspace/[username]/[folder] with a
     source/ directory — see `digtk workspace ls`), so a folder staged with
     `digtk workspace add` shows up as a pickable partition in the launchpad.
 
     Unlike collection_partition_sync_sensor, this also removes partitions whose
-    workspace collection is gone: workspace is scratch space, so a deleted
+    workspace folder is gone: workspace is scratch space, so a deleted
     folder has no run history worth keeping a partition around for.
 
     :param context: Dagster sensor evaluation context.
     """
     result = exec(["digtk", "workspace", "ls"])
-    current = {c["key"] for c in result.get("collections", [])}
+    current = {f["key"] for f in result.get("folders", [])}
 
     existing = set(context.instance.get_dynamic_partitions("workspace"))
     missing = sorted(current - existing)
@@ -139,22 +139,22 @@ def workspace_partition_sync_sensor(context: dg.SensorEvaluationContext):
         context.instance.delete_dynamic_partition("workspace", key)
 
     return dg.SkipReason(
-        f"{len(missing)} partition(s) added, {len(stale)} removed, {len(current)} workspace collection(s) total"
+        f"{len(missing)} partition(s) added, {len(stale)} removed, {len(current)} workspace folder(s) total"
     )
 
 
-@dg.sensor(job_name="derivatives_job")
+@dg.sensor(job_name="showcase_derivatives_job")
 def derivatives_on_ingest(context: dg.SensorEvaluationContext):
-    """Trigger derivatives_job when ingest_collection_job completes successfully.
+    """Trigger showcase_derivatives_job when ingest_collection_job completes successfully.
 
     :param context: Dagster sensor evaluation context.
     """
     raise NotImplementedError("phase 0.4")
 
 
-@dg.sensor(job_name="ocr_job")
+@dg.sensor(job_name="bronze_ocr_job")
 def ocr_on_derivatives(context: dg.SensorEvaluationContext):
-    """Trigger ocr_job when derivatives_job completes successfully.
+    """Trigger bronze_ocr_job when showcase_derivatives_job completes successfully.
 
     :param context: Dagster sensor evaluation context.
     """
@@ -163,7 +163,7 @@ def ocr_on_derivatives(context: dg.SensorEvaluationContext):
 
 @dg.sensor(job_name="metadata_job")
 def metadata_on_ocr(context: dg.SensorEvaluationContext):
-    """Trigger metadata_job when ocr_job completes successfully.
+    """Trigger metadata_job when bronze_ocr_job completes successfully.
 
     :param context: Dagster sensor evaluation context.
     """
@@ -181,9 +181,9 @@ def rag_on_metadata(context: dg.SensorEvaluationContext):
 
 @dg.sensor(job_name="showcase_search_index_job")
 def showcase_search_on_derivatives(context: dg.SensorEvaluationContext):
-    """Trigger showcase_search_index_job when derivatives_job completes successfully.
+    """Trigger showcase_search_index_job when showcase_derivatives_job completes successfully.
 
-    Fires off derivatives_job, not metadata_job like rag_on_metadata does -
+    Fires off showcase_derivatives_job, not metadata_job like rag_on_metadata does -
     see index_for_showcase_search's docstring in lib/assets.py for why the showcase
     search index deliberately doesn't wait on the AI metadata draft step.
 
@@ -227,11 +227,11 @@ def _change_tags(reindex, cleanup):
     return tags
 
 
-@dg.sensor(job=apply_cask_changes_job, minimum_interval_seconds=300)
+@dg.sensor(job=showcase_apply_cask_changes_job, minimum_interval_seconds=300)
 def bronze_cask_audit_sensor(context: dg.SensorEvaluationContext):
     """Act on settled bronze item changes from the CaskFS audit log.
-    Items to process are queued for item_queue_sensor's process_item_job runs.
-    Other changes get one apply_cask_changes_job run per collection.
+    Items to process are queued for item_queue_sensor's showcase_process_item_job runs.
+    Other changes get one showcase_apply_cask_changes_job run per collection.
 
     :param context: Dagster sensor evaluation context.
     """
@@ -248,7 +248,7 @@ def bronze_cask_audit_sensor(context: dg.SensorEvaluationContext):
     queued = 0
     if result["process"]:
         queued = collection_state.enqueue_items(result["process"], {"trigger": "cask-audit"})["enqueued"]
-        context.log.info(f"{queued} item(s) queued for process_item_job")
+        context.log.info(f"{queued} item(s) queued for showcase_process_item_job")
 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     requests = []

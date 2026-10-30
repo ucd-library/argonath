@@ -18,6 +18,7 @@ beyond the image/PDF split: a rasterized PDF page is just a local image file by
 the time ocr_image()/vision_image() see it.
 """
 import os
+import re
 
 from digtk.lib import fs, image_magick, ocr_utils, pdf_render, utils
 from digtk.lib.config import CONFIG
@@ -81,6 +82,15 @@ def parse_widths(widths):
     if isinstance(widths, str):
         widths = [int(w.strip()) for w in widths.split(",")]
     return sorted(widths)
+
+
+def natural_key(name):
+    """Sort key that orders embedded numbers by value (page_2 before page_10).
+
+    :param str name: Filename.
+    :rtype: list
+    """
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
 
 
 def page_tag(page_index, count):
@@ -205,14 +215,16 @@ def stage_pages(item, tmp_dir, opts={}):
         binaries of these formats; 'files' (set[str], optional) — only stage
         binaries with these filenames (one Dagster step per file — see
         digtk.models.workspace.run()); 'raster_format' (str, default
-        CONFIG["pdf"]["raster_format"]); anything else is forwarded to
-        pdf_render.page_count()/rasterize_page().
+        CONFIG["pdf"]["raster_format"]); 'rasterize' (bool, default True —
+        False lists PDF pages with local_path None); anything else is
+        forwarded to pdf_render.page_count()/rasterize_page().
     :returns: Pages in source order (all of one binary's pages before the next
         binary's). Each is {"source_path": "cask:/..." (the binary this page came
         from), "filename": str, "stem": str, "kind": "image"|"pdf",
         "page_no": int|None (1-indexed, PDFs only), "count": int|None (the
         PDF's page count), "page_tag": str|None (page_tag() of this page, PDFs
-        only), "local_path": str (the staged image or rasterized page)}.
+        only), "local_path": str (the staged image or rasterized page; None
+        with 'rasterize' False), "pdf_path": str (PDFs only — the staged PDF)}.
     :rtype: list[dict]
     """
     formats = opts.get("formats", {"image", "pdf"})
@@ -238,15 +250,36 @@ def stage_pages(item, tmp_dir, opts={}):
 
         count = pdf_render.page_count(src["local_path"], opts)
         for page_index in range(count):
-            tag = page_tag(page_index, count)
-            utils.log(f"{filename} page {page_index + 1}/{count}: rasterizing...")
-            raster_path = os.path.join(tmp_dir, f"{src['stem']}-{tag}-raster.{raster_format}")
-            raster = pdf_render.rasterize_page(src["local_path"], page_index, raster_path, opts)
-            pages.append({
+            page = {
                 **base, "kind": "pdf", "page_no": page_index + 1, "count": count,
-                "page_tag": tag, "local_path": raster["dest_path"],
-            })
+                "page_tag": page_tag(page_index, count), "local_path": None,
+                "pdf_path": src["local_path"],
+            }
+            if opts.get("rasterize", True):
+                rasterize(page, tmp_dir, {**opts, "raster_format": raster_format})
+            pages.append(page)
     return pages
+
+
+def rasterize(page, tmp_dir, opts={}):
+    """Rasterize a PDF page entry that was staged without rasterizing.
+
+    No-op when the page already has a local image.
+
+    :param dict page: A stage_pages() PDF entry; its 'local_path' is set.
+    :param str tmp_dir: Local directory to write into.
+    :param dict opts: 'raster_format', plus pdf_render.rasterize_page() opts.
+    :returns: The page's local image path.
+    :rtype: str
+    """
+    if page.get("local_path"):
+        return page["local_path"]
+    raster_format = opts.get("raster_format", CONFIG["pdf"]["raster_format"])
+    utils.log(f"{page['filename']} page {page['page_no']}/{page['count']}: rasterizing...")
+    raster_path = os.path.join(tmp_dir, f"{page['stem']}-{page['page_tag']}-raster.{raster_format}")
+    page["local_path"] = pdf_render.rasterize_page(
+        page["pdf_path"], page["page_no"] - 1, raster_path, opts)["dest_path"]
+    return page["local_path"]
 
 
 def ocr_image(page, tmp_dir, opts={}):
@@ -272,6 +305,40 @@ def ocr_image(page, tmp_dir, opts={}):
     dest = os.path.join(tmp_dir, f"{_page_key(page)}-{base_name}")
     image_magick.prep_ocr(page["local_path"], dest, opts={**opts, "deskew": orientation["deskew"]})
     return {"local_path": dest, "deskew": orientation["deskew"], "angle": orientation["angle"]}
+
+
+def geometry_opts(opts={}):
+    """Resolve the OCR-prep settings that decide word-box geometry.
+
+    Two renders with equal geometry_opts() and the same deskew line up 1:1.
+
+    :param dict opts: image_magick.prep_ocr() opts.
+    :returns: {'size', 'dpi', 'enhance', 'threshold'} with defaults filled in.
+    :rtype: dict
+    """
+    return {
+        "size": opts.get("size", CONFIG["image"]["ocr_prep_size"]),
+        "dpi": opts.get("dpi", CONFIG["image"]["dpi"]),
+        "enhance": opts.get("enhance") or None,
+        "threshold": opts.get("threshold", CONFIG["image"]["deskew_threshold"]),
+    }
+
+
+def display_image(page, tmp_dir, opts={}):
+    """Render the page as ocr_image() does, minus binarization.
+
+    Same resize, enhance and deskew, so OCR word boxes line up 1:1.
+    Used as the visible page in searchable PDFs.
+
+    :param dict page: A stage_pages() entry.
+    :param str tmp_dir: Local directory to write the result into.
+    :param dict opts: image_magick.prep_ocr() opts; pass ocr_image()'s 'deskew'.
+    :returns: Local path to the rendered page.
+    :rtype: str
+    """
+    dest = os.path.join(tmp_dir, f"{_page_key(page)}-display.jpg")
+    image_magick.prep_ocr(page["local_path"], dest, opts={**opts, "binarize": False})
+    return dest
 
 
 def vision_image(page, tmp_dir, opts={}):

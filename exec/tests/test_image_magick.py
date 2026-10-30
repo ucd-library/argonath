@@ -312,6 +312,22 @@ def test_prep_ocr_bad_enhance_raises(fake_run):
         image_magick.prep_ocr("/tmp/src.jpg", "/tmp/dest.jpg", opts={"enhance": "sharpen"})
 
 
+def test_prep_ocr_binarize_false_skips_fuzz_whitening(fake_run):
+    calls = fake_run()
+    image_magick.prep_ocr("/tmp/src.jpg", "/tmp/dest.jpg", opts={"binarize": False, "deskew": True})
+    assert calls[0]["argv"] == [
+        "convert", "/tmp/src.jpg", "-auto-orient",
+        "-resize", "2048x",
+        "-deskew", "40%",
+        "-density", "300",
+        "-alpha", "remove",
+        "-filter", "catrom",
+        "-layers", "flatten",
+        "-quality", "100",
+        "/tmp/dest.jpg",
+    ]
+
+
 def test_prep_ocr_honors_custom_fuzz_and_dpi(fake_run):
     calls = fake_run()
     image_magick.prep_ocr("/tmp/src.jpg", "/tmp/dest.jpg", opts={"fuzz": 50, "dpi": 600})

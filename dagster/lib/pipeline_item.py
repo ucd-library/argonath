@@ -1,5 +1,5 @@
 """
-process_item_job: run one item's showcase derivatives on demand. The job is
+showcase_process_item_job: run one item's showcase derivatives on demand. The job is
 manual and unpartitioned, and the item is addressed by its bronze tree folder
 (ItemRunConfig.item, e.g. "bronze/preservica/haeger/latest/tree/quarter-mile")
 throughout the derivative and finalize steps, which never read or record an
@@ -8,7 +8,7 @@ folder's identifiers.json when it builds the gold item.jsonld.json), and
 pdc_index_item's Elasticsearch upsert uses that ARK (see below).
 
 It works like one item's slice of lib/pipeline_fanout.py's
-process_collection_job and reuses that module's pieces: item_tasks() builds
+showcase_process_collection_job and reuses that module's pieces: item_tasks() builds
 the tasks (one per image/PDF file, one per video/audio item),
 process_derivative_batch runs them, finalize_one_item() writes the item-level
 derivative outputs, and build_item_record() assembles the canonical gold
@@ -30,12 +30,12 @@ reports it and fails like any other failed step.
 
 Task ids, events and digtk reporting rows use the item's collection key (the
 first three path segments, "bronze/[group]/[collection]"), the same as
-process_collection_job. Runs are tagged argonath/item and argonath/collection,
+showcase_process_collection_job. Runs are tagged argonath/item and argonath/collection,
 plus argonath/ark once pdc_generate_item_record has built the record, so
 they're searchable in the Runs screen. Queued runs (see lib.pipeline_collection.item_queue_sensor) already
 have argonath/item and argonath/collection at launch.
 
-Each run's outcome is recorded as the item's process_item_job result in
+Each run's outcome is recorded as the item's showcase_process_item_job result in
 collection_state (see lib.collection_state): "success" after pdc_index_item, and
 "failed" from the op that fails. A recorded
 result also tags the run argonath/result=<status>. process_item_failure_sensor
@@ -53,7 +53,6 @@ from dagster import (
     job,
     op,
 )
-from dagster_celery import celery_executor
 
 from lib import collection_state
 from lib.configs import ItemRunConfig
@@ -66,7 +65,7 @@ from lib.pipeline_fanout import (
     item_tasks,
     process_derivative_batch,
 )
-from lib.utils import default_run_config, exec
+from lib.utils import celery_job_executor, default_run_config, exec
 
 
 def normalize_item(path):
@@ -248,13 +247,13 @@ def _record(context, item, status, opts={}):
 
 @job(
     # "dagster/max_runtime": "0": no duration-based auto-cancel. A large item
-    # can have hundreds of pages. See process_collection_job's comment in
+    # can have hundreds of pages. See showcase_process_collection_job's comment in
     # lib/pipeline_fanout.py.
     tags={"argonath/kind": "item", "dagster/max_runtime": "0"},
-    executor_def=celery_executor,
+    executor_def=celery_job_executor(),
     config=default_run_config({"pdc_plan_item": ItemRunConfig}),
 )
-def process_item_job():
+def showcase_process_item_job():
     """One item's derivatives, addressed by its bronze folder: one step per
     image/PDF file (and per video/audio format), then finalize, then building
     its canonical item.jsonld.json, then the Elasticsearch upsert. Launch it
@@ -267,9 +266,9 @@ def process_item_job():
     pdc_index_item(pdc_generate_item_record(pdc_finalize_item(results, item)))
 
 
-@dg.run_failure_sensor(monitored_jobs=[process_item_job])
+@dg.run_failure_sensor(monitored_jobs=[showcase_process_item_job])
 def process_item_failure_sensor(context: dg.RunFailureSensorContext):
-    """Record "failed" in collection_state for failed process_item_job runs
+    """Record "failed" in collection_state for failed showcase_process_item_job runs
     that didn't record a result themselves — no argonath/result tag, e.g. a
     crashed celery worker or an unexpected error in an op. The error is taken
     from the run's step failures. Runs whose op already recorded "failed" are

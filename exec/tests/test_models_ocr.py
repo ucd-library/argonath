@@ -4,7 +4,7 @@ import pytest
 
 from digtk.lib import ai, derivative, fs, items, ocr_utils
 from digtk.lib.items import ItemLocation
-from digtk.models import ocr, prep
+from digtk.models import ocr, pdf_inplace, prep
 
 ARK = "ark:/87287/d7abc1234"
 
@@ -46,6 +46,12 @@ WORKSPACE_ITEM = ItemLocation(
 )
 
 PDF_PAGE_COUNT = 2
+
+
+@pytest.fixture(autouse=True)
+def scanned_pdfs(monkeypatch):
+    """Fake PDFs read as all-scan pages unless a test says otherwise."""
+    monkeypatch.setattr(pdf_inplace, "text_pages", lambda path: [False] * PDF_PAGE_COUNT)
 
 
 @pytest.fixture
@@ -112,7 +118,8 @@ def fake_prep(monkeypatch):
             if ext == "pdf":
                 for i in range(PDF_PAGE_COUNT):
                     pages.append({**base, "kind": "pdf", "page_no": i + 1, "count": PDF_PAGE_COUNT,
-                                  "page_tag": f"page-{i:03d}", "local_path": f"{tmp_dir}/{stem}-{i}.tif"})
+                                  "page_tag": f"page-{i:03d}", "local_path": f"{tmp_dir}/{stem}-{i}.tif",
+                                  "pdf_path": f"{tmp_dir}/{filename}"})
             elif ext in ("tiff", "jpg"):
                 pages.append({**base, "kind": "image", "page_no": None, "count": None,
                               "page_tag": None, "local_path": f"{tmp_dir}/{filename}"})
@@ -165,7 +172,9 @@ def test_run_ocr_image_runs_both_engines(monkeypatch, fake_derivative, fake_tess
         assert write["type"] == "silver"
         assert write["source_files"] == ["cask:/bronze/g/c/latest/item/photo.tiff"]
     result_write = next(w for w in fake_derivative if w["rel_path"] == "item/text/ocr-result.json")
-    assert json.loads(result_write["data"]) == {"tesseract_confidence": 88.5}
+    assert json.loads(result_write["data"]) == {
+        "tesseract_confidence": 88.5, "deskew": False, "prep": prep.geometry_opts({}),
+    }
 
 
 def test_run_ocr_never_reads_showcase_derivatives(monkeypatch, fake_derivative, fake_tesseract, fake_vision, fake_prep):
@@ -390,7 +399,7 @@ def test_run_ocr_files_opt_keeps_whole_item_naming(monkeypatch, fake_derivative,
         "box-1/folder-3/text/photo-a-ocr.hocr", "box-1/folder-3/text/photo-a-transcript.txt",
         "box-1/folder-3/text/photo-a-ocr-result.json",
     }
-    assert fake_prep["stage_pages"] == [{"files": {"photo-a.tiff"}}]
+    assert fake_prep["stage_pages"] == [{"files": {"photo-a.tiff"}, "rasterize": False}]
     assert "files" not in fake_tesseract[0]["opts"]
 
 
@@ -401,3 +410,241 @@ def test_run_ocr_files_opt_keeps_mixed_item_pdf_namespacing(monkeypatch, fake_de
 
     assert result["images"] == {}
     assert result["pdfs"]["document.pdf"]["pages"]["1"]["hocr_path"].endswith("item/document/text/page-000/ocr.hocr")
+
+
+# --- page_location / correct_ocr ----------------------------------------------
+
+def _page(kind, stem="document", page_no=None, tag=None):
+    return {"filename": f"{stem}.{'pdf' if kind == 'pdf' else 'tiff'}", "stem": stem, "kind": kind,
+            "page_no": page_no, "count": 2 if kind == "pdf" else None, "page_tag": tag,
+            "source_path": "cask:/bronze/x", "local_path": None}
+
+
+def test_page_location_matches_run_ocr_naming():
+    assert ocr.page_location(ITEM, _page("image", "photo")) == (("text",), "photo", False)
+    assert ocr.page_location(MULTI_ITEM, _page("image", "photo-a"))[2] is True
+    assert ocr.page_location(PDF_ITEM, _page("pdf", page_no=1, tag="page-000")) == (
+        ("text", "page-000"), "document", False)
+    assert ocr.page_location(MIXED_ITEM, _page("pdf", page_no=1, tag="page-000"))[0] == (
+        "document/text", "page-000")
+
+
+HOCR = ("<div class='ocr_page'><span class='ocrx_word' title='bbox 0 0 10 10; x_wconf 90'>The</span>"
+        "<span class='ocrx_word' title='bbox 20 0 60 10; x_wconf 80'>hrown</span>"
+        "<span class='ocrx_word' title='bbox 70 0 99 10; x_wconf 85'>dog</span></div>")
+
+
+def _serve(monkeypatch, table):
+    def fake_read(path):
+        if path in table:
+            return table[path]
+        raise FileNotFoundError(path)
+    monkeypatch.setattr(fs, "read", fake_read)
+
+
+def test_read_page_ocr_returns_words_transcript_and_record(monkeypatch):
+    base = "cask:/silver/g/c/latest/item/text"
+    _serve(monkeypatch, {
+        f"{base}/ocr.hocr": HOCR.encode(),
+        f"{base}/transcript.txt": b"The brown dog",
+        f"{base}/ocr-result.json": b'{"deskew": true}',
+    })
+    got = ocr.read_page_ocr(ITEM, _page("image", "photo"))
+    assert [w["text"] for w in got["words"]] == ["The", "hrown", "dog"]
+    assert got["transcript"] == "The brown dog"
+    assert got["record"] == {"deskew": True}
+    assert len(got["hocr_sha1"]) == 40
+
+
+def test_read_page_ocr_none_without_hocr(monkeypatch):
+    _serve(monkeypatch, {})
+    assert ocr.read_page_ocr(ITEM, _page("image", "photo")) is None
+
+
+def test_correct_ocr_publishes_corrections_per_page(monkeypatch, fake_derivative, fake_prep):
+    monkeypatch.setattr(items, "resolve", lambda ark, opts={}: PDF_ITEM)
+    base = "cask:/silver/g/c/latest/item/text"
+    table = {}
+    for tag in ("page-000", "page-001"):
+        table[f"{base}/{tag}/ocr.hocr"] = HOCR.encode()
+        table[f"{base}/{tag}/transcript.txt"] = b"The brown dog"
+    _serve(monkeypatch, table)
+
+    result = ocr.correct_ocr(ARK)
+
+    assert result["status"] == "success"
+    assert result["pdfs"]["document.pdf"]["pages"]["1"]["changes"] == 1
+    assert fake_prep["stage_pages"][0]["rasterize"] is False
+    write = fake_derivative[0]
+    assert write["rel_path"] == "item/text/page-000/ocr-corrected.json"
+    assert write["source_files"] == [f"{base}/page-000/ocr.hocr", f"{base}/page-000/transcript.txt"]
+    assert write["opts"]["link_relation"] == ocr.CORRECTED_LINK_RELATION
+    doc = json.loads(write["data"])
+    assert [w["text"] for w in doc["words"]] == ["The", "brown", "dog"]
+    assert doc["changes"] == [{"i": 1, "old": "hrown", "new": "brown"}]
+
+
+def test_correct_ocr_skips_pages_without_transcript(monkeypatch, fake_derivative, fake_prep):
+    monkeypatch.setattr(items, "resolve", lambda ark, opts={}: PDF_ITEM)
+    base = "cask:/silver/g/c/latest/item/text"
+    _serve(monkeypatch, {
+        f"{base}/page-000/ocr.hocr": HOCR.encode(),
+        f"{base}/page-000/transcript.txt": b"The brown dog",
+        f"{base}/page-001/ocr.hocr": HOCR.encode(),
+    })
+
+    result = ocr.correct_ocr(ARK)
+
+    assert result["status"] == "success"
+    assert result["failed"] == []
+    assert result["pdfs"]["document.pdf"]["pages"]["2"] == {"skipped": "no vision transcript (ocr ran without vision)"}
+
+
+def test_correct_ocr_skips_pdf_pages_with_text(monkeypatch, fake_derivative, fake_prep):
+    monkeypatch.setattr(items, "resolve", lambda ark, opts={}: PDF_ITEM)
+    monkeypatch.setattr(pdf_inplace, "text_pages", lambda path: [True, False])
+    base = "cask:/silver/g/c/latest/item/text"
+    _serve(monkeypatch, {f"{base}/page-001/ocr.hocr": HOCR.encode()})  # no transcript either
+
+    result = ocr.correct_ocr(ARK)
+
+    assert result["status"] == "success"
+    assert result["pdfs"]["document.pdf"]["pages"] == {
+        "1": {"skipped": "page has text"},
+        "2": {"skipped": "no vision transcript (ocr ran without vision)"},
+    }
+
+
+def test_correct_ocr_raises_when_nothing_was_ocrd(monkeypatch, fake_derivative, fake_prep):
+    monkeypatch.setattr(items, "resolve", lambda ark, opts={}: PDF_ITEM)
+    _serve(monkeypatch, {})
+    with pytest.raises(RuntimeError, match="run `digtk ocr tesseract` first"):
+        ocr.correct_ocr(ARK)
+
+
+def test_run_ocr_skip_existing_skips_pages_with_outputs(monkeypatch, fake_derivative, fake_tesseract, fake_vision, fake_prep):
+    monkeypatch.setattr(items, "resolve", lambda ark, opts={}: ITEM)
+    monkeypatch.setattr(fs, "exists", lambda path: True)
+
+    result = ocr.run_ocr(ARK, opts={"skip_existing": True})
+
+    assert result["images"]["photo.tiff"]["skipped"] == "outputs exist"
+    assert fake_tesseract == [] and fake_vision == []
+
+
+def test_run_ocr_skip_existing_reruns_page_missing_its_transcript(monkeypatch, fake_derivative, fake_tesseract, fake_vision, fake_prep):
+    monkeypatch.setattr(items, "resolve", lambda ark, opts={}: ITEM)
+    monkeypatch.setattr(fs, "exists", lambda path: not path.endswith("transcript.txt"))
+
+    ocr.run_ocr(ARK, opts={"skip_existing": True})
+
+    assert len(fake_tesseract) == 1
+    assert "skip_existing" not in fake_tesseract[0]["opts"]
+
+
+def test_run_ocr_skips_pdf_pages_that_have_text(monkeypatch, fake_derivative, fake_tesseract, fake_vision, fake_prep):
+    monkeypatch.setattr(items, "resolve", lambda ark, opts={}: PDF_ITEM)
+    monkeypatch.setattr(pdf_inplace, "text_pages", lambda path: [True, False])
+
+    result = ocr.run_ocr(ARK)
+
+    pages = result["pdfs"]["document.pdf"]["pages"]
+    assert pages["1"] == {"skipped": "page has text"}
+    assert "hocr_path" in pages["2"]
+    assert len(fake_tesseract) == 1
+    assert fake_prep["stage_pages"][0]["rasterize"] is False
+
+
+def test_run_ocr_ocr_text_pages_forces_ocr(monkeypatch, fake_derivative, fake_tesseract, fake_vision, fake_prep):
+    monkeypatch.setattr(items, "resolve", lambda ark, opts={}: PDF_ITEM)
+    monkeypatch.setattr(pdf_inplace, "text_pages", lambda path: [True, True])
+
+    ocr.run_ocr(ARK, opts={"ocr_text_pages": True})
+
+    assert len(fake_tesseract) == 2
+    assert all("ocr_text_pages" not in c["opts"] for c in fake_tesseract)
+
+
+
+# --- vision line OCR ------------------------------------------------------------
+
+def test_parse_lines_scales_normalized_boxes():
+    raw = 'Here: [{"text": "Dear Sir", "bbox": [0, 0, 500, 100]}, {"text": "", "bbox": [1, 1, 2, 2]}]'
+    assert ocr._parse_lines(raw, 2000, 1000) == [{"text": "Dear Sir", "bbox": [0.0, 0.0, 1000.0, 100.0]}]
+
+
+def test_parse_lines_rejects_degenerate_answer():
+    raw = '[{"text": "a", "bbox": [1, 2, 3, 4]}, {"bbox": [1, 2, 3, 4]}, {"bbox": [1, 2, 3, 4]}, {"bbox": [1, 2, 3, 4]}]'
+    assert ocr._parse_lines(raw, 100, 100) is None
+    assert ocr._parse_lines("no json", 100, 100) is None
+
+
+def _page_png(tmp_path):
+    import pymupdf
+    path = tmp_path / "page.png"
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 1000, 500))
+    pix.clear_with(255)
+    pix.save(str(path))
+    return str(path)
+
+
+def _lines_json(n):
+    return json.dumps([{"text": f"line {i}", "bbox": [0, i * 10, 100, i * 10 + 8]} for i in range(n)])
+
+
+def test_ocr_page_lines_retries_thin_answers_at_other_sizes(monkeypatch, tmp_path):
+    from digtk.lib import image_magick
+    page = _page_png(tmp_path)
+    resized = []
+    monkeypatch.setattr(image_magick, "thumbnail", lambda src, dest, width, opts={}: resized.append(width))
+    answers = iter([_lines_json(1), _lines_json(2), _lines_json(5)])
+    monkeypatch.setattr(ai, "chat_completion", lambda message, opts={}: next(answers))
+
+    lines = ocr.ocr_page_lines(page, str(tmp_path))
+
+    assert len(lines) == 5
+    assert resized == [1400, 2600]
+    assert lines[1]["bbox"] == [0.0, 5.0, 100.0, 9.0]  # 0-1000 -> 1000x500 px
+
+
+def test_ocr_page_lines_stops_when_enough_lines(monkeypatch, tmp_path):
+    page = _page_png(tmp_path)
+    calls = []
+    monkeypatch.setattr(ai, "chat_completion", lambda message, opts={}: calls.append(opts) or _lines_json(4))
+    assert len(ocr.ocr_page_lines(page, str(tmp_path))) == 4
+    assert len(calls) == 1 and calls[0]["temperature"] == 0.0
+
+
+def test_vision_lines_uses_matching_cache(monkeypatch, fake_derivative, tmp_path):
+    page = {"filename": "photo.tiff", "stem": "photo", "kind": "image", "page_no": None,
+            "count": None, "page_tag": None, "source_path": "cask:/bronze/x/photo.tiff"}
+    path = "cask:/silver/g/c/latest/item/text/qwen-lines.json"
+    cached = {"prep": prep.geometry_opts({}), "lines": [{"text": "hi", "bbox": [0, 0, 1, 1]}]}
+    monkeypatch.setattr(fs, "read", lambda p: json.dumps(cached).encode() if p == path else (_ for _ in ()).throw(FileNotFoundError(p)))
+    monkeypatch.setattr(ocr, "ocr_page_lines", lambda *a, **k: pytest.fail("no model call"))
+
+    assert ocr.vision_lines(ITEM, page, "img.jpg", str(tmp_path)) == {"lines": cached["lines"], "path": path}
+
+
+def test_vision_lines_redoes_cache_from_other_geometry(monkeypatch, fake_derivative, tmp_path):
+    page = {"filename": "photo.tiff", "stem": "photo", "kind": "image", "page_no": None,
+            "count": None, "page_tag": None, "source_path": "cask:/bronze/x/photo.tiff"}
+    stale = {"prep": {**prep.geometry_opts({}), "size": 1}, "lines": []}
+    monkeypatch.setattr(fs, "read", lambda p: json.dumps(stale).encode())
+    fresh = [{"text": "new", "bbox": [0, 0, 1, 1]}]
+    monkeypatch.setattr(ocr, "ocr_page_lines", lambda *a, **k: fresh)
+
+    result = ocr.vision_lines(ITEM, page, "img.jpg", str(tmp_path))
+
+    assert result["lines"] == fresh
+    assert fake_derivative[-1]["rel_path"] == "item/text/qwen-lines.json"
+    assert json.loads(fake_derivative[-1]["data"])["prep"] == prep.geometry_opts({})
+
+
+def test_vision_lines_does_not_cache_unusable_answers(monkeypatch, fake_derivative, tmp_path):
+    page = {"filename": "photo.tiff", "stem": "photo", "kind": "image", "page_no": None,
+            "count": None, "page_tag": None, "source_path": "cask:/bronze/x/photo.tiff"}
+    monkeypatch.setattr(fs, "read", lambda p: (_ for _ in ()).throw(FileNotFoundError(p)))
+    monkeypatch.setattr(ocr, "ocr_page_lines", lambda *a, **k: None)
+    assert ocr.vision_lines(ITEM, page, "img.jpg", str(tmp_path)) == {"lines": [], "path": None}
+    assert fake_derivative == []

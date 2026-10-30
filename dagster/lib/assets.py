@@ -16,6 +16,7 @@ from lib.configs import (
     OcrConfig,
     SearchIndexConfig,
     AltTextConfig,
+    FiguresConfig,
     TagPdfConfig,
 )
 from lib.utils import exec
@@ -220,7 +221,7 @@ def apply_spreads(context: dg.AssetExecutionContext):
 
     The deps=[detect_spreads] declaration is for asset-graph accuracy only
     (apply reads what detect produces) — nothing here auto-chains the two;
-    an operator triggers apply_spreads_job manually after confirming a human
+    an operator triggers bronze_apply_spreads_job manually after confirming a human
     has reviewed/corrected gutters.json.
 
     :param context: Dagster asset execution context.
@@ -276,7 +277,8 @@ def run_ocr(context: dg.AssetExecutionContext, config: OcrConfig):
     own inputs from the bronze binaries (see digtk.models.prep).
 
     :param context: Dagster asset execution context.
-    :param config: OcrConfig with lang, psm, oem, vision.
+    :param config: OcrConfig with lang, psm, oem, vision, ocr_enhance,
+        ocr_text_pages.
     """
     ark = context.partition_key.keys_by_dimension["item"]
     cmd = ["digtk", "ocr", "tesseract", ark,
@@ -285,9 +287,32 @@ def run_ocr(context: dg.AssetExecutionContext, config: OcrConfig):
            "--oem",  str(config.oem)]
     if not config.vision:
         cmd.append("--no-vision")
+    if config.ocr_enhance:
+        cmd += ["--ocr-enhance", config.ocr_enhance]
+    if config.ocr_text_pages:
+        cmd.append("--ocr-text-pages")
     result = exec(cmd + _reporting_args(context))
     _log_failures(context, result)
     context.log.info(f"OCR result: {result}")
+    return dg.Output(result)
+
+
+@dg.asset(
+    partitions_def=items_partitions,
+    deps=[run_ocr],
+    group_name="ocr",
+)
+def correct_ocr(context: dg.AssetExecutionContext):
+    """Correct an item's OCR words from its vision transcript (`digtk ocr correct`).
+
+    Reads run_ocr's hOCR and transcripts; makes no OCR or vision calls.
+
+    :param context: Dagster asset execution context.
+    """
+    ark = context.partition_key.keys_by_dimension["item"]
+    result = exec(["digtk", "ocr", "correct", ark] + _reporting_args(context))
+    _log_failures(context, result)
+    context.log.info(f"OCR correction result: {result}")
     return dg.Output(result)
 
 
@@ -305,7 +330,8 @@ def generate_alt_text(context: dg.AssetExecutionContext, config: AltTextConfig):
     nor the (still-unimplemented, phase 0.6) AI metadata draft.
 
     :param context: Dagster asset execution context.
-    :param config: AltTextConfig with collection_context, want_description, max_alt_chars.
+    :param config: AltTextConfig with collection_context, want_description,
+        want_long, max_alt_chars.
     """
     ark = context.partition_key.keys_by_dimension["item"]
     cmd = ["digtk", "accessibility", "alt-text", ark, "--max-alt-chars", str(config.max_alt_chars)]
@@ -313,6 +339,8 @@ def generate_alt_text(context: dg.AssetExecutionContext, config: AltTextConfig):
         cmd += ["--collection-context", config.collection_context]
     if config.want_description:
         cmd += ["--want-description"]
+    if config.want_long:
+        cmd += ["--long"]
     result = exec(cmd + _reporting_args(context))
     _log_failures(context, result)
     context.log.info(f"Alt-text result: {result}")
@@ -334,18 +362,87 @@ def tag_accessible_pdf(context: dg.AssetExecutionContext, config: TagPdfConfig):
     digtk.models.accessibility.tag_pdf's own docstring.
 
     :param context: Dagster asset execution context.
-    :param config: TagPdfConfig with lang, strict, tables, validate.
+    :param config: TagPdfConfig with lang, strict, tables, validate,
+        lookahead, min_conf, ocr_enhance, paragraphs, reuse_ocr, correct,
+        skip_existing, mode, embed_fonts, figures, geometry.
     """
     ark = context.partition_key.keys_by_dimension["item"]
-    cmd = ["digtk", "accessibility", "tag-pdf", ark, "--lang", config.lang]
-    if config.strict:
-        cmd.append("--strict")
-    if config.tables:
-        cmd.append("--tables")
-    if not config.validate:
-        cmd.append("--no-validate")
-    result = exec(cmd + _reporting_args(context))
+    mode_args = ["--mode", config.mode, "--embed-fonts" if config.embed_fonts else "--no-embed-fonts"]
+    result = exec(["digtk", "accessibility", "tag-pdf", ark] + _tag_pdf_args(config) + mode_args
+                  + _reporting_args(context))
     context.log.info(f"PDF tagging result: {result}")
+    return dg.Output(result)
+
+
+def _tag_pdf_args(config):
+    """`digtk accessibility tag-pdf|build-pdf` flags for a TagPdfConfig.
+
+    :param TagPdfConfig config: The asset's config.
+    :rtype: list[str]
+    """
+    args = ["--lang", config.lang, "--lookahead", str(config.lookahead), "--min-conf", str(config.min_conf)]
+    if config.strict:
+        args.append("--strict")
+    if config.tables:
+        args.append("--tables")
+    if config.paragraphs:
+        args.append("--paragraphs")
+    if not config.reuse_ocr:
+        args.append("--no-reuse-ocr")
+    if config.correct:
+        args.append("--correct")
+    if not config.validate:
+        args.append("--no-validate")
+    if config.ocr_enhance:
+        args += ["--ocr-enhance", config.ocr_enhance]
+    if config.skip_existing:
+        args.append("--skip-existing")
+    if config.figures:
+        args.append("--figures")
+    args += ["--geometry", config.geometry]
+    return args
+
+
+@dg.asset(
+    partitions_def=items_partitions,
+    deps=[ingest_item],
+    group_name="accessibility",
+)
+def detect_figures(context: dg.AssetExecutionContext, config: FiguresConfig):
+    """Detect and describe the figures on an item's pages, for review.
+
+    Writes figures.json, crops and figure-review.csv; tag_accessible_pdf and
+    build_accessible_pdf use them with their figures option.
+
+    :param context: Dagster asset execution context.
+    :param config: FiguresConfig with collection_context, max_alt_chars.
+    """
+    ark = context.partition_key.keys_by_dimension["item"]
+    cmd = ["digtk", "accessibility", "figures", ark, "--max-alt-chars", str(config.max_alt_chars)]
+    if config.collection_context:
+        cmd += ["--collection-context", config.collection_context]
+    result = exec(cmd + _reporting_args(context))
+    _log_failures(context, result)
+    context.log.info(f"Figures result: {result}")
+    return dg.Output(result)
+
+
+@dg.asset(
+    partitions_def=items_partitions,
+    deps=[ingest_item],
+    group_name="accessibility",
+)
+def build_accessible_pdf(context: dg.AssetExecutionContext, config: TagPdfConfig):
+    """Build an item's page images into one searchable, PDF/UA-1-tagged PDF.
+
+    Reuses run_ocr's word boxes when they match, but doesn't require them.
+
+    :param context: Dagster asset execution context.
+    :param config: TagPdfConfig, the same options as tag_accessible_pdf.
+    """
+    ark = context.partition_key.keys_by_dimension["item"]
+    result = exec(["digtk", "accessibility", "build-pdf", ark] + _tag_pdf_args(config) + _reporting_args(context))
+    context.log.info(f"PDF build result: {result}")
     return dg.Output(result)
 
 

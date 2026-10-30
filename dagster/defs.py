@@ -8,25 +8,25 @@ Submodule layout (all files live alongside this one in dagster/):
   lib/jobs.py            — All dg.define_asset_job definitions
   lib/sensors.py         — All @dg.sensor definitions
   lib/schedules.py       — All dg.ScheduleDefinition instances
-  lib/pipeline_fanout.py — process_collection_job, the op-based collection-
-                            level fan-out alternative to derivatives_job's
+  lib/pipeline_fanout.py — showcase_process_collection_job, the op-based collection-
+                            level fan-out alternative to showcase_derivatives_job's
                             per-item partitions (derivatives only; see its
                             own docstring)
-  lib/pipeline_workspace.py — process_workspace_job, the same fan-out pattern
+  lib/pipeline_workspace.py — workspace_process_job, the same fan-out pattern
                             over a CaskFS workspace collection (scans staged
-                            before they have an ARK), and promote_workspace_job,
+                            before they have an ARK), and workspace_promote_job,
                             which copies reviewed items into silver (see its
                             own docstring)
-  lib/pipeline_item.py   — process_item_job, an unpartitioned run of one item's
+  lib/pipeline_item.py   — showcase_process_item_job, an unpartitioned run of one item's
                             derivatives (addressed by its bronze tree folder),
                             finalize and Elasticsearch upsert, plus
                             process_item_failure_sensor
                             (see its own docstring)
-  lib/pipeline_collection.py — item_queue_sensor (process_item_job runs
-                            from the queue) and collection_rollup_job/sensor.
-  lib/pipeline_index.py  — reindex_collection_job, apply_cask_changes_job
+  lib/pipeline_collection.py — item_queue_sensor (showcase_process_item_job runs
+                            from the queue) and showcase_collection_rollup_job/sensor.
+  lib/pipeline_index.py  — showcase_reindex_collection_job, showcase_apply_cask_changes_job
                             (audit reindex/delete changes),
-                            delete_collection_index_job and delete_item_index_job
+                            showcase_delete_collection_index_job and showcase_delete_item_index_job
   lib/collection_state.py — the collection_state queue/results store, via
                             `digtk state` (see digtk.models.collection_state)
 
@@ -45,22 +45,28 @@ from lib.assets import (
     ingest_item,
     generate_derivatives,
     run_ocr,
+    correct_ocr,
     generate_metadata,
     generate_alt_text,
     tag_accessible_pdf,
+    build_accessible_pdf,
+    detect_figures,
     index_for_rag,
     index_for_showcase_search,
 )
 from lib.jobs import (
     reconcile_collection_job,
-    detect_spreads_job,
-    apply_spreads_job,
+    bronze_detect_spreads_job,
+    bronze_apply_spreads_job,
     ingest_collection_job,
-    derivatives_job,
-    ocr_job,
+    showcase_derivatives_job,
+    bronze_ocr_job,
+    bronze_correct_ocr_job,
     metadata_job,
-    alt_text_job,
-    tag_pdf_job,
+    bronze_alt_text_job,
+    bronze_tag_pdf_job,
+    bronze_build_pdf_job,
+    bronze_figures_job,
     search_index_job,
     showcase_search_index_job,
     full_pipeline_job,
@@ -74,19 +80,19 @@ from lib.sensors import (
 from lib.schedules import (
     nightly_arda_index,
 )
-from lib.pipeline_fanout import process_collection_job
-from lib.pipeline_workspace import process_workspace_job, promote_workspace_job
-from lib.pipeline_item import process_item_job, process_item_failure_sensor
+from lib.pipeline_fanout import showcase_process_collection_job
+from lib.pipeline_workspace import workspace_process_job, workspace_promote_job
+from lib.pipeline_item import showcase_process_item_job, process_item_failure_sensor
 from lib.pipeline_collection import (
-    collection_rollup_job,
+    showcase_collection_rollup_job,
     item_queue_sensor,
     collection_rollup_sensor,
 )
 from lib.pipeline_index import (
-    reindex_collection_job,
-    delete_collection_index_job,
-    delete_item_index_job,
-    apply_cask_changes_job,
+    showcase_reindex_collection_job,
+    showcase_delete_collection_index_job,
+    showcase_delete_item_index_job,
+    showcase_apply_cask_changes_job,
 )
 
 defs = dg.Definitions(
@@ -98,34 +104,40 @@ defs = dg.Definitions(
         ingest_item,
         generate_derivatives,
         run_ocr,
+        correct_ocr,
         generate_metadata,
         generate_alt_text,
         tag_accessible_pdf,
+        build_accessible_pdf,
+        detect_figures,
         index_for_rag,
         index_for_showcase_search,
     ],
     jobs=[
         reconcile_collection_job,
-        detect_spreads_job,
-        apply_spreads_job,
+        bronze_detect_spreads_job,
+        bronze_apply_spreads_job,
         ingest_collection_job,
-        derivatives_job,
-        ocr_job,
+        showcase_derivatives_job,
+        bronze_ocr_job,
+        bronze_correct_ocr_job,
         metadata_job,
-        alt_text_job,
-        tag_pdf_job,
+        bronze_alt_text_job,
+        bronze_tag_pdf_job,
+        bronze_build_pdf_job,
+        bronze_figures_job,
         search_index_job,
         showcase_search_index_job,
         full_pipeline_job,
-        process_collection_job,
-        process_workspace_job,
-        promote_workspace_job,
-        process_item_job,
-        collection_rollup_job,
-        reindex_collection_job,
-        delete_collection_index_job,
-        delete_item_index_job,
-        apply_cask_changes_job,
+        showcase_process_collection_job,
+        workspace_process_job,
+        workspace_promote_job,
+        showcase_process_item_job,
+        showcase_collection_rollup_job,
+        showcase_reindex_collection_job,
+        showcase_delete_collection_index_job,
+        showcase_delete_item_index_job,
+        showcase_apply_cask_changes_job,
     ],
     sensors=[
         preservica_auto_sync_sensor,

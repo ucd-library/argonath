@@ -9,7 +9,8 @@ never an "image of…" opener (screen-reader context already announces it's
 an image), people named only when the collection wants it, short legible
 text quoted when significant.
 
-Flow: build_alt_prompt() -> generate_alt() -> (alt, description, flags).
+Flow: build_alt_prompt() -> generate_alt() -> (alt, description,
+long_description, flags).
 Non-empty flags mean a human should look: TOO_LONG survivors, banned
 openers, unparseable model output. Callers queue flagged results for
 review rather than dropping them — a reviewer fixing one line beats a
@@ -18,10 +19,11 @@ silently missing description.
 import json
 import re
 
-from digtk.lib import ai
+from digtk.lib import ai, utils
 
 DEFAULT_MAX_ALT_CHARS = 150
 LENGTH_GRACE = 20  # chars over max before TOO_LONG flags; models overshoot slightly
+RAW_LOG_CHARS = 500  # raw reply chars logged on failure
 
 # Openers that add nothing for screen-reader users (context announces it's an image).
 _BANNED_OPENERS = re.compile(
@@ -44,7 +46,9 @@ def build_alt_prompt(metadata, opts={}):
         'max_alt_chars' (int, default 150);
         'extra_instructions' (str) — collection-specific style guidance;
         'want_description' (bool, default False) — also ask for a 2-4 sentence
-            catalog description.
+            catalog description;
+        'want_long' (bool, default False) — long description for maps, charts,
+            posters and other information-dense images.
     :returns: Prompt text.
     :rtype: str
     """
@@ -61,6 +65,15 @@ def build_alt_prompt(metadata, opts={}):
         '\nAlso write "description": 2-4 sentences suitable as a catalog description, '
         "complementing the title without repeating it."
         if opts.get("want_description") else '\nSet "description" to null.')
+    long_ask = (
+        '\nIf the image is information-dense — a map, poster, broadside, chart, diagram, '
+        'table, architectural or technical drawing, sheet music, or a page that is mostly '
+        'text — also write "long_description": what a sighted reader gets from it that the '
+        'short alt cannot carry: the layout, every legible piece of text (transcribe a '
+        'poster\'s wording in reading order), labels, legend entries, place names, data '
+        'values and the relationships between them. Use as many sentences as that takes. '
+        'For an ordinary photograph or artwork set "long_description" to null.'
+        if opts.get("want_long") else '\nSet "long_description" to null.')
     return f"""You are writing ADA/WCAG-compliant alternative text for an image in a digital library collection.
 
 Collection context: {opts.get("collection_context") or "(none provided)"}
@@ -71,9 +84,9 @@ Item metadata (context only — describe what is VISIBLE, do not copy metadata v
   Date: {metadata.get("date") or "(unknown)"}  Creator: {metadata.get("creator") or "(unknown)"}{page_line}
 
 Write "alt": one sentence, at most {max_chars} characters, stating the image's essential visual content. Never begin with "image of", "photo of", "picture of" or similar. {people} {transcribe}
-Tone: {opts.get("tone", "neutral, factual")}. Follow {opts.get("language", "en-US")} conventions. {opts.get("extra_instructions", "")}{desc_ask}
+Tone: {opts.get("tone", "neutral, factual")}. Follow {opts.get("language", "en-US")} conventions. {opts.get("extra_instructions", "")}{desc_ask}{long_ask}
 
-Return ONLY a JSON object: {{"alt": "...", "description": "..." or null}}"""
+Return ONLY a JSON object: {{"alt": "...", "description": "..." or null, "long_description": "..." or null}}"""
 
 
 def parse_model_json(text):
@@ -99,6 +112,16 @@ def parse_model_json(text):
         raise ValueError(f"invalid JSON in model output: {e}") from e
 
 
+def _optional_text(value):
+    """Return stripped text, or None when empty.
+
+    :param value: Model output field.
+    :returns: Stripped string or None.
+    :rtype: str|None
+    """
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def validate_alt(alt, opts={}):
     """Validate alt text against the style rules.
 
@@ -121,37 +144,49 @@ def validate_alt(alt, opts={}):
 def generate_alt(image, metadata, opts={}):
     """Generate alt text (and optionally a description) for one image.
 
-    One vision call, plus at most one shorten retry when the first answer
-    runs long. A failed retry keeps the long answer, flagged for review.
+    One vision call, plus one retry if the reply isn't valid JSON, and one
+    shorten retry if the alt runs long. Failed retries are flagged for review,
+    and unparseable replies are logged.
 
     :param image: Image to describe — a file path (local or 'cask:/') or an
         ai.Image (see digtk.lib.ai.chat_completion).
     :param dict metadata: Item context for the prompt (see build_alt_prompt).
-    :param dict opts: build_alt_prompt() opts, plus 'model' passed through to
-        the chat call.
-    :returns: (alt, description_or_None, flags). On unparseable model output:
-        ("", None, ["ERROR:unparseable-model-output"]).
+    :param dict opts: build_alt_prompt() opts, plus 'model', 'max_tokens'
+        and 'temperature' passed through to the chat call.
+    :returns: (alt, description_or_None, long_description_or_None, flags).
+        On unparseable output after the retry: ("", None, None,
+        ["ERROR:unparseable-model-output"]).
     :rtype: tuple
     """
     prompt = build_alt_prompt(metadata, opts)
     chat_opts = {"image": image}
-    if opts.get("model"):
-        chat_opts["model"] = opts["model"]
+    for key in ("model", "max_tokens", "temperature"):
+        if opts.get(key) is not None:
+            chat_opts[key] = opts[key]
     raw = ai.chat_completion(prompt, chat_opts)
     try:
         obj = parse_model_json(raw)
-    except ValueError:
-        return "", None, ["ERROR:unparseable-model-output"]
+    except ValueError as first_err:
+        retry = prompt + ("\n\nYour previous reply was not valid JSON. Return ONLY the JSON "
+                          'object, with any double quotes inside strings escaped as \\".')
+        raw_retry = ai.chat_completion(retry, chat_opts)
+        try:
+            obj = parse_model_json(raw_retry)
+        except ValueError as retry_err:
+            utils.warn(f"unparseable alt-text reply, retry failed too. "
+                       f"First ({first_err}): {raw[:RAW_LOG_CHARS]!r} "
+                       f"Retry ({retry_err}): {raw_retry[:RAW_LOG_CHARS]!r}")
+            return "", None, None, ["ERROR:unparseable-model-output"]
     alt = (obj.get("alt") or "").strip()
-    desc = obj.get("description")
-    desc = desc.strip() if isinstance(desc, str) and desc.strip() else None
+    desc = _optional_text(obj.get("description"))
+    long_desc = _optional_text(obj.get("long_description"))
 
     flags = validate_alt(alt, opts)
     if "TOO_LONG" in flags:
         max_chars = opts.get("max_alt_chars", DEFAULT_MAX_ALT_CHARS)
         retry = prompt + (f"\n\nYour previous alt was too long: {alt!r}\n"
                           f"Rewrite it as one sentence under {max_chars} characters. "
-                          'Return ONLY {"alt": "...", "description": null}')
+                          'Return ONLY {"alt": "...", "description": null, "long_description": null}')
         try:
             shorter = (parse_model_json(ai.chat_completion(retry, chat_opts))
                        .get("alt") or "").strip()
@@ -160,4 +195,4 @@ def generate_alt(image, metadata, opts={}):
                 flags = validate_alt(alt, opts)
         except (ValueError, RuntimeError):
             pass  # keep the long one, flagged for the reviewer
-    return alt, desc, flags
+    return alt, desc, long_desc, flags

@@ -4,7 +4,7 @@ import pytest
 
 from digtk.lib import derivative, fs, items, reporting
 from digtk.lib.items import ItemLocation
-from digtk.models import accessibility, ocr, split, workspace
+from digtk.models import accessibility, figures, ocr, split, workspace
 from digtk.models import collection as collection_model
 
 ARK = "ark:/87287/d7abc1234"
@@ -89,9 +89,9 @@ def test_stage_uploads_folder_into_source_dir(tmp_path, monkeypatch):
     assert seen["opts"]["yes"] is True
 
 
-def test_stage_collection_opt_overrides_folder_name(tmp_path, monkeypatch):
+def test_stage_folder_opt_overrides_local_folder_name(tmp_path, monkeypatch):
     monkeypatch.setattr(collection_model, "add", lambda *a, **k: None)
-    assert workspace.stage(str(tmp_path), opts={"username": "jdoe", "collection": "album"}) == (
+    assert workspace.stage(str(tmp_path), opts={"username": "jdoe", "folder": "album"}) == (
         "cask:/workspace/jdoe/album"
     )
 
@@ -106,6 +106,18 @@ def test_stage_rejects_a_non_directory(tmp_path):
 def test_resolve_targets_ark_is_one_bronze_item(monkeypatch):
     monkeypatch.setattr(items, "resolve", lambda ark, opts={}: BRONZE_ITEM)
     assert workspace.resolve_targets(ARK) == [BRONZE_ITEM]
+
+
+@pytest.mark.parametrize("path", [
+    "cask:/bronze/preservica/haeger/latest/tree/quarter-mile",
+    "bronze/preservica/haeger/latest/tree/quarter-mile",
+])
+def test_resolve_targets_bronze_folder_is_one_item(monkeypatch, path):
+    seen = []
+    monkeypatch.setattr(items, "resolve_path", lambda p, opts={}: seen.append(p) or BRONZE_ITEM)
+    monkeypatch.setattr(items, "list_workspace_items", lambda p: pytest.fail("not a workspace path"))
+    assert workspace.resolve_targets(path) == [BRONZE_ITEM]
+    assert seen == [path]
 
 
 def test_resolve_targets_workspace_path_covers_every_item_under_it(monkeypatch):
@@ -124,10 +136,10 @@ def test_resolve_targets_stages_a_local_folder_first(tmp_path, monkeypatch):
     monkeypatch.setattr(items, "list_workspace_items", lambda path: [f"{path}/source"])
     monkeypatch.setattr(items, "resolve_workspace", lambda path: path)
 
-    result = workspace.resolve_targets(str(tmp_path), opts={"collection": "box-12"})
+    result = workspace.resolve_targets(str(tmp_path), opts={"folder": "box-12"})
 
     assert staged["path"] == str(tmp_path)
-    assert staged["opts"]["collection"] == "box-12"
+    assert staged["opts"]["folder"] == "box-12"
     assert result == ["cask:/workspace/jdoe/box-12/source"]
 
 
@@ -221,11 +233,30 @@ def test_steps_point_at_the_real_tool_functions():
     assert workspace.STEPS["ocr"][0] is ocr.run_ocr
     assert workspace.STEPS["alt-text"][0] is accessibility.generate_alt_text
     assert workspace.STEPS["tag-pdf"][0] is accessibility.tag_pdf
+    assert workspace.STEPS["ocr-correct"][0] is ocr.correct_ocr
+    assert workspace.STEPS["pdf-build"] == (accessibility.build_pdf, {"image"})
+    assert workspace.STEPS["figures"] == (accessibility.detect_figures, {"image", "pdf"})
 
 
-# --- list_collections / pull --------------------------------------------------------
+def test_figures_run_before_documents_are_built():
+    order = workspace.STEP_ORDER
+    assert order.index("alt-text") < order.index("figures") < order.index("pdf-build") < order.index("tag-pdf")
 
-def test_list_collections_only_includes_dirs_with_a_source_dir(monkeypatch):
+
+def test_pdf_build_is_a_folder_step_that_runs_before_tag_pdf():
+    assert "pdf-build" in workspace.FOLDER_STEPS
+    order = workspace.STEP_ORDER
+    assert order.index("ocr") < order.index("pdf-build") < order.index("tag-pdf")
+
+
+def test_ocr_correct_runs_after_ocr_and_before_tag_pdf():
+    order = workspace.STEP_ORDER
+    assert order.index("ocr") < order.index("ocr-correct") < order.index("tag-pdf")
+
+
+# --- list_folders / pull --------------------------------------------------------
+
+def test_list_folders_only_includes_dirs_with_a_source_dir(monkeypatch):
     monkeypatch.setattr(fs, "ls", _fake_ls({
         "cask:/workspace": [("jdoe", "directory")],
         "cask:/workspace/jdoe": [("box-12", "directory"), ("uploads", "directory"), ("notes.txt", "file")],
@@ -233,8 +264,8 @@ def test_list_collections_only_includes_dirs_with_a_source_dir(monkeypatch):
         "cask:/workspace/jdoe/uploads": [("raw.zip", "file")],
     }))
 
-    assert workspace.list_collections() == [{
-        "username": "jdoe", "collection": "box-12", "key": "workspace/jdoe/box-12",
+    assert workspace.list_folders() == [{
+        "username": "jdoe", "folder": "box-12", "key": "workspace/jdoe/box-12",
         "path": "cask:/workspace/jdoe/box-12",
     }]
 
@@ -377,6 +408,12 @@ def test_promote_raises_when_nothing_to_promote(promote_env, monkeypatch):
     ("accessibility/alt-text.json", accessibility.ALT_TEXT_LINK_RELATION),
     ("accessibility/document.pdf/1/layout.json", accessibility.LAYOUT_LINK_RELATION),
     ("text/ocr-result.json", ocr.HOCR_LINK_RELATION),
+    ("text/page-000/ocr-corrected.json", ocr.CORRECTED_LINK_RELATION),
+    ("accessibility/document/searchable.pdf", accessibility.SEARCHABLE_PDF_LINK_RELATION),
+    ("accessibility/document/text.txt", accessibility.DOCUMENT_TEXT_LINK_RELATION),
+    ("accessibility/report.pdf/2/figures.json", figures.FIGURES_LINK_RELATION),
+    ("accessibility/report.pdf/figure-review.csv", figures.REVIEW_LINK_RELATION),
+    ("text/page-000/qwen-lines.json", ocr.LINES_LINK_RELATION),
     ("something/else.bin", None),
 ])
 def test_relation_for(rel_path, relation):
@@ -393,7 +430,7 @@ def test_sources_for_falls_back_to_every_binary_when_no_source_is_named():
 def test_workspace_listings_request_one_large_page(monkeypatch):
     fake = _fake_ls({"cask:/workspace": []})
     monkeypatch.setattr(fs, "ls", fake)
-    workspace.list_collections()
+    workspace.list_folders()
     assert fake.calls == [("cask:/workspace", {"limit": 10000})]
 
 

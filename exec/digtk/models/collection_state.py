@@ -9,7 +9,7 @@ Identity:
     partitions use;
   - an item's `name` is its bronze folder path, with no leading slash (e.g.
     "bronze/preservica/haeger/latest/tree/quarter-mile") — the same form
-    Dagster's process_item_job is launched with. Its ARK is an identifier
+    Dagster's showcase_process_item_job is launched with. Its ARK is an identifier
     (item_identifiers, id_type 'ark'), kept after the item leaves bronze.
 
 Visibility: a collection is 'public' if its argonath.collection_registry row's
@@ -46,9 +46,9 @@ from digtk.models import collection as collection_model
 
 _SCHEMA_SQL_PATH = Path(__file__).parent.parent / "sql" / "collection_state.sql"
 
-# job_name values this module reads and writes — they match the Dagster job names.
-ITEM_JOB = "process_item_job"
-ROLLUP_JOB = "collection_rollup_job"
+# Queue keys, not current Dagster job names.
+ITEM_JOB = "process_item_job"  # showcase_process_item_job's queue
+ROLLUP_JOB = "collection_rollup_job"  # showcase_collection_rollup_job's results
 
 
 def init_pg(opts={}):

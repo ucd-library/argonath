@@ -137,6 +137,28 @@ def test_chat_completion_model_override(monkeypatch):
     assert fake.chat_calls[0]["model"] == "custom-model"
 
 
+def test_chat_completion_forwards_max_tokens_and_temperature(monkeypatch):
+    fake = FakeClient(chat_response=make_chat_response("x"))
+    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
+
+    ai.chat_completion("hi", {"max_tokens": 2000, "temperature": 0.0})
+
+    assert fake.chat_calls[0]["max_tokens"] == 2000
+    assert fake.chat_calls[0]["temperature"] == 0.0
+    assert fake.chat_calls[0]["stream"] is True
+
+
+def test_chat_completion_omits_unset_sampling_params(monkeypatch):
+    monkeypatch.setitem(CONFIG["samwise"], "stream", False)
+    fake = FakeClient(chat_response=make_chat_response("x"))
+    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
+
+    ai.chat_completion("hi", {"max_tokens": 50})
+
+    assert fake.chat_calls[0]["max_tokens"] == 50
+    assert "temperature" not in fake.chat_calls[0]
+
+
 def test_chat_completion_reads_image_path_and_builds_data_url(monkeypatch):
     fake = FakeClient(chat_response=make_chat_response("x"))
     monkeypatch.setattr(ai, "get_client", lambda opts: fake)
@@ -263,6 +285,45 @@ def test_chat_completion_raises_after_exhausting_retries(monkeypatch):
 
     with pytest.raises(RuntimeError, match="failed after 2 tries"):
         ai.chat_completion("hi")
+
+
+class _StatusError(Exception):
+    """Stand-in for openai's APIStatusError: carries status_code."""
+
+    def __init__(self, status_code, message):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _client_raising(errors, calls):
+    def create(**kw):
+        calls.append(kw)
+        err = errors.pop(0) if errors else None
+        if err:
+            raise err
+        return respond(kw, make_chat_response("ok"))
+    return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+
+@pytest.mark.parametrize("status, message", [(400, "Model not found"), (413, "Request Entity Too Large")])
+def test_chat_completion_does_not_retry_client_errors(monkeypatch, status, message):
+    monkeypatch.setattr(ai.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("must not retry")))
+    calls = []
+    monkeypatch.setattr(ai, "get_client", lambda opts: _client_raising([_StatusError(status, message)], calls))
+
+    with pytest.raises(RuntimeError, match=f"rejected the request \\({status}\\): {message}"):
+        ai.chat_completion("hi")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+def test_chat_completion_retries_rate_limits_and_server_errors(monkeypatch, status):
+    monkeypatch.setattr(ai.time, "sleep", lambda s: None)
+    calls = []
+    monkeypatch.setattr(ai, "get_client", lambda opts: _client_raising([_StatusError(status, "busy")], calls))
+
+    assert ai.chat_completion("hi") == "ok"
+    assert len(calls) == 2
 
 
 def test_chat_completion_waits_out_maintenance_window(monkeypatch):

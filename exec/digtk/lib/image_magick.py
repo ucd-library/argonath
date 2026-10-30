@@ -374,7 +374,8 @@ def prep_ocr(src_path, dest_path, opts={}):
         'enhance' (None|'auto'|'gray', default None) — extra contrast
         enhancement for faded originals (hectograph/mimeo print, pale
         typescript): 'auto' stretches contrast keeping color, 'gray' also
-        converts to grayscale for maximum OCR legibility, 'frame' (int|None),
+        converts to grayscale for maximum OCR legibility, 'binarize' (bool,
+        default True) — False skips fuzz-whitening, 'frame' (int|None),
         'timeout' (float), 'magick' (bool) — see _use_magick().
     :returns: {"argv": list[str], "dest_path": str}
     :rtype: dict
@@ -402,12 +403,10 @@ def prep_ocr(src_path, dest_path, opts={}):
     if opts.get("deskew"):
         threshold = opts.get("threshold", CONFIG["image"]["deskew_threshold"])
         argv += ["-deskew", f"{threshold}%"]
+    argv += ["-density", str(dpi), "-alpha", "remove"]
+    if opts.get("binarize", True):
+        argv += ["-fill", "black", "-fuzz", f"{fuzz}%", "+opaque", "#FFFFFF"]
     argv += [
-        "-density", str(dpi),
-        "-alpha", "remove",
-        "-fill", "black",
-        "-fuzz", f"{fuzz}%",
-        "+opaque", "#FFFFFF",
         "-filter", "catrom",
         "-layers", "flatten",
         "-quality", str(quality),

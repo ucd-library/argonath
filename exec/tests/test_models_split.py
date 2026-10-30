@@ -181,6 +181,21 @@ def test_detect_draws_border_not_gutter_line_for_non_spreads(monkeypatch, fake_d
     assert split._GUTTER_LINE_COLOR not in draw_argv
 
 
+def test_detect_marks_portrait_image_not_a_spread_without_vision_call(
+    monkeypatch, fake_derivative, fake_image_magick, fake_vision,
+):
+    monkeypatch.setattr(image_magick, "probe_dimensions", lambda path, opts={}: {"width": 600, "height": 1000})
+    _stub_resolve(monkeypatch, ITEM)
+    _stub_fs_read(monkeypatch, {})
+
+    split.detect(ARK)
+
+    assert fake_vision == []
+    gutters_write = next(w for w in fake_derivative if w["rel_path"] == "item/split-spreads/gutters.json")
+    assert json.loads(gutters_write["data"])["photo-a"] == {
+        "gutter_x": 0, "is_spread": False, "confidence": "high", "reason": "portrait"}
+
+
 # --- apply ---------------------------------------------------------------------
 
 def test_apply_raises_when_gutters_json_missing(monkeypatch):

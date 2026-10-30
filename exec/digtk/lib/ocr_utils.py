@@ -10,6 +10,7 @@ and the future `digtk ocr tesseract` command (phase 0.5) calls run_tesseract
 independently, later, to produce an item's final searchable hOCR/text output.
 Neither caller depends on the other having run.
 """
+import difflib
 import os
 import re
 import subprocess
@@ -231,3 +232,115 @@ def run_ml_ocr(image_path, output_base, opts={}):
     :rtype: dict
     """
     raise NotImplementedError("phase 0.5")
+
+
+# --- correction layer ---------------------------------------------------------
+
+_EDGE_PUNCT = re.compile(r"^(\W*)(.*?)(\W*)$", re.DOTALL)
+
+
+def _norm(s):
+    return re.sub(r"[^\w]", "", s.lower())
+
+
+def _sim(a, b):
+    return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def _merge(old, new):
+    """Return new's core inside old's edge punctuation, or None if the change isn't trusted.
+
+    Rejected: punctuation-only or case-only changes, any change to the
+    digits, dropped letters, and text outside cp1252.
+
+    :param str old: The OCR word.
+    :param str new: The vision model's reading.
+    :rtype: str|None
+    """
+    lead, old_core, trail = _EDGE_PUNCT.match(old).groups()
+    new_core = _EDGE_PUNCT.match(new).group(2)
+    if not old_core or not new_core or old_core == new_core:
+        return None
+    # typography only, unless it splits words
+    if re.sub(r"[^\w]", "", old_core) == re.sub(r"[^\w]", "", new_core) \
+            and " " not in new_core:
+        return None
+    if re.sub(r"\D", "", old_core) != re.sub(r"\D", "", new_core):
+        return None
+    # mostly-numeric tokens may only be split
+    digits = sum(ch.isdigit() for ch in old_core)
+    if digits >= 0.5 * len(_norm(old_core)) and new_core.replace(" ", "") != old_core:
+        return None
+    # case fixes only for "succesS"-style OCR errors
+    if old_core.lower() == new_core.lower() and not re.search(r"[a-z][A-Z]", old_core):
+        return None
+    if len(_norm(new_core)) < 0.8 * len(_norm(old_core)):  # never drop letters
+        return None
+    try:
+        new_core.encode("cp1252")
+    except UnicodeEncodeError:
+        return None
+    return lead + new_core + trail
+
+
+def correct_words(words, model_text, opts={}):
+    """Rewrite OCR words' text in place from a vision model's transcript of the same page.
+
+    Only substitutions that still look like the same word are applied, so a
+    transcript that skipped a paragraph can't map prose onto the wrong boxes.
+    Pages that barely align, or have no usable transcript, are left untouched.
+
+    :param list[dict] words: [{'text', 'bbox', ...}] in reading order; changed in place.
+    :param str model_text: The vision model's verbatim transcript.
+    :param dict opts: 'min_sim' (float, default 0.75) — per-word similarity
+        floor; 'min_page_ratio' (float, default 0.3) — whole-page alignment floor.
+    :returns: Change log, [{'i', 'old', 'new'}].
+    :rtype: list[dict]
+    """
+    min_sim = opts.get("min_sim", 0.75)
+    min_page_ratio = opts.get("min_page_ratio", 0.3)
+    if not words:
+        return []
+    q = (model_text or "").split()
+    if not q or model_text.strip() == "[BLANK]":
+        return []
+    # align word-bearing tokens only
+    hi = [i for i, w in enumerate(words) if _norm(w["text"])]
+    q = [t for t in q if _norm(t)]
+    h = [words[i]["text"] for i in hi]
+    if not h or not q:
+        return []
+    sm = difflib.SequenceMatcher(None, [_norm(x) for x in h], [_norm(x) for x in q],
+                                 autojunk=False)
+    if sm.ratio() < min_page_ratio:
+        return []
+    changes = []
+
+    def apply(k, new):
+        i = hi[k]
+        old = words[i]["text"]
+        # second half of a hyphenated break
+        if i and words[i - 1]["text"].endswith("-") and new.lower().endswith(old.lower()) \
+                and len(new) > len(old):
+            return
+        merged = _merge(old, new)
+        if merged is not None:
+            changes.append({"i": i, "old": old, "new": merged})
+            words[i]["text"] = merged
+
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        n, m = i2 - i1, j2 - j1
+        if tag == "equal":
+            for k in range(n):  # case-only differences
+                apply(i1 + k, q[j1 + k])
+        elif tag == "replace":
+            # skip 1-2 letter tokens
+            if n == m:
+                for k in range(n):
+                    if len(_norm(h[i1 + k])) > 2 and _sim(h[i1 + k], q[j1 + k]) >= min_sim:
+                        apply(i1 + k, q[j1 + k])
+            elif n == 1 and m <= 3:  # an OCR join, e.g. "further.Increasing"
+                new = " ".join(q[j1:j2])
+                if len(_norm(h[i1])) > 2 and _sim(h[i1], new) >= min_sim:
+                    apply(i1, new)
+    return changes

@@ -15,8 +15,8 @@ archiving team, e.g. a `.jpg` alongside the `.mp4`) processed independently by
 `digtk showcase image derivatives`, under the ordinary Multi-Format Items convention (see
 docs/cask-conventions.md) — there's no ffmpeg-extracted poster frame here.
 
-Each source video gets one VideoObject associatedMedia entry in the item's gold
-record (see media_objects()), tagged with its own filename stem as 'identifier' so
+Each source video gets one VideoObject associatedMedia entry in the item's
+showcase search document (see media_objects()), tagged with its own filename stem as 'identifier' so
 digtk.models.digital_website.captions.attach_captions() can attach its caption to
 the right entry.
 """
@@ -67,7 +67,7 @@ def hls(target, opts={}):
     """Generate the HLS adaptive-bitrate stream for every source video in the item.
 
     Ad hoc/manual use, mirroring digtk.models.digital_website.image.thumbnails(); derivatives()
-    is what Dagster's derivatives_job actually calls. Publishes into the same location
+    is what Dagster's showcase_derivatives_job actually calls. Publishes into the same location
     derivatives() would: `public-frontend-derivatives/<video-filename>/streaming/`.
 
     :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,
@@ -181,7 +181,7 @@ def media_objects(item):
     """The item's "video" associatedMedia entries — one VideoObject per source
     video, pointing at its published HLS master playlist — rebuilt from each
     video's streaming/manifest.json. Read by
-    digtk.models.digital_website.item_record.build().
+    digtk.lib.showcase_index._silver_media().
 
     :param digtk.lib.items.ItemLocation item: Resolved item location.
     :returns: VideoObject entries, each tagged with its source's filename stem

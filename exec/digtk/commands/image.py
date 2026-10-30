@@ -9,7 +9,7 @@ Subcommands:
   derivatives  — generate the full derivative set with orientation auto-detection
                  (thumbnails, deskew, OCR-prep, a tiled pyramid TIFF for future
                  IIIF-style deep-zoom serving, all sharing one OCR-driven
-                 orientation decision) — this is what Dagster's derivatives_job
+                 orientation decision) — this is what Dagster's showcase_derivatives_job
                  actually calls; the others above are deterministic single-recipe
                  commands for ad-hoc/manual use.
 """
@@ -112,7 +112,7 @@ def derivatives(
     Runs a real Tesseract comparison between a deskewed and non-deskewed
     candidate to decide the correct orientation once, then applies that
     decision to every thumbnail width and the published OCR-prep image. This
-    is the command both derivatives_job (per-item Dagster partition) and the
+    is the command both showcase_derivatives_job (per-item Dagster partition) and the
     collection-level fan-out job (dagster/lib/pipeline_fanout.py) call — the
     latter passing its own run id as --reporting-job-id.
     """

@@ -16,9 +16,9 @@ import dagster as dg
 
 from lib.utils import exec
 
-# job_name values in collection_state — the same names as the Dagster jobs.
-ITEM_JOB = "process_item_job"
-ROLLUP_JOB = "collection_rollup_job"
+# Queue keys, not current Dagster job names.
+ITEM_JOB = "process_item_job"  # showcase_process_item_job's queue
+ROLLUP_JOB = "collection_rollup_job"  # showcase_collection_rollup_job's results
 
 # Run tag set whenever an item result is recorded, so process_item_failure_sensor
 # can tell which failed runs already have one.

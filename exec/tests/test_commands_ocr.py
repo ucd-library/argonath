@@ -52,6 +52,25 @@ def test_tesseract_no_vision_flag(monkeypatch):
     assert seen["opts"]["vision"] is False
 
 
+def test_tesseract_forwards_ocr_enhance(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(ocr_model, "run_ocr",
+                         lambda ark, opts={}: seen.update(opts=opts) or {"status": "success"})
+
+    result = runner.invoke(app, ["ocr", "tesseract", ARK, "--ocr-enhance", "gray"])
+
+    assert result.exit_code == 0
+    assert seen["opts"]["enhance"] == "gray"
+
+
+def test_tesseract_rejects_unknown_ocr_enhance(monkeypatch):
+    monkeypatch.setattr(ocr_model, "run_ocr", lambda ark, opts={}: {"status": "success"})
+
+    result = runner.invoke(app, ["ocr", "tesseract", ARK, "--ocr-enhance", "bright"])
+
+    assert result.exit_code == 2
+
+
 def test_tesseract_forwards_lang_psm_oem(monkeypatch):
     seen = {}
     monkeypatch.setattr(ocr_model, "run_ocr",
@@ -87,14 +106,38 @@ def test_tesseract_forwards_reporting_and_workspace_opts(monkeypatch):
                          lambda target, fn, opts={}: seen.update(target=target, opts=opts) or {"status": "success"})
 
     result = runner.invoke(app, [
-        "ocr", "tesseract", "./scans", "--collection", "box-12", "--user", "jdoe",
+        "ocr", "tesseract", "./scans", "--folder", "box-12", "--user", "jdoe",
         "--reporting-job-id", "run-1", "--reporting-collection", "g/c",
     ])
 
     assert result.exit_code == 0
     assert seen["target"] == "./scans"
     assert seen["opts"]["stage"] == "ocr"
-    assert seen["opts"]["collection"] == "box-12"
+    assert seen["opts"]["folder"] == "box-12"
     assert seen["opts"]["username"] == "jdoe"
     assert seen["opts"]["reporting_job_id"] == "run-1"
     assert seen["opts"]["reporting_collection"] == "g/c"
+
+
+def test_correct_runs_model_under_its_own_stage(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(workspace_model, "apply_to_targets",
+                         lambda target, fn, opts={}: seen.update(fn=fn, opts=opts) or {"status": "success"})
+
+    result = runner.invoke(app, ["ocr", "correct", ARK, "--reporting-job-id", "run-1"])
+
+    assert result.exit_code == 0, result.output
+    assert seen["fn"] is ocr_model.correct_ocr
+    assert seen["opts"]["stage"] == "ocr-correct"
+    assert seen["opts"]["reporting_job_id"] == "run-1"
+
+
+def test_tesseract_ocr_text_pages_flag(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(ocr_model, "run_ocr",
+                         lambda ark, opts={}: seen.update(opts=opts) or {"status": "success"})
+
+    default = runner.invoke(app, ["ocr", "tesseract", ARK])
+    assert default.exit_code == 0 and seen["opts"]["ocr_text_pages"] is False
+    forced = runner.invoke(app, ["ocr", "tesseract", ARK, "--ocr-text-pages"])
+    assert forced.exit_code == 0 and seen["opts"]["ocr_text_pages"] is True

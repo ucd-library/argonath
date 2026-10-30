@@ -151,6 +151,10 @@ def _extract_content(message):
     return _THINK.sub("", text).strip()
 
 
+# 4xx worth retrying; others never succeed
+_RETRYABLE_4XX = {408, 409, 429}
+
+
 class CallTooLong(RuntimeError):
     """Raised when one streamed chat completion runs past
     CONFIG["samwise"]["max_call_s"] — deliberately not retried (see the module
@@ -166,7 +170,7 @@ class CallTooLong(RuntimeError):
         self.chars = chars
 
 
-def _stream_content(client, model, message):
+def _stream_content(client, model, message, params={}):
     """Run one streamed chat completion and join the pieces into the reply text.
 
     Accumulates both 'content' and the 'reasoning_content'/'reasoning' deltas
@@ -180,6 +184,7 @@ def _stream_content(client, model, message):
     :param client: openai.OpenAI client (see get_client()).
     :param str model: Model name.
     :param list message: Chat messages.
+    :param dict params: Extra create() kwargs (max_tokens, temperature).
     :returns: Cleaned reply text.
     :rtype: str
     :raises CallTooLong: If the response is still arriving after
@@ -191,7 +196,7 @@ def _stream_content(client, model, message):
     next_progress = start + every_s
     first_seen = False
     content, reasoning = [], []
-    stream = client.chat.completions.create(model=model, messages=message, stream=True)
+    stream = client.chat.completions.create(model=model, messages=message, stream=True, **params)
     try:
         for chunk in stream:
             for choice in getattr(chunk, "choices", None) or []:
@@ -252,11 +257,14 @@ def chat_completion(message, opts={}):
               or 'cask:/'-prefixed) or an ai.Image(data=bytes, mimetype=str)
             - full_response: Return the raw SDK response object, unretried, unstripped
               (never streamed).
+            - max_tokens: Cap on response tokens.
+            - temperature: Sampling temperature.
     :returns: The model's response text (or the raw response, see full_response above).
     :rtype: str
     :raises CallTooLong: If a streamed response runs past CONFIG["samwise"]["max_call_s"]
         (not retried).
-    :raises RuntimeError: If every retry attempt fails.
+    :raises RuntimeError: If every retry attempt fails, or at once on a client
+        error (4xx other than 408/409/429, e.g. unknown model, request too large).
     """
     client = get_client(opts)
     model = opts.get("model") or LLM_MODEL
@@ -275,8 +283,10 @@ def chat_completion(message, opts={}):
         else:
             message = [{"role": "user", "content": message}]
 
+    params = {k: opts[k] for k in ("max_tokens", "temperature") if opts.get(k) is not None}
+
     if opts.get('full_response', False):
-        return client.chat.completions.create(model=model, messages=message)
+        return client.chat.completions.create(model=model, messages=message, **params)
 
     _wait_out_maintenance()
     retries = CONFIG["samwise"]["retries"]
@@ -285,12 +295,15 @@ def chat_completion(message, opts={}):
     for attempt in range(retries):
         try:
             if stream:
-                return _stream_content(client, model, message)
-            response = client.chat.completions.create(model=model, messages=message)
+                return _stream_content(client, model, message, params)
+            response = client.chat.completions.create(model=model, messages=message, **params)
             return _extract_content(response.choices[0].message)
         except CallTooLong:
             raise
         except Exception as e:  # noqa: BLE001 — a transient endpoint blip should retry
+            status = getattr(e, "status_code", None)
+            if status is not None and 400 <= status < 500 and status not in _RETRYABLE_4XX:
+                raise RuntimeError(f"Samwise rejected the request ({status}): {e}") from e
             last_error = e
             print(
                 f"digtk: Samwise attempt {attempt + 1}/{retries} failed "

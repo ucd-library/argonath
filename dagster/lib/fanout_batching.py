@@ -1,6 +1,6 @@
 """
 Batching and naming helpers shared by the fan-out jobs (lib/pipeline_fanout.py's
-process_collection_job, lib/pipeline_workspace.py's process_workspace_job).
+showcase_process_collection_job, lib/pipeline_workspace.py's workspace_process_job).
 
 Both jobs fan out one Dagster step per file (or per item folder). A large
 collection can hold tens of thousands of files, which is more steps than one
@@ -19,6 +19,8 @@ events keep the real paths, and each batch step's full file list.
 import hashlib
 import math
 import re
+
+from dagster import AssetMaterialization, MetadataValue
 
 DEFAULT_MAX_STEPS = 500
 
@@ -124,3 +126,39 @@ def log_batch(context, ids):
     """
     if len(ids) > 1:
         context.log.info(f"batch of {len(ids)}: {', '.join(ids)}")
+
+
+def emit(context, stage, item_id, result, status="success", partition=None, **extra):
+    """Log an AssetMaterialization carrying per-item stage metadata for
+    traceability -- the per-item progress signal this job uses in place of
+    Dagster partition status (see lib.pipeline_fanout). The authoritative
+    success/failure record is digtk.lib.reporting's Postgres row, written by
+    the digtk command itself; this is a Dagster-UI-visible complement to it.
+
+    :param context: Dagster op execution context.
+    :param str stage: Pipeline stage name (e.g. "derivatives").
+    :param str item_id: What the event is about — a file/item path relative to
+        the partition.
+    :param result: digtk's parsed JSON result, or None on failure.
+    :param str status: "success" or "failed".
+    :param str|None partition: Event partition (a collection key); defaults to
+        the run's partition key, or none for an unpartitioned run.
+    :param extra: Additional string-coercible metadata (e.g. error=...).
+    """
+    if partition is None and context.has_partition_key:
+        partition = context.partition_key
+    metadata = {
+        "item_id": MetadataValue.text(item_id),
+        "stage": MetadataValue.text(stage),
+        "status": MetadataValue.text(status),
+        **{k: MetadataValue.text(str(v)) for k, v in extra.items()},
+    }
+    if status == "failed":
+        context.log.error(f"[{item_id}] {stage}: FAILED -> {extra.get('error')}")
+    else:
+        context.log.info(f"[{item_id}] {stage}: ok -> {result}")
+    context.log_event(AssetMaterialization(
+        asset_key=f"argonath_fanout_{stage}",
+        partition=partition,
+        metadata=metadata,
+    ))

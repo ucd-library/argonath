@@ -11,12 +11,12 @@ Distinct from lib/assets.py's MultiPartitionsDefinition-based per-item assets
 which is precise for backfill/lineage but expensive to browse -- exactly the
 concern for a Preservica collection with hundreds of pages. This job trades
 that per-item partition granularity for one run per collection, with per-item
-progress tracked instead via AssetMaterialization events (see _emit() below)
+progress tracked instead via AssetMaterialization events (see lib.fanout_batching.emit())
 and digtk.lib.reporting rows (see each op's exec() call, which passes this
 run's own id as --reporting-job-id) -- not via Dagster partition status. Which
 design a given phase should use is a per-phase choice, not an all-or-nothing
 migration; this module only covers derivatives (the `digtk showcase`
-commands the webapp relies on). OCR runs separately via lib.jobs.ocr_job.
+commands the webapp relies on). OCR runs separately via lib.jobs.bronze_ocr_job.
 
 Derivatives run one step per IMAGE and per PDF file, not per item: each step
 is `digtk showcase image|pdf derivatives <item-path> --file <bronze path>`,
@@ -43,7 +43,7 @@ partition (e.g. "latest/tree/x/Preservation/page_003.tif").
 Each op shells out to a digtk command via lib.utils.exec(), the same
 bridge lib/assets.py's per-item assets use.
 
-lib/pipeline_item.py's process_item_job (one item, no partition) reuses this
+lib/pipeline_item.py's showcase_process_item_job (one item, no partition) reuses this
 module's per-item pieces: item_tasks() / _error_task() to build an item's
 tasks, process_derivative_batch to run them, and finalize_one_item() to
 finalize it. So every task carries its own `collection_key` (used for
@@ -51,22 +51,19 @@ finalize it. So every task carries its own `collection_key` (used for
 context.partition_key.
 """
 from dagster import (
-    AssetMaterialization,
     DynamicOut,
     DynamicOutput,
     In,
-    MetadataValue,
     Out,
     OpExecutionContext,
     Output,
     job,
     op,
 )
-from dagster_celery import celery_executor
 
 from lib.configs import collections_partitions, CollectionDerivativesConfig
-from lib.fanout_batching import batches, log_batch, log_batching, relative_id, step_key
-from lib.utils import default_run_config, exec
+from lib.fanout_batching import batches, emit, log_batch, log_batching, relative_id, step_key
+from lib.utils import celery_job_executor, default_run_config, exec
 
 
 def fetch_items_for_collection(collection_key):
@@ -89,42 +86,6 @@ def fetch_items_for_collection(collection_key):
     collection = collection_key.rstrip("/").rsplit("/", 1)[-1]
     result = exec(["digtk", "collection", "items", "--collection", collection])
     return result["items"]
-
-
-def _emit(context, stage, item_id, result, status="success", partition=None, **extra):
-    """Log an AssetMaterialization carrying per-item stage metadata for
-    traceability -- the per-item progress signal this job uses in place of
-    Dagster partition status (see module docstring). The authoritative
-    success/failure record is digtk.lib.reporting's Postgres row, written by
-    the digtk command itself; this is a Dagster-UI-visible complement to it.
-
-    :param context: Dagster op execution context.
-    :param str stage: Pipeline stage name (e.g. "derivatives").
-    :param str item_id: What the event is about — a file/item path relative to
-        the partition.
-    :param result: digtk's parsed JSON result, or None on failure.
-    :param str status: "success" or "failed".
-    :param str|None partition: Event partition (a collection key); defaults to
-        the run's partition key, or none for an unpartitioned run.
-    :param extra: Additional string-coercible metadata (e.g. error=...).
-    """
-    if partition is None and context.has_partition_key:
-        partition = context.partition_key
-    metadata = {
-        "item_id": MetadataValue.text(item_id),
-        "stage": MetadataValue.text(stage),
-        "status": MetadataValue.text(status),
-        **{k: MetadataValue.text(str(v)) for k, v in extra.items()},
-    }
-    if status == "failed":
-        context.log.error(f"[{item_id}] {stage}: FAILED -> {extra.get('error')}")
-    else:
-        context.log.info(f"[{item_id}] {stage}: ok -> {result}")
-    context.log_event(AssetMaterialization(
-        asset_key=f"argonath_fanout_{stage}",
-        partition=partition,
-        metadata=metadata,
-    ))
 
 
 # Formats generated one step per file (and finalized per item afterwards);
@@ -266,7 +227,7 @@ def _run_derivative_task(context, task):
         "ok": False, "error": task.get("error"),
     }
     if task.get("error"):
-        _emit(
+        emit(
             context, "derivatives", task["id"], None, status="failed", partition=collection_key,
             error=task["error"],
         )
@@ -281,12 +242,12 @@ def _run_derivative_task(context, task):
     try:
         result = exec(cmd)
     except Exception as e:
-        _emit(
+        emit(
             context, "derivatives", task["id"], None, status="failed", partition=collection_key,
             error=str(e), format=fmt,
         )
         return {**outcome, "error": str(e)}
-    _emit(context, "derivatives", task["id"], result, partition=collection_key, format=fmt)
+    emit(context, "derivatives", task["id"], result, partition=collection_key, format=fmt)
     return {**outcome, "ok": True}
 
 
@@ -379,9 +340,9 @@ def finalize_one_item(context, target, id, collection_key):
     try:
         result = exec(cmd)
     except Exception as e:
-        _emit(context, "finalize", id, None, status="failed", partition=collection_key, error=str(e))
+        emit(context, "finalize", id, None, status="failed", partition=collection_key, error=str(e))
         return str(e)
-    _emit(context, "finalize", id, result, partition=collection_key)
+    emit(context, "finalize", id, result, partition=collection_key)
     return None
 
 
@@ -412,16 +373,16 @@ def build_item_record(context, target, id, collection_key):
     try:
         result = exec(cmd)
     except Exception as e:
-        _emit(context, "build-item", id, None, status="failed", partition=collection_key, error=str(e))
+        emit(context, "build-item", id, None, status="failed", partition=collection_key, error=str(e))
         return str(e), None
     # The record is a {"@id": <ark>, "@graph": [...]} document — its own
     # top-level @id is the item's bare ark (see item_record.build()).
     ark = result.get("@id")
     if not ark:
         error = f"build-item returned no ark for {target}"
-        _emit(context, "build-item", id, None, status="failed", partition=collection_key, error=error)
+        emit(context, "build-item", id, None, status="failed", partition=collection_key, error=error)
         return error, None
-    _emit(context, "build-item", id, result, partition=collection_key, item_ark=ark)
+    emit(context, "build-item", id, result, partition=collection_key, item_ark=ark)
     return None, ark
 
 
@@ -481,17 +442,17 @@ def check_derivative_failures(context: OpExecutionContext, summary: dict):
     # run process/celery workers still alive) is a separate mechanism and
     # still applies regardless of this tag.
     tags={"group": "fanout", "dagster/max_runtime": "0"},
-    executor_def=celery_executor,
+    executor_def=celery_job_executor(),
     config=default_run_config({"fan_out_derivative_tasks": CollectionDerivativesConfig}),
 )
-def process_collection_job():
+def showcase_process_collection_job():
     """Collection-partitioned fan-out: one derivative step per image/PDF file
     (and per video/audio item) across the partition's collection, then one
     finalize step per image/PDF item — one Dagster run per collection, each
     step its own celery task. See this module's docstring for how this
-    differs from lib.jobs.derivatives_job (the MultiPartitionsDefinition,
+    differs from lib.jobs.showcase_derivatives_job (the MultiPartitionsDefinition,
     per-item-partition design). OCR is not part of this job; run
-    lib.jobs.ocr_job for that.
+    lib.jobs.bronze_ocr_job for that.
     """
     results = fan_out_derivative_tasks().map(process_derivative_batch).collect()
     items, summary = fan_out_finalize(results)

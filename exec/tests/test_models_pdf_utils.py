@@ -1,3 +1,4 @@
+import pikepdf
 import pymupdf
 import pytest
 
@@ -151,3 +152,61 @@ def test_hocr_to_pdf_round_trip(tmp_path):
     text = pymupdf.open(str(dest))[0].get_text()
     assert "HELLO" in text
     assert "W&B" in text
+
+
+# --- text-layer font ----------------------------------------------------------
+
+def test_glyph_safe_keeps_what_the_font_has():
+    assert pdf_utils.glyph_safe("CEO’s “best” café — 東京") == \
+        "CEO’s “best” café — 東京"
+
+
+def test_glyph_safe_folds_missing_characters(monkeypatch):
+    class _Font:
+        def has_glyph(self, code):
+            return code < 0x80
+    monkeypatch.setattr(pdf_utils, "text_font", lambda: _Font())
+    assert pdf_utils.glyph_safe("’ř☃") == "'r?"
+
+
+def test_glyph_safe_empty():
+    assert pdf_utils.glyph_safe("") == ""
+
+
+def test_text_layer_keeps_typographic_characters(tmp_path):
+    img = tmp_path / "page.png"
+    _make_page_image(img)
+    dest = tmp_path / "out.pdf"
+    words = [{"text": "CEO’s", "bbox": [100, 200, 300, 240]},
+             {"text": "“quoted”", "bbox": [320, 200, 500, 240]}]
+
+    pdf_utils.build_searchable_pdf([str(img)], [words], str(dest))
+
+    text = pymupdf.open(str(dest))[0].get_text()
+    assert "CEO’s" in text
+    assert "“quoted”" in text
+    assert "·" not in text
+
+
+def test_text_layer_font_is_embedded_with_cid_to_gid_map(tmp_path):
+    img = tmp_path / "page.png"
+    _make_page_image(img)
+    dest = tmp_path / "out.pdf"
+    pdf_utils.build_searchable_pdf([str(img)], [[{"text": "hi", "bbox": [0, 0, 50, 20]}]], str(dest))
+
+    fonts = pymupdf.open(str(dest))[0].get_fonts(full=True)
+    assert [f[4] for f in fonts] == [pdf_utils.TEXT_FONT_NAME]
+    assert fonts[0][1] != "n/a"  # embedded font file
+    with pikepdf.open(str(dest)) as pdf:
+        font = next(iter(pdf.pages[0].Resources.Font.values()))
+        desc = font.DescendantFonts[0]
+        assert str(desc.Subtype) == "/CIDFontType2"
+        assert desc.CIDToGIDMap == pikepdf.Name.Identity
+
+
+def test_fix_cid_fonts_is_a_no_op_without_cid_fonts(tmp_path):
+    img = tmp_path / "page.png"
+    _make_page_image(img)
+    dest = tmp_path / "out.pdf"
+    pdf_utils.build_searchable_pdf([str(img)], [None], str(dest))
+    assert pdf_utils._fix_cid_fonts(str(dest)) is False

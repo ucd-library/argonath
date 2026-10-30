@@ -10,7 +10,7 @@
 ├── gold/           # Access-controlled preservation/download products
 └── workspace/      # Per-user staging (formerly user/)
     └── [username]/
-        ├── [collection-name]/   # Working collections (see "Workspace Layout")
+        ├── [folder]/            # Workspace folders (see "Workspace Layout")
         ├── uploads/             # Raw ingest staging
         └── workspace/           # Temp working space
 ```
@@ -135,7 +135,7 @@ directories.
 
 ### Scan Orientation
 
-`digtk showcase image derivatives` (the command `derivatives_job` runs) decides an item's
+`digtk showcase image derivatives` (the command `showcase_derivatives_job` runs) decides an item's
 scan orientation once, using a real OCR comparison rather than a fixed rule: it
 generates both a deskewed and non-deskewed OCR-prep candidate, runs Tesseract
 against each, and keeps whichever has both a higher word count and a higher (or
@@ -177,11 +177,11 @@ source binary:
 │       └── tagged.pdf                         # tag-pdf
 └── split-spreads/
     ├── gutters.json, review/, review-sheets/  # detect
-    └── pages/                                 # apply
+    └── pages/                                 # apply (display only; later steps use originals)
 ```
 
 For an ARK these land under the item's silver location; for a workspace item, under
-its workspace collection's `derivatives/` (see "Workspace Layout").
+its workspace folder's `derivatives/` (see "Workspace Layout").
 
 ### Multi-Format Items
 
@@ -541,7 +541,7 @@ location (preferring the configured `[app]` when several hold a record).
 
 `collection.jsonld.json` is written only by `digtk showcase build-collection`
 (`digtk.models.digital_website.collection_record`, run by Dagster's
-`collection_rollup_job`). It is built from the bronze collection root's
+`showcase_collection_rollup_job`). It is built from the bronze collection root's
 `tree/metadata.json` (Dublin Core, falling back to the Preservica title/description)
 and `tree/identifiers.json` (the collection ark plus any call number). Its root node's
 `@id` is the same `https://digital.ucdavis.edu/collection/<ark>` URI items point at via
@@ -577,12 +577,12 @@ Content reaches silver and gold by one of two paths, depending on the content ty
 
 ## Workspace Layout
 
-A workspace collection holds scans staged before they have an ARK or a bronze copy,
+A workspace folder holds scans staged before they have an ARK or a bronze copy,
 so the root-level tools can run on them (`digtk workspace`, see
 `digtk.models.workspace`):
 
 ```
-workspace/[username]/[collection]/
+workspace/[username]/[folder]/
 ├── source/                 # staged source binaries, as uploaded (digtk workspace add)
 │   ├── scan-01.tif         # files directly in a directory = one item
 │   └── folder-3/           # each subdirectory holding files = its own item
@@ -596,7 +596,8 @@ No time dimension and no sidecars. Outputs follow "Root-Level Tool Outputs" abov
 Once an item is ingested to bronze under an ARK, `digtk workspace promote <item-dir>
 --ark <ark>` copies its outputs into the ARK's silver location unchanged (no
 OCR/vision re-run), re-pointing lineage at the same-named bronze binaries. Workspace
-collections are what Dagster's `workspace` partitions list (`workspace/[username]/[collection]`).
+folders are what Dagster's `workspace` partitions list (`workspace/[username]/[folder]`).
+A workspace folder isn't necessarily a collection: it can be part of one, or span several.
 
 ## Multi-Part Items
 
