@@ -11,6 +11,166 @@ to have run first. For where outputs land, see
 [cask-conventions.md](cask-conventions.md) ("Root-Level Tool Outputs" and "Workspace
 Layout").
 
+## Quick start: local dev
+
+Runs the whole stack in Docker on your machine: Dagster at http://localhost:3000,
+CaskFS at http://localhost:3001 and the auth gateway at http://localhost:4000.
+For more detail, see [Setup](#setup).
+
+1. **Build the images** the first time, or after a full rebuild. Run this from
+   `argonath-deployment/`. It needs `cork-kube`. `--all` also builds project-anduin and
+   caskfs; leave it off to rebuild only argonath.
+
+   ```bash
+   ./cmds/build-local-dev.sh --all
+   ```
+
+2. **Start the stack** from `argonath-deployment/`. Always use these scripts instead of
+   bare `docker compose`, so the compose project is named `argonath`. Stop it with
+   `./cmds/down.sh`.
+
+   ```bash
+   ./cmds/up.sh
+   ```
+
+3. **Initialize it** on the first start, or after wiping volumes. It's safe to re-run.
+   It creates the CaskFS tables and admin roles and the `argo-local-dev` cask
+   environment, then logs digtk in. Pass a username to use one other than your OS user.
+
+   ```bash
+   ./cmds/init.sh
+   ```
+
+4. **Switch back from the VM** (only if you've used [Quick start: argonath
+   VM](#quick-start-argonath-vm) since). Run these from `argonath/exec`:
+
+   ```bash
+   unset DIGTK_GATEWAY_URL CASK_API_URL CASK_API_KEY CASK_TRUSTED_USER
+   ```
+
+   ```bash
+   cask env default argo-local-dev
+   ```
+
+   ```bash
+   DIGTK_GATEWAY_URL=http://localhost:4000 uv run digtk auth login --cask-env argo-local-dev
+   ```
+
+   ```bash
+   uv run digtk auth whoami
+   ```
+
+   `whoami` should show `http://localhost:4000/cask/api`.
+
+5. **Stage your files** in a CaskFS workspace folder, from `argonath/exec`. Add
+   `--replace` to replace files already there.
+
+   ```bash
+   uv run digtk workspace add ../../workspace/<sourceFolderName> --folder <caskfsFolderName>
+   ```
+
+6. **Run the steps**, in one of two ways:
+   - **Directly in your shell**, without Dagster. This needs `SAMWISE_API_KEY` and the
+     imaging tools (see [Other requirements](#other-requirements)). Pick steps and
+     options as in [CLI](#cli):
+
+     ```bash
+     uv run digtk workspace run cask:/workspace/$USER/<caskfsFolderName> --steps ocr,alt-text,tag-pdf --tables
+     ```
+
+   - **Through local Dagster**, the same way as on the VM. Turn on
+     `workspace_partition_sync_sensor` under **Automation → Sensors** first. The full
+     list of steps and options is in
+     [Quick start: argonath VM](#quick-start-argonath-vm), step 3.
+
+     ```bash
+     node ../ops/bin/argonath.js workspace run cask:/workspace/$USER/<caskfsFolderName> --steps all,vision,reuse-ocr,embed-fonts,validate --wait
+     ```
+
+7. **Export the outputs:**
+
+   ```bash
+   uv run digtk workspace pull cask:/workspace/$USER/<caskfsFolderName>/derivatives ../../workspace/<exportFolderName>
+   ```
+
+## Quick start: argonath VM
+
+Launches runs on the VM's Dagster (https://argonath.library.ucdavis.edu) from your
+laptop. Files are staged in the VM's CaskFS and the VM's workers do the processing, so
+you don't need `SAMWISE_API_KEY` locally. Run everything from `argonath/exec`.
+Launching needs the `execute` (or `admin`) role on the `argonath` Keycloak client. For
+more detail, see [Launching from your laptop](#launching-from-your-laptop).
+
+1. **Log in.** Clear any local-dev settings first. Before going back to local dev, follow
+   step 4 of [Quick start: local dev](#quick-start-local-dev).
+
+   ```bash
+   unset DIGTK_GATEWAY_URL CASK_API_URL CASK_API_KEY CASK_TRUSTED_USER
+   ```
+
+   ```bash
+   uv run digtk auth login --cask-env argonath-vm
+   ```
+
+   ```bash
+   cask env default argonath-vm
+   ```
+
+   ```bash
+   uv run digtk auth whoami
+   ```
+
+   `whoami` should show `https://argonath.library.ucdavis.edu/cask/api` and your CAS id.
+
+2. **Stage your files** in a CaskFS workspace folder. Add `--replace` to replace files
+   already there.
+
+   ```bash
+   uv run digtk workspace add ../../workspace/<sourceFolderName> --folder <caskfsFolderName> --user <casId>
+   ```
+
+3. **Launch the run.** The usual run leaves out `strict`, `skip-existing` and
+   `ocr-text-pages`, which you won't always want on. Add `skip-existing` to resume a
+   run that stopped partway.
+
+   ```bash
+   node ../ops/bin/argonath.js workspace run cask:/workspace/<casId>/<caskfsFolderName> \
+     --steps split-detect,split-apply,ocr,ocr-correct,alt-text,figures,pdf-build,tag-pdf,vision,reuse-ocr,embed-fonts,validate,want-description,want-long,tables,paragraphs,correct \
+     --wait
+   ```
+
+   **Every step and option.** Remove any step or `--set` you don't need.
+   `--steps all` covers only the eight processing steps, not the on/off options.
+
+   ```bash
+   node ../ops/bin/argonath.js workspace run cask:/workspace/<casId>/<caskfsFolderName> \
+     --steps split-detect,split-apply,ocr,ocr-correct,alt-text,figures,pdf-build,tag-pdf,vision,reuse-ocr,embed-fonts,validate,want-description,want-long,tables,strict,paragraphs,correct,skip-existing,ocr-text-pages \
+     --set max_px=1400 \
+     --set lang=eng \
+     --set psm=1 \
+     --set oem=3 \
+     --set ocr_enhance= \
+     --set collection_context= \
+     --set max_alt_chars=150 \
+     --set doc_lang=en-US \
+     --set lookahead=40 \
+     --set mode=auto \
+     --set geometry=tesseract \
+     --set min_conf=0 \
+     --set max_steps=500 \
+     --wait
+   ```
+
+   For what each step and option does, see
+   [Launching from your laptop](#launching-from-your-laptop) and the option list under
+   [Workspace folders (no ARK)](#workspace-folders-no-ark).
+
+4. **Export the outputs** when it's done:
+
+   ```bash
+   uv run digtk workspace pull cask:/workspace/<casId>/<caskfsFolderName>/derivatives ../../workspace/<exportFolderName>
+   ```
+
 ## Setup
 
 ### Local dev environment
@@ -540,7 +700,8 @@ queue still uses the original keys (`process_item_job`, `collection_rollup_job`)
 ### Launching from your laptop
 
 `argonath workspace run` (the ops CLI in `ops/`) launches `workspace_process_job` for one
-workspace folder on the VM's Dagster, without SSH.
+workspace folder on the VM's Dagster, without SSH. This is the detailed reference for
+[Quick start: argonath VM](#quick-start-argonath-vm).
 
 1. **Log in.** This one login covers CaskFS and Dagster:
 
