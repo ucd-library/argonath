@@ -512,6 +512,17 @@ def test_figure_output_passes_pdf_ua(tmp_path):
     assert pdf_tag.validate_ua(str(dest))["compliant"] is True
 
 
+def test_claim_captions_takes_wrapped_caption_lines():
+    w = lambda x, y, t: pdf_tag._Word(0, x, y, t, size=10.0)
+    l1 = pdf_tag._Line([w(100, 200, "Figure"), w(140, 200, "2"), w(160, 200, "Rainfall")])
+    l2 = pdf_tag._Line([w(100, 188, "by"), w(120, 188, "month")])
+    body = pdf_tag._Line([w(100, 150, "Unrelated"), w(160, 150, "prose")])
+    fig = pdf_tag._Figure([90, 210, 400, 500], "alt", caption="Figure 2 Rainfall by month")
+    out = pdf_tag._claim_captions([fig], [l1, l2, body], 792)
+    assert out == [body]
+    assert fig.caption_line.text == "Figure 2 Rainfall by month"
+
+
 def test_keep_text_figure_leaves_its_words_in_the_text_flow():
     # comics: balloon text inside a panel stays readable, not hidden behind /Alt
     w = lambda x, y, t: pdf_tag._Word(0, x, y, t, size=10.0)
@@ -525,13 +536,3 @@ def test_keep_text_figure_leaves_its_words_in_the_text_flow():
                                                     "page_box": [0, 0, 612, 792]})
     assert len(figs[0].words) == 4
 
-
-def test_claim_captions_takes_wrapped_caption_lines():
-    w = lambda x, y, t: pdf_tag._Word(0, x, y, t, size=10.0)
-    l1 = pdf_tag._Line([w(100, 200, "Figure"), w(140, 200, "2"), w(160, 200, "Rainfall")])
-    l2 = pdf_tag._Line([w(100, 188, "by"), w(120, 188, "month")])
-    body = pdf_tag._Line([w(100, 150, "Unrelated"), w(160, 150, "prose")])
-    fig = pdf_tag._Figure([90, 210, 400, 500], "alt", caption="Figure 2 Rainfall by month")
-    out = pdf_tag._claim_captions([fig], [l1, l2, body], 792)
-    assert out == [body]
-    assert fig.caption_line.text == "Figure 2 Rainfall by month"
