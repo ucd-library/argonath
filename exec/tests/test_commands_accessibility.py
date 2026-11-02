@@ -163,7 +163,8 @@ def test_figures_runs_model_under_its_own_stage(monkeypatch):
     assert result.exit_code == 0, result.output
     assert seen["fn"] is accessibility_model.detect_figures
     assert seen["opts"]["stage"] == "figures"
-    assert seen["opts"]["fn_opts"] == {"collection_context": "Wine", "transcribe_text": False, "max_alt_chars": 120}
+    assert seen["opts"]["fn_opts"] == {"collection_context": "Wine", "transcribe_text": False, "max_alt_chars": 120,
+                                         "comic": False}
 
 
 def test_tag_pdf_rejects_unknown_geometry():

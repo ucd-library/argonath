@@ -521,3 +521,18 @@ def test_claim_captions_takes_wrapped_caption_lines():
     out = pdf_tag._claim_captions([fig], [l1, l2, body], 792)
     assert out == [body]
     assert fig.caption_line.text == "Figure 2 Rainfall by month"
+
+
+def test_keep_text_figure_leaves_its_words_in_the_text_flow():
+    # comics: balloon text inside a panel stays readable, not hidden behind /Alt
+    w = lambda x, y, t: pdf_tag._Word(0, x, y, t, size=10.0)
+    words = [w(200, 500, "WHERE"), w(260, 500, "ARE"), w(300, 500, "YOU"), w(340, 500, "GOING?")]
+    panel = {"bbox": [0.1, 0.1, 0.9, 0.9], "alt": "A man shouts.", "caption": "",
+             "kind": "drawing", "keep_text": True}
+    elements, figs = pdf_tag._build_elements(words, None, {"figures": [panel], "page_box": [0, 0, 612, 792]})
+    assert figs[0].words == []
+    assert any(isinstance(e, pdf_tag._Line) and e.text == "WHERE ARE YOU GOING?" for e in elements)
+    _, figs = pdf_tag._build_elements(words, None, {"figures": [dict(panel, keep_text=False)],
+                                                    "page_box": [0, 0, 612, 792]})
+    assert len(figs[0].words) == 4
+

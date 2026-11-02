@@ -1067,7 +1067,8 @@ def test_tag_pdf_figures_passes_specs_and_records_new_pages(monkeypatch, fake_de
 
     accessibility.tag_pdf(ARK, opts={"figures": True, "collection_context": "Wine"})
 
-    spec = {"bbox": [0.1, 0.1, 0.5, 0.5], "alt": "Sales rose. Bars.", "caption": "Fig 1", "kind": "chart"}
+    spec = {"bbox": [0.1, 0.1, 0.5, 0.5], "alt": "Sales rose. Bars.", "caption": "Fig 1", "kind": "chart",
+            "keep_text": False}
     assert fake_pdf_pipeline["tag_scan_pdf"]["opts"]["figures"] == [[spec], [spec]]
     images = [c["image"].rsplit("/", 1)[-1] for c in fake_figures["page_figures"]]
     assert images == ["document-0.tif-vision.jpg", "document-1.tif-vision.jpg"]
