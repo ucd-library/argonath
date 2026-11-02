@@ -1152,7 +1152,10 @@ def _build_elements(words, layout, opts={}):
     if page_figs:
         box = opts["page_box"]
         elements = _claim_captions(page_figs, list(elements), box[3] - box[1])
-        elements = [e for e in elements if not (isinstance(e, (_Para, _Heading)) and not e.lines)]
+        # a caption can claim every line of a paragraph, heading or list: drop the empty shell
+        elements = [e for e in elements
+                    if not (isinstance(e, (_Para, _Heading)) and not e.lines)
+                    and not (isinstance(e, _ListGroup) and not e.items)]
         elements = elements + page_figs
     elements = _headings_first(sorted(elements, key=lambda e: _element_rank(e, locate)))
 

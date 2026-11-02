@@ -512,6 +512,21 @@ def test_figure_output_passes_pdf_ua(tmp_path):
     assert pdf_tag.validate_ua(str(dest))["compliant"] is True
 
 
+def test_caption_claiming_a_whole_list_drops_the_list():
+    # the layout calls the caption a one-item list; once the caption claims
+    # that line the empty list must go, or the reading-order sort fails
+    w = lambda x, y, t: pdf_tag._Word(0, x, y, t, size=10.0)
+    words = [w(100, 380, "Figure"), w(140, 380, "1"), w(160, 380, "Sales"),
+             w(200, 380, "by"), w(220, 380, "year"),
+             w(100, 200, "Unrelated"), w(160, 200, "prose"), w(210, 200, "below")]
+    layout = {"blocks": [{"type": "list", "items": ["Figure 1 Sales by year"]},
+                         {"type": "text", "text": "Unrelated prose below"}]}
+    elements, figs = pdf_tag._build_elements(
+        words, layout, {"figures": [CHART_SPEC], "page_box": [0, 0, 612, 792]})
+    assert not any(isinstance(e, pdf_tag._ListGroup) for e in elements)
+    assert figs[0].caption_line.text == "Figure 1 Sales by year"
+
+
 def test_claim_captions_takes_wrapped_caption_lines():
     w = lambda x, y, t: pdf_tag._Word(0, x, y, t, size=10.0)
     l1 = pdf_tag._Line([w(100, 200, "Figure"), w(140, 200, "2"), w(160, 200, "Rainfall")])

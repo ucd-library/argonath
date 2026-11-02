@@ -579,6 +579,15 @@ def test_parse_lines_rejects_degenerate_answer():
     assert ocr._parse_lines("no json", 100, 100) is None
 
 
+def test_parse_lines_salvages_truncated_answer():
+    # cut off at max_tokens mid-object: the complete lines are kept
+    raw = ('[{"text": "Dear Sir", "bbox": [0, 0, 500, 100]}, '
+           '{"text": "say \\"hi\\"", "bbox": [0, 100, 500, 200]}, {"text": "cut o')
+    assert ocr._parse_lines(raw, 2000, 1000) == [
+        {"text": "Dear Sir", "bbox": [0.0, 0.0, 1000.0, 100.0]},
+        {"text": 'say "hi"', "bbox": [0.0, 100.0, 1000.0, 200.0]}]
+
+
 def _page_png(tmp_path):
     import pymupdf
     path = tmp_path / "page.png"
