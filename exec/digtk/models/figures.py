@@ -33,6 +33,18 @@ from digtk.models import alt_utils
 
 KINDS = ("photo", "chart", "diagram", "map", "drawing", "logo", "ornament")
 COMPLEX_KINDS = frozenset({"chart", "diagram", "map"})
+# Comics / graphic novels ('comic' opt): the art carries the story but the
+# lettering is real text. Panels are described as scenes, with a long
+# description, never by re-reading their balloons, and the balloon text stays
+# in the reading flow (for_tagger keep_text) instead of hiding behind the
+# panel's /Alt (assistive tech reads a Figure's Alt and skips its kids).
+COMIC_INSTRUCTIONS = (
+    "This is a panel or page of a comic / graphic novel. Speech balloons and caption "
+    "boxes are provided to the reader separately as text, so do NOT quote or "
+    "paraphrase them. Describe what a sighted reader sees: the setting, who is "
+    "present, what they are doing, expressions and body language, and anything "
+    "visually important to the story.")
+WHOLE_PAGE = [0.0, 0.0, 1.0, 1.0]
 _PAD = 0.008      # grow boxes by this page share
 _MIN_SIDE = 0.03  # drop boxes thinner than this
 _CROP_MAX_PX = 1024
@@ -60,10 +72,11 @@ def _describe_prompt(kind, caption, opts):
 
     :param str kind: Figure kind.
     :param str caption: Its printed caption, or ''.
-    :param dict opts: alt_utils.build_alt_prompt() opts, plus 'title' and
-        'page' ((n, total)).
+    :param dict opts: alt_utils.build_alt_prompt() opts, plus 'title',
+        'page' ((n, total)) and 'comic' (bool).
     :rtype: str
     """
+    comic = opts.get("comic")
     page = opts.get("page")
     page_line = f" This is on page {page[0]} of {page[1]}." if page else ""
     long_ask = (
@@ -71,9 +84,12 @@ def _describe_prompt(kind, caption, opts):
         "understanding of the figure — what is plotted or depicted, axes/units, the "
         "trend or relationship, and any labeled values — so a reader who cannot see it "
         "gets the same information. Do not repeat the caption."
-        if kind in COMPLEX_KINDS else '\nSet "long_description" to null.')
+        if _wants_long(kind, opts) else '\nSet "long_description" to null.')
     transcribe = ("If short text in the figure is significant and legible, quote it exactly."
-                  if opts.get("transcribe_text", True) else "Do not transcribe visible text.")
+                  if opts.get("transcribe_text", True) and not comic
+                  else "Do not transcribe visible text.")
+    extra = " ".join(x for x in (opts.get("extra_instructions", ""),
+                                 COMIC_INSTRUCTIONS if comic else "") if x)
     max_chars = opts.get("max_alt_chars", alt_utils.DEFAULT_MAX_ALT_CHARS)
     return f"""You are writing ADA/WCAG-compliant alternative text for a {kind} that appears inside a document page.
 
@@ -82,9 +98,17 @@ Document: {opts.get("title") or "(untitled)"}.{page_line}
 Printed caption (context only — do not repeat it): {caption or "(none)"}
 
 Write "alt": one sentence, at most {max_chars} characters, stating the figure's essential content. Never begin with "image of", "chart of", "picture of" or similar. {transcribe}
-Tone: {opts.get("tone", "neutral, factual")}. Follow {opts.get("language", "en-US")} conventions. {opts.get("extra_instructions", "")}{long_ask}
+Tone: {opts.get("tone", "neutral, factual")}. Follow {opts.get("language", "en-US")} conventions. {extra}{long_ask}
 
 Return ONLY a JSON object: {{"alt": "...", "long_description": "..." or null}}"""
+
+
+def _wants_long(kind, opts):
+    """Whether a figure gets a long description: charts, diagrams, maps, and every comic panel.
+
+    :rtype: bool
+    """
+    return kind in COMPLEX_KINDS or bool(opts.get("comic"))
 
 
 def _clamp_box(b, pad=_PAD):
@@ -225,16 +249,18 @@ def describe(crop_image, kind, caption, opts={}):
                 alt, flags = shorter, alt_utils.validate_alt(shorter, opts)
         except (ValueError, RuntimeError):
             pass  # keep the long one, flagged
-    if kind in COMPLEX_KINDS and not long_desc:
+    if _wants_long(kind, opts) and not long_desc:
         flags.append("NO_LONG_DESCRIPTION")
     return alt, long_desc, flags
 
 
-def for_tagger(figs):
+def for_tagger(figs, keep_text=False):
     """The figures pdf_tag should tag: informative ones with something to say.
 
     :param list[dict] figs: page_figures() records.
-    :returns: [{'bbox', 'alt' (alt plus long description), 'caption', 'kind'}]
+    :param bool keep_text: Comics: the figure claims neither the words inside
+        its box nor a caption line, so lettering stays readable text.
+    :returns: [{'bbox', 'alt' (alt plus long description), 'caption', 'kind', 'keep_text'}]
     :rtype: list[dict]
     """
     out = []
@@ -246,7 +272,8 @@ def for_tagger(figs):
             continue  # nothing honest to say
         long_desc = (f.get("long_description") or "").strip()
         out.append({"bbox": f["bbox"], "alt": f"{alt} {long_desc}".strip() if long_desc else alt,
-                    "caption": f.get("caption") or "", "kind": f.get("kind", "")})
+                    "caption": "" if keep_text else (f.get("caption") or ""),
+                    "kind": f.get("kind", ""), "keep_text": keep_text})
     return out
 
 
@@ -385,7 +412,9 @@ def page_figures(item, page, image, opts={}):
     :param str image: Local page image to detect on and crop from.
     :param dict opts: 'review' ({page: records} from read_review()),
         'page_alt' (str — reuse for the largest figure instead of generating),
-        plus describe() opts.
+        'comic' (bool — a page with no informative figure, or an unusable
+        detection, is described as one whole-page figure: a comic page's art
+        always carries meaning), plus describe() opts.
     :returns: (records, fresh) — fresh is True when just detected.
     :rtype: tuple[list[dict], bool]
     """
@@ -401,6 +430,8 @@ def page_figures(item, page, image, opts={}):
         pass
 
     found = detect(image, opts)
+    if opts.get("comic") and not any(not f["decorative"] for f in (found or [])):
+        found = [{"bbox": list(WHOLE_PAGE), "kind": "drawing", "caption": "", "decorative": False}]
     if found is None:
         utils.warn(f"{page['filename']} page {page_no}: figure detection output unusable; "
                    "left without figures (not cached)")
@@ -428,7 +459,8 @@ def page_figures(item, page, image, opts={}):
                 rec["alt"] = opts["page_alt"]
             else:
                 total = page["count"] or 1
-                alt, long_desc, flags = describe(cropped, f["kind"], f["caption"],
+                caption = "" if opts.get("comic") else f["caption"]
+                alt, long_desc, flags = describe(cropped, f["kind"], caption,
                                                  {**opts, "page": (page_no, total)})
                 rec.update(alt=alt, long_description=long_desc, flags=flags)
         figs.append(rec)

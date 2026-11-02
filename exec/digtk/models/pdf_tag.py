@@ -196,6 +196,7 @@ class _Figure:
     caption_line: Optional[_Line] = None
     mcid: int = -1
     content: List[tuple] = field(default_factory=list)  # (stm, mcid) of its graphics
+    keep_text: bool = False  # comics: words in the box stay in the text flow
 
 
 def _utf16_hex(hexs):
@@ -1003,11 +1004,14 @@ def _page_figures(box, specs, words):
     for f in specs:
         fx0, fy0, fx1, fy1 = f["bbox"]
         bb = [px0 + fx0 * W, py0 + (1 - fy1) * H, px0 + fx1 * W, py0 + (1 - fy0) * H]
-        figs.append(_Figure(bb, str(f.get("alt") or ""), str(f.get("caption") or ""), str(f.get("kind") or "")))
+        figs.append(_Figure(bb, str(f.get("alt") or ""), str(f.get("caption") or ""), str(f.get("kind") or ""),
+                            keep_text=bool(f.get("keep_text"))))
     dx, dy = _FIG_INSET * W, _FIG_INSET * H
     for line in _lines(words):
         for run in _runs(line.words):
             for fg in figs:
+                if fg.keep_text:
+                    continue
                 x0, y0, x1, y1 = fg.bbox
                 inside = [w for w in run if x0 + dx <= w.x <= x1 - dx and y0 + dy <= w.y <= y1 - dy]
                 if len(inside) >= _FIG_LINE_SHARE * len(run):

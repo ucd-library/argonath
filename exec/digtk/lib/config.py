@@ -832,6 +832,13 @@ FiguresOption = Annotated[bool, typer.Option(
          "(one Samwise call per page plus one per figure, cached).",
 )]
 
+ComicOption = Annotated[bool, typer.Option(
+    help="Comic / graphic novel: describe every panel as a scene (with a long "
+         "description, without quoting the balloons), describe a page with no "
+         "detected panel as a whole, and keep balloon text readable instead of "
+         "hiding it behind the panel's alt text. Implies --figures.",
+)]
+
 GeometryOption = Annotated[Literal["tesseract", "qwen"], typer.Option(
     "--geometry",
     help="Text-layer source: tesseract (word boxes; printed text) or qwen (vision line "
