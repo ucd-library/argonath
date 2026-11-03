@@ -13,35 +13,40 @@ Layout").
 
 ## Quick start: local dev
 
-Runs the whole stack in Docker on your machine: Dagster at http://localhost:3000,
-CaskFS at http://localhost:3001 and the auth gateway at http://localhost:4000.
-For more detail, see [Setup](#setup).
+Runs the `digtk-dev` stack in Docker on your machine, using prebuilt images, so you
+don't build anything. Everything goes through the auth gateway at
+http://localhost:4000, including Dagster (`/dagster`) and CaskFS (`/cask`). The dagster
+containers live-mount your `argonath/` checkout, so digtk edits only need a restart.
+For more detail, see `argonath-deployment/compose/digtk-dev/README.md`. To build the
+full stack yourself instead, see [Local dev environment](#local-dev-environment).
 
-1. **Build the images** the first time, or after a full rebuild. Run this from
-   `argonath-deployment/`. It needs `cork-kube`. `--all` also builds project-anduin and
-   caskfs; leave it off to rebuild only argonath.
-
-   ```bash
-   ./cmds/build-local-dev.sh --all
-   ```
-
-2. **Start the stack** from `argonath-deployment/`. Always use these scripts instead of
-   bare `docker compose`, so the compose project is named `argonath`. Stop it with
-   `./cmds/down.sh`.
+1. **Set up the stack** the first time, after wiping volumes, or when the shared images
+   change. Run this from `argonath-deployment/`. It needs `gcloud` logged in with access
+   to the `argonath-508815` project, since it pulls the `.env` secret and the `:dev`
+   images from Artifact Registry. It's safe to re-run.
 
    ```bash
-   ./cmds/up.sh
+   gcloud auth login
+   ./cmds/digtk-dev/update.sh
    ```
 
-3. **Initialize it** on the first start, or after wiping volumes. It's safe to re-run.
-   It creates the CaskFS tables and admin roles and the `argo-local-dev` cask
-   environment, then logs digtk in. Pass a username to use one other than your OS user.
+   It authenticates with gcs and starts the stack and creates the CaskFS and digtk tables, with your OS user as a
+   cask admin. Then it creates the `digtk-dev` cask environment and opens a browser to
+   log digtk in.
+
+2. **Start and stop it** day to day, from `argonath-deployment/`. `start.sh` also logs
+   digtk in again. Always use these scripts instead of bare `docker compose`, so the
+   compose project is named `digtk-dev`.
 
    ```bash
-   ./cmds/init.sh
+   ./cmds/digtk-dev/start.sh
    ```
 
-4. **Switch back from the VM** (only if you've used [Quick start: argonath
+   ```bash
+   ./cmds/digtk-dev/stop.sh
+   ```
+
+3. **Switch back from the VM** (only if you've used [Quick start: argonath
    VM](#quick-start-argonath-vm) since). Run these from `argonath/exec`:
 
    ```bash
@@ -49,11 +54,11 @@ For more detail, see [Setup](#setup).
    ```
 
    ```bash
-   cask env default argo-local-dev
+   cask env default digtk-dev
    ```
 
    ```bash
-   DIGTK_GATEWAY_URL=http://localhost:4000 uv run digtk auth login --cask-env argo-local-dev
+   DIGTK_GATEWAY_URL=http://localhost:4000 uv run digtk auth login --cask-env digtk-dev
    ```
 
    ```bash
@@ -62,14 +67,14 @@ For more detail, see [Setup](#setup).
 
    `whoami` should show `http://localhost:4000/cask/api`.
 
-5. **Stage your files** in a CaskFS workspace folder, from `argonath/exec`. Add
+4. **Stage your files** in a CaskFS workspace folder, from `argonath/exec`. Add
    `--replace` to replace files already there.
 
    ```bash
    uv run digtk workspace add ../../workspace/<sourceFolderName> --folder <caskfsFolderName>
    ```
 
-6. **Run the steps**, in one of two ways:
+5. **Run the steps**, in one of two ways:
    - **Directly in your shell**, without Dagster. This needs `SAMWISE_API_KEY` and the
      imaging tools (see [Other requirements](#other-requirements)). Pick steps and
      options as in [CLI](#cli):
@@ -87,7 +92,7 @@ For more detail, see [Setup](#setup).
      node ../ops/bin/argonath.js workspace run cask:/workspace/$USER/<caskfsFolderName> --steps all,vision,reuse-ocr,embed-fonts,validate --wait
      ```
 
-7. **Export the outputs:**
+6. **Export the outputs:**
 
    ```bash
    uv run digtk workspace pull cask:/workspace/$USER/<caskfsFolderName>/derivatives ../../workspace/<exportFolderName>
@@ -102,7 +107,7 @@ Launching needs the `execute` (or `admin`) role on the `argonath` Keycloak clien
 more detail, see [Launching from your laptop](#launching-from-your-laptop).
 
 1. **Log in.** Clear any local-dev settings first. Before going back to local dev, follow
-   step 4 of [Quick start: local dev](#quick-start-local-dev).
+   step 3 of [Quick start: local dev](#quick-start-local-dev).
 
    ```bash
    unset DIGTK_GATEWAY_URL CASK_API_URL CASK_API_KEY CASK_TRUSTED_USER
