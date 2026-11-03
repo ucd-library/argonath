@@ -22,7 +22,7 @@ full stack yourself instead, see [Local dev environment](#local-dev-environment)
 
 1. **Set up the stack** the first time, after wiping volumes, or when the shared images
    change. Run this from `argonath-deployment/`. It needs `gcloud` logged in with access
-   to the `argonath-508815` project, since it pulls the `.env` secret and the `:dev`
+   to the `argonath-508815` project, since it pulls the `.env.default` secret and the `:dev`
    images from Artifact Registry. It's safe to re-run.
 
    ```bash
@@ -33,6 +33,10 @@ full stack yourself instead, see [Local dev environment](#local-dev-environment)
    It authenticates with gcs and starts the stack and creates the CaskFS and digtk tables, with your OS user as a
    cask admin. Then it creates the `digtk-dev` cask environment and opens a browser to
    log digtk in.
+
+   `update.sh` overwrites `compose/digtk-dev/.env.default` on every run. Put your own
+   values, like `SAMWISE_API_KEY`, in `compose/digtk-dev/.env.secrets` instead. It
+   overrides `.env.default`, and `update.sh` never touches it.
 
 2. **Start and stop it** day to day, from `argonath-deployment/`. `start.sh` also logs
    digtk in again. Always use these scripts instead of bare `docker compose`, so the
@@ -238,7 +242,7 @@ folders still goes through the `argo-local-dev` cask environment.
 ### Other requirements
 
 - **`SAMWISE_API_KEY`** is needed for vision OCR, alt text, split-detect, and
-  `tag-pdf --tables`. It's set in `compose/local-dev/.env` for the containers; export it
+  `tag-pdf --tables`. It's set in `compose/local-dev/.env` (or `compose/digtk-dev/.env.secrets`) for the containers; export it
   in your shell for the CLI. Use `digtk ocr tesseract --no-vision` to OCR without it.
 - **The `cask` CLI** must be installed and configured wherever you stage a local folder.
   Staging shells out to `cask cp`.
