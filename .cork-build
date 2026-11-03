@@ -1,5 +1,5 @@
 {
-  "registry" : "us-west1-docker.pkg.dev/digital-ucdavis-edu/pub",
+  "registry" : "us-west1-docker.pkg.dev/argonath-508815/pub",
 
   "repositories" : {
     "project-anduin" : "https://github.com/ucd-library/project-anduin",
