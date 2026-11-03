@@ -318,6 +318,116 @@ def test_remove_item_outputs_keeps_an_item_back_in_bronze(outputs):
     assert outputs["deleted"] == []
 
 
+def test_remove_collection_gold_deletes_the_project_folder(monkeypatch, outputs):
+    outputs["exists"].add("cask:/gold/digital-dev/c")
+    tree_ls = collection_index.fs.ls
+
+    def ls(path, opts={}):
+        if path == "cask:/gold/digital-dev/c":
+            return [_Entry("tree", "/gold/digital-dev/c/tree", "directory")]
+        if path == "cask:/gold/digital-dev/c/tree":
+            return [_Entry("gone", "/gold/digital-dev/c/tree/gone", "directory")]
+        return tree_ls(path, opts)
+
+    monkeypatch.setattr(collection_index.fs, "ls", ls)
+    result = collection_index.remove_collection_gold("bronze/g/c")
+
+    assert outputs["deleted"] == [("cask:/gold/digital-dev/c", {"directory": True})]
+    assert result == {
+        "collection": "bronze/g/c", "path": "cask:/gold/digital-dev/c", "files": 1, "removed": True, "dryRun": False,
+    }
+
+
+def test_remove_collection_gold_uses_project_and_dry_run(monkeypatch, outputs):
+    outputs["exists"].add("cask:/gold/arda/c")
+    monkeypatch.setattr(collection_index.fs, "ls", lambda path, opts={}: [])
+
+    result = collection_index.remove_collection_gold("bronze/g/c", {"project": "arda", "dry_run": True})
+
+    assert outputs["deleted"] == []
+    assert result["path"] == "cask:/gold/arda/c"
+    assert result["removed"] is False and result["dryRun"] is True
+
+
+def test_remove_collection_gold_missing_folder_is_a_no_op(outputs):
+    result = collection_index.remove_collection_gold("bronze/g/c")
+
+    assert outputs["deleted"] == []
+    assert result["removed"] is False and result["files"] == 0
+
+
+@pytest.fixture
+def silver(monkeypatch):
+    """Fake CaskFS holding one item's silver: website derivatives plus kept work."""
+    item = "/silver/g/c/latest/tree/a"
+    tree = {
+        "cask:/gold": [_Entry("digital-dev", "/gold/digital-dev", "directory"), _Entry("digital-prod", "/gold/digital-prod", "directory")],
+        f"cask:{item}": [
+            _Entry("public-frontend-derivatives", f"{item}/public-frontend-derivatives", "directory"),
+            _Entry("ocr", f"{item}/ocr", "directory"),
+            _Entry("text", f"{item}/text", "directory"),
+            _Entry("doc", f"{item}/doc", "directory"),
+        ],
+        f"cask:{item}/public-frontend-derivatives": [_Entry("a.jpg", f"{item}/public-frontend-derivatives/a.jpg", "file")],
+        f"cask:{item}/ocr": [_Entry("ocr.djvu", f"{item}/ocr/ocr.djvu", "file")],
+        f"cask:{item}/text": [_Entry("transcript.txt", f"{item}/text/transcript.txt", "file")],
+        f"cask:{item}/doc": [_Entry("ocr", f"{item}/doc/ocr", "directory")],
+        f"cask:{item}/doc/ocr": [_Entry("p.djvu", f"{item}/doc/ocr/p.djvu", "file")],
+    }
+    state = {"exists": set(), "deleted": []}
+    monkeypatch.setattr(collection_index.fs, "ls", lambda path, opts={}: tree[path])
+    monkeypatch.setattr(collection_index.fs, "exists", lambda path: path in state["exists"])
+    monkeypatch.setattr(collection_index.fs, "delete", lambda path, opts={}: state["deleted"].append(path))
+    monkeypatch.setattr(
+        collection_index.collection_model, "list_item_folders", lambda name, opts={}: ["/bronze/g/c/latest/tree/a"],
+    )
+    return state
+
+
+def test_remove_collection_silver_deletes_only_website_dirs(silver):
+    result = collection_index.remove_collection_silver("bronze/g/c")
+
+    item = "cask:/silver/g/c/latest/tree/a"
+    assert silver["deleted"] == [f"{item}/public-frontend-derivatives", f"{item}/ocr", f"{item}/doc/ocr"]
+    assert result["files"] == 3 and result["skipped"] is None
+
+
+def test_remove_collection_silver_dry_run_deletes_nothing(silver):
+    result = collection_index.remove_collection_silver("bronze/g/c", {"dry_run": True})
+
+    assert silver["deleted"] == []
+    assert len(result["removed"]) == 3 and result["dryRun"] is True
+
+
+def test_remove_collection_silver_skips_while_another_project_has_it(silver):
+    silver["exists"].add("cask:/gold/digital-prod/c")
+
+    result = collection_index.remove_collection_silver("bronze/g/c")
+
+    assert silver["deleted"] == []
+    assert result["skipped"] == "still published in digital-prod"
+
+
+def test_other_gold_projects_ignores_the_current_project(silver):
+    silver["exists"].update({"cask:/gold/digital-dev/c", "cask:/gold/digital-prod/c"})
+
+    assert collection_index.other_gold_projects("bronze/g/c") == ["digital-prod"]
+    assert collection_index.other_gold_projects("bronze/g/c", {"project": "digital-prod"}) == ["digital-dev"]
+
+
+def test_missing_silver_lists_items_without_website_derivatives(silver, monkeypatch):
+    monkeypatch.setattr(
+        collection_index.collection_model, "list_item_folders",
+        lambda name, opts={}: ["/bronze/g/c/latest/tree/b", "/bronze/g/c/latest/tree/a"],
+    )
+    silver["exists"].add("cask:/silver/g/c/latest/tree/a/public-frontend-derivatives")
+
+    assert collection_index.missing_silver("bronze/g/c") == {
+        "items": ["/bronze/g/c/latest/tree/a", "/bronze/g/c/latest/tree/b"],
+        "missing": ["/bronze/g/c/latest/tree/b"],
+    }
+
+
 def test_reindex_items_without_rebuild_never_reads_bronze(monkeypatch, bronze, es):
     def no_bronze(path):
         raise AssertionError(f"read bronze: {path}")

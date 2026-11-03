@@ -283,8 +283,8 @@ LOCATION = ItemLocation(
 )
 RECORD_PATH = "cask:/gold/digital-dev/c/item/item.jsonld.json"
 GOLD = f"https://digital.ucdavis.edu/item/{ARK}"
-BRONZE = "cask://bronze/g/c/latest/item"
-BRONZE_URL = "/cask/api/fs/bronze/g/c/latest/item"
+ORIGINAL = "cask://gold/digital-dev/c/item"
+ORIGINAL_URL = "/cask/api/fs/gold/digital-dev/c/item"
 
 
 def _image_entries(filename):
@@ -316,14 +316,14 @@ def item_files(monkeypatch):
         nodes = [{"@id": f"{GOLD}#{f}"} for f in fragments]
         for n in nodes:
             if n["@id"].startswith(f"{GOLD}#media/"):
-                n["contentUrl"] = f"{BRONZE}/{n['@id'].rsplit('/', 1)[-1]}"
+                n["contentUrl"] = f"{ORIGINAL}/{n['@id'].rsplit('/', 1)[-1]}"
         pages = [n for n in nodes if n["@id"].startswith(f"{GOLD}#imagelist/")]
         for n in nodes:
             if n["@id"] == f"{GOLD}#imagelist":
                 n.update({"@type": ["schema:MediaObject", showcase_index.IMAGE_LIST_TYPE],
                           "hasPart": [{"@id": p["@id"]} for p in pages]})
         for i, page in enumerate(pages, start=1):
-            page.update({"position": i, "contentUrl": f"cask://bronze/{i}.tif"})
+            page.update({"position": i, "contentUrl": f"cask://gold/{i}.tif"})
         root["associatedMedia"] = [{"@id": n["@id"]} for n in nodes if n not in pages]
         files[RECORD_PATH]["@graph"] = [root] + nodes
 
@@ -394,14 +394,14 @@ def test_build_document_gives_audio_image_and_pdf_each_a_node(item_files):
     assert audio["@type"] == ["http://schema.org/AudioObject"] and audio["fileFormatSimple"] == "audio"
     audio_media = media[audio["@id"]]
     assert audio_media["audio"]["url"] == "/cask/api/fs/silver/g/c/latest/item/public-frontend-derivatives/talk.mp3/converted.mp3"
-    assert audio_media["download"] == [{"url": f"{BRONZE_URL}/talk.mp3", "label": "mp3"}]
+    assert audio_media["download"] == [{"url": f"{ORIGINAL_URL}/talk.mp3", "label": "mp3"}]
     assert audio["caption"] == [{"@id": "/cask/api/fs/silver/g/c/latest/item/captions/output-en.vtt", "language": "en"}]
 
     image = nodes[f"{item}/logo.jpg"]
     assert image["@type"] == ["http://schema.org/ImageObject"] and image["fileFormatSimple"] == "image"
     assert image["fileFormat"] == "image/jpeg"
     image_media = media[f"{GOLD}#media/logo.jpg"]
-    assert image_media["download"] == [{"url": f"{BRONZE_URL}/logo.jpg", "label": "jpg"}]
+    assert image_media["download"] == [{"url": f"{ORIGINAL_URL}/logo.jpg", "label": "jpg"}]
 
     pdf = nodes[f"{item}/doc.pdf"]
     assert pdf["@type"] == ["http://schema.org/ImageObject"]
@@ -415,7 +415,7 @@ def test_build_document_gives_audio_image_and_pdf_each_a_node(item_files):
                 "size": {"width": "1024", "height": "1325"}, "imageSize": "large"},
     }]
     assert pdf_media["images"] == {"large": pdf_media["pages"][0]["large"]}
-    assert pdf_media["download"] == [{"url": f"{BRONZE_URL}/doc.pdf", "label": "pdf"}]
+    assert pdf_media["download"] == [{"url": f"{ORIGINAL_URL}/doc.pdf", "label": "pdf"}]
 
     assert document["displayImage"] == {"@id": f"{GOLD}#media/logo.jpg", "images": image_media["images"]}
 
@@ -440,7 +440,7 @@ def test_build_document_puts_video_first_with_its_stream_and_captions(item_files
     assert (video["fileFormat"], video["fileFormatSimple"]) == ("video/mp4", "video")
     assert document["clientMedia"][video_id] == {
         "streamingVideo": {"manifest": "/cask/api/fs/silver/g/c/latest/item/public-frontend-derivatives/movie.mp4/streaming/playlist.m3u8"},
-        "download": [{"url": f"{BRONZE_URL}/movie.mp4", "label": "mp4"}],
+        "download": [{"url": f"{ORIGINAL_URL}/movie.mp4", "label": "mp4"}],
     }
     assert video["caption"] == [{"@id": "/cask/api/fs/silver/g/c/latest/item/captions/movie-en.vtt", "language": "en"}]
     assert document["displayImage"]["@id"] == f"{GOLD}#media/poster.jpg"
@@ -476,11 +476,11 @@ def test_build_document_makes_an_image_list_for_several_images(item_files):
     assert page1["fileFormat"] == "image/tiff"
     assert page1["@type"] == ["http://schema.org/ImageObject"]
     # gold fields are kept
-    assert page1["contentUrl"] == "cask://bronze/1.tif"
+    assert page1["contentUrl"] == "cask://gold/1.tif"
     assert set(media) == {list_id, f"{list_id}/page_001.tif", f"{list_id}/page_002.tif"}
     assert media[list_id] == {"download": []}
     # a page's download is its original, as a single entry
-    assert media[page1["@id"]]["download"] == {"url": "/cask/api/fs/bronze/1.tif", "label": "tif"}
+    assert media[page1["@id"]]["download"] == {"url": "/cask/api/fs/gold/1.tif", "label": "tif"}
     assert document["displayImage"] == {"@id": page1["@id"], "images": media[page1["@id"]]["images"]}
 
 
@@ -490,8 +490,8 @@ def test_build_document_adds_original_file_sizes_from_cask_listings(item_files):
         {"@type": "AudioObject", "contentUrl": f"{PFD}/talk.mp3/converted.mp3", "argonath:sourceGroup": "audio"},
     ])
     item_files["set_gold"](["media/talk.mp3", "media/logo.jpg"])
-    bronze = "cask:/bronze/g/c/latest/item"
-    item_files["sizes"].update({f"{bronze}/logo.jpg": 2048, f"{bronze}/talk.mp3": 4096})
+    gold = "cask:/gold/digital-dev/c/item"
+    item_files["sizes"].update({f"{gold}/logo.jpg": 2048, f"{gold}/talk.mp3": 4096})
 
     document = showcase_index.build_document(ARK)
     nodes, media = _graph(document), document["clientMedia"]
@@ -852,6 +852,86 @@ def test_find_collection_image_is_none_without_an_item_index(monkeypatch):
     assert showcase_index.find_collection_image("/collection/x") is None
 
 
+# --- date fields ---------------------------------------------------------------------
+
+def _dated_root(item_files, monkeypatch, root_fields, collection_fields=None):
+    """Builds a document whose gold root carries root_fields, with the
+    collection record's root carrying collection_fields (None: no record)."""
+    item_files[RECORD_PATH]["@graph"][0].update(root_fields)
+    if collection_fields is None:
+        def no_record(name, opts={}):
+            raise FileNotFoundError(name)
+        monkeypatch.setattr(showcase_index.collection_record, "read", no_record)
+    else:
+        record = {"@id": COLLECTION_ARK, "@graph": [
+            {"@id": f"https://digital.ucdavis.edu/collection/{COLLECTION_ARK}", **collection_fields},
+        ]}
+        monkeypatch.setattr(showcase_index.collection_record, "read", lambda name, opts={}: record)
+    return _graph(showcase_index.build_document(ARK))[GOLD]
+
+
+def test_build_document_dates_from_a_typed_date_created(item_files, monkeypatch):
+    root = _dated_root(item_files, monkeypatch, {
+        "dateCreated": {"@type": "http://www.w3.org/2001/XMLSchema#gYearMonth", "@value": "2024-05"},
+    })
+    assert root["yearPublished"] == 2024
+    assert (root["yearPublishedStart"], root["yearPublishedEnd"]) == (2024, 2024)
+    assert root["datePrecision"] == "exact"
+    assert root["dateDisplay"] == "May 2024"
+    assert root["datePublished"] == "2024-05"
+
+
+def test_build_document_prefers_date_published(item_files, monkeypatch):
+    root = _dated_root(item_files, monkeypatch, {"datePublished": "196X", "dateCreated": "2024"})
+    assert (root["yearPublishedStart"], root["yearPublishedEnd"]) == (1960, 1969)
+    assert "yearPublished" not in root
+    assert root["dateDisplay"] == "1960s"
+
+
+def test_build_document_inherits_the_collection_uncertainty_window(item_files, monkeypatch):
+    root = _dated_root(
+        item_files, monkeypatch, {"dateCreated": "1962~"},
+        {"dateUncertaintyYears": 5, "approximateDateLabel": "about"},
+    )
+    assert (root["yearPublishedStart"], root["yearPublishedEnd"]) == (1957, 1967)
+    assert root["dateDisplay"] == "about 1962 (±5 years)"
+
+
+def test_build_document_item_window_beats_the_collection(item_files, monkeypatch):
+    root = _dated_root(
+        item_files, monkeypatch, {"dateCreated": "1962?", "ucdlib:dateUncertaintyYears": "2"},
+        {"dateUncertaintyYears": 5},
+    )
+    assert (root["yearPublishedStart"], root["yearPublishedEnd"]) == (1960, 1964)
+
+
+def test_build_document_reads_the_collection_once_per_cache(item_files, monkeypatch):
+    reads = []
+    monkeypatch.setattr(
+        showcase_index.collection_record, "read",
+        lambda name, opts={}: reads.append(name) or COLLECTION_RECORD,
+    )
+    opts = {"collection_cache": {}}
+    showcase_index.build_document(ARK, opts)
+    showcase_index.build_document(ARK, opts)
+    assert reads == ["c"]
+
+
+def test_build_document_has_no_date_fields_without_a_date(item_files, monkeypatch):
+    root = _dated_root(item_files, monkeypatch, {})
+    for key in ("yearPublished", "yearPublishedStart", "yearPublishedEnd", "datePrecision", "dateDisplay", "datePublished"):
+        assert key not in root
+
+
+def test_build_collection_document_dates_its_own_date(collection_gold, monkeypatch):
+    record = json.loads(json.dumps(COLLECTION_RECORD))
+    record["@graph"][0]["dateCreated"] = "2000/2010"
+    monkeypatch.setattr(showcase_index.collection_record, "read", lambda name, opts={}: record)
+    root = showcase_index.build_collection_document("c")["@graph"][0]
+    assert (root["yearPublishedStart"], root["yearPublishedEnd"]) == (2000, 2010)
+    assert root["dateDisplay"] == "2000–2010"
+
+
 # --- bulk writes and deletes --------------------------------------------------------
 
 
@@ -970,7 +1050,7 @@ def test_index_items_writes_items_then_replaces_their_pages(monkeypatch, bulk_po
     assert result == {"indexed": [ARK], "failed": [], "pages": 1}
 
 
-def test_index_items_shares_one_roles_cache(monkeypatch, bulk_posts):
+def test_index_items_shares_one_roles_and_collection_cache(monkeypatch, bulk_posts):
     seen = []
 
     def fake_build(ark, opts={}):
@@ -981,7 +1061,7 @@ def test_index_items_shares_one_roles_cache(monkeypatch, bulk_posts):
     showcase_index.index_items([ARK, "ark:/87287/other"], {"project": "digital-dev", "chunk_size": 10})
 
     assert seen[0] is seen[1]
-    assert seen[0] == {"project": "digital-dev", "roles_cache": {}}
+    assert seen[0] == {"project": "digital-dev", "roles_cache": {}, "collection_cache": {}}
 
 
 def test_index_items_reports_an_item_that_fails_to_build(monkeypatch, bulk_posts):

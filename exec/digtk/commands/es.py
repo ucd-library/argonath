@@ -6,6 +6,7 @@ Subcommands:
   upsert-collection  — index a collection from its gold record
   upsert-items       — bulk-index items by bronze folder
   gold-items         — list the bronze folders of a collection's gold item records
+  missing-silver     — list a collection's items with no silver website derivatives
   bulk-upsert        — bulk-index a whole collection, prune orphans, refresh the collection
   prune              — delete indexed items no longer in bronze
   delete             — delete one or more items by ark
@@ -83,6 +84,18 @@ def gold_items(
         folders = collection_index.gold_item_folders(key, {"project": project})
         utils.log(f"{len(folders)} gold item record(s)")
         utils.result({"status": "success", "collection": key, "items": folders})
+    except _ERRORS as e:
+        utils.error(str(e))
+
+
+@app.command("missing-silver")
+def missing_silver(key: CollectionKeyArgument):
+    """List the collection's bronze item folders and which have no silver
+    website derivatives, so they need a full item run rather than a reindex."""
+    try:
+        result = collection_index.missing_silver(key)
+        utils.log(f"{len(result['missing'])} of {len(result['items'])} item(s) missing silver derivatives")
+        utils.result({"status": "success", "collection": key, **result})
     except _ERRORS as e:
         utils.error(str(e))
 

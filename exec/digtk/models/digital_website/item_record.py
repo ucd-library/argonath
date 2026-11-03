@@ -40,8 +40,12 @@ which the live system already treats as implicit/generated rather than
 source data — so this module never emits it, and relates nodes directly
 instead (e.g. an ImageList's `hasPart` straight to its page nodes).
 
+Every bronze binary is also promoted into that same gold folder, keeping its
+path under the bronze item folder (e.g. Preservation/page_001.tif) — see
+promote_media(). These gold copies are what the website offers as downloads.
+
 Every media node (image, PDF, audio, video) is a bare {@id, contentUrl}
-pointer straight at its bronze preservation master — none carry presentation
+pointer straight at the gold copy of its preservation master — none carry presentation
 renditions (small/medium/large JPEGs, streaming playlists, etc.), since those
 generated derivatives aren't independently addressable things in the
 collection's content model. `associatedMedia` means only genuine links
@@ -63,8 +67,8 @@ No internal bookkeeping fields survive into the written document either
 (e.g. no `argonath:fieldSources`, no raw-media carry-forward) — only real
 public-record properties.
 
-build() never reads from or writes to silver at all — it's a pure function
-of bronze (the item's own item.jsonld.json sidecar, identifiers.json, and
+build() never reads from or writes to silver at all — its gold output is a
+pure function of bronze (the item's own item.jsonld.json sidecar, identifiers.json, and
 binary paths) plus the accessibility alt-text derivative (read directly from
 its own derivative path, never from silver's associatedMedia). The media side
 of the graph is built straight from item.bronze_binary_paths, grouped by
@@ -167,10 +171,30 @@ def read(item, opts={}):
     return json.loads(fs.read(record_path(item, opts)))
 
 
+def _bronze_path_for(content_url, gold_dir, bronze):
+    """The bronze binary path behind a media node's contentUrl: a gold copy
+    (see promote_media()) maps back to the same path under the bronze item
+    folder, and a bronze URL (records built before promotion) is kept.
+
+    :param str content_url: e.g. 'cask://gold/digital-dev/c/tree/a/Preservation/p1.tif'.
+    :param str gold_dir: The record's gold folder, e.g. '/gold/digital-dev/c/tree/a'.
+    :param str bronze: The manifest's bronze folder, e.g. '/bronze/g/c/latest/tree/a'.
+    :returns: e.g. 'cask:/bronze/g/c/latest/tree/a/Preservation/p1.tif', or None.
+    :rtype: str|None
+    """
+    content_url = str(content_url or "")
+    gold_prefix = f"cask:/{gold_dir}/"
+    if content_url.startswith(gold_prefix):
+        return f"cask:{bronze.rstrip('/')}/{content_url[len(gold_prefix):]}"
+    if content_url.startswith("cask://bronze/"):
+        return "cask:" + content_url[len("cask:/"):]
+    return None
+
+
 def gold_location(ark, opts={}):
     """An item's location and gold record, read from gold only. The bronze
     folder comes from the record's manifest.json and the binary paths from
-    its media nodes' contentUrls, so bronze is never read.
+    its media nodes' contentUrls, mapped back to bronze, so bronze is never read.
 
     :param str ark: Item ARK.
     :param dict opts: 'project' — see items.find_gold_record().
@@ -183,16 +207,16 @@ def gold_location(ark, opts={}):
     if not path:
         raise FileNotFoundError(f"{ark}: no gold item record")
     record = json.loads(fs.read(f"cask:{path}"))
-    manifest_path = f"cask:{path.rsplit('/', 1)[0]}/manifest.json"
+    gold_dir = path.rsplit("/", 1)[0]
+    manifest_path = f"cask:{gold_dir}/manifest.json"
     bronze = json.loads(fs.read(manifest_path)).get("bronze")
     if not bronze:
         raise LookupError(f"{manifest_path} names no bronze folder for {ark}")
     group, collection, time, item_path = items._parse_bronze_folder(bronze)
-    binaries = sorted({
-        "cask:" + node["contentUrl"][len("cask:/"):]
+    binaries = sorted(filter(None, (
+        _bronze_path_for(node.get("contentUrl"), gold_dir, bronze)
         for node in record.get("@graph") or []
-        if str(node.get("contentUrl", "")).startswith("cask://bronze/")
-    })
+    )))
     location = items.ItemLocation(
         ark=ark, group=group, collection=collection, time=time, item_path=item_path,
         bronze_binary_paths=binaries,
@@ -478,32 +502,33 @@ def _collection_ark_or_raise(item):
         raise LookupError(f"{items.item_id(item)}: cannot build isPartOf — {e}") from e
 
 
-def _bronze_content_url(filename, bronze_by_filename):
-    """The cask public ref URL to a bronze source file — its preservation
-    master — for node types whose `contentUrl` should point straight at the
-    original binary rather than any generated derivative/rendition.
+def _content_url(filename, media_by_filename):
+    """The cask public ref URL to a source file's gold copy (see
+    promote_media()) — its preservation master — for node types whose
+    `contentUrl` should point straight at the original binary rather than any
+    generated derivative/rendition.
 
     :param str filename: The bronze source filename.
-    :param dict bronze_by_filename: {filename: 'cask:/...' bronze path}.
-    :returns: The cask public ref URL, or None if no bronze file is found.
+    :param dict media_by_filename: {filename: 'cask:/...' gold path}.
+    :returns: The cask public ref URL, or None if no gold copy is found.
     :rtype: str|None
     """
-    bronze_path = bronze_by_filename.get(filename)
-    return pipeline.cask_public_ref(bronze_path) if bronze_path else None
+    gold_path = media_by_filename.get(filename)
+    return pipeline.cask_public_ref(gold_path) if gold_path else None
 
 
-def _pdf_node(item_uri, filename, bronze_by_filename):
+def _pdf_node(item_uri, filename, media_by_filename):
     """One minimal PDF graph node: its bronze file's own content url, and
     nothing else — the generated per-page image renditions aren't
     independently addressable things, so none of their metadata is kept here.
 
     :param str item_uri: This item's own @id.
     :param str filename: The bronze PDF filename.
-    :param dict bronze_by_filename: {filename: 'cask:/...' bronze path}.
+    :param dict media_by_filename: {filename: 'cask:/...' gold path}.
     :rtype: dict
     """
     node = {"@id": _frag(item_uri, "media", filename)}
-    content_url = _bronze_content_url(filename, bronze_by_filename)
+    content_url = _content_url(filename, media_by_filename)
     if content_url:
         node["contentUrl"] = content_url
     return node
@@ -548,7 +573,7 @@ def _apply_alt_text(node, alt_doc):
         node["accessibilityFeature"] = alt_doc["flags"]
 
 
-def _image_node(item_uri, namespace, filename, bronze_by_filename, position=None):
+def _image_node(item_uri, namespace, filename, media_by_filename, position=None):
     """One minimal image graph node: its bronze preservation master's content
     url, and its position when it's an ImageList child — no @type, no
     rendition/technical metadata, no lineage pointer. Accessibility data (see
@@ -559,12 +584,12 @@ def _image_node(item_uri, namespace, filename, bronze_by_filename, position=None
     :param str namespace: The @id fragment namespace ('media' for a lone
         image, 'imagelist' for an ImageList child).
     :param str filename: The bronze source filename.
-    :param dict bronze_by_filename: {filename: 'cask:/...' bronze path}.
+    :param dict media_by_filename: {filename: 'cask:/...' gold path}.
     :param int position: This image's position within its ImageList, if any.
     :rtype: dict
     """
     node = {"@id": _frag(item_uri, namespace, filename)}
-    content_url = _bronze_content_url(filename, bronze_by_filename)
+    content_url = _content_url(filename, media_by_filename)
     if content_url:
         node["contentUrl"] = content_url
     if position is not None:
@@ -572,7 +597,7 @@ def _image_node(item_uri, namespace, filename, bronze_by_filename, position=None
     return node
 
 
-def _image_nodes(item, item_uri, filenames, bronze_by_filename):
+def _image_nodes(item, item_uri, filenames, media_by_filename):
     """Build this item's image-side graph node(s): a single minimal image
     node for one image, or an ImageList + its hasPart children for several.
 
@@ -587,7 +612,7 @@ def _image_nodes(item, item_uri, filenames, bronze_by_filename):
     :param digtk.lib.items.ItemLocation item: Resolved item location.
     :param str item_uri: This item's own @id.
     :param list[str] filenames: Bronze filenames in the 'image' source group.
-    :param dict bronze_by_filename: {filename: 'cask:/...' bronze path}.
+    :param dict media_by_filename: {filename: 'cask:/...' gold path}.
     :returns: (top_node, child_nodes, root_image_ref) — child_nodes is []
         for a single image (top_node itself is then the only image node).
     :rtype: tuple[dict, list[dict], dict]
@@ -596,7 +621,7 @@ def _image_nodes(item, item_uri, filenames, bronze_by_filename):
 
     if len(filenames) == 1:
         filename = filenames[0]
-        node = _image_node(item_uri, "media", filename, bronze_by_filename)
+        node = _image_node(item_uri, "media", filename, media_by_filename)
         _apply_alt_text(node, _alt_text_doc(item, filename, multi_image=False))
         return node, [], {"@id": node["@id"]}
 
@@ -613,7 +638,7 @@ def _image_nodes(item, item_uri, filenames, bronze_by_filename):
 
     children = []
     for filename in ordered:
-        child = _image_node(item_uri, "imagelist", filename, bronze_by_filename, position=positions[filename])
+        child = _image_node(item_uri, "imagelist", filename, media_by_filename, position=positions[filename])
         _apply_alt_text(child, _alt_text_doc(item, filename, multi_image=True))
         children.append(child)
 
@@ -625,10 +650,10 @@ def _image_nodes(item, item_uri, filenames, bronze_by_filename):
     return imagelist, children, {"@id": children[0]["@id"]}
 
 
-def _group_bronze_by_format(bronze_by_filename, rules):
+def _group_bronze_by_format(media_by_filename, rules):
     """Group an item's bronze filenames by associatedMedia format.
 
-    :param dict bronze_by_filename: {filename: 'cask:/...' bronze path}.
+    :param dict media_by_filename: {filename: 'cask:/...' gold path}.
     :param dict rules: ASSOCIATED_MEDIA_RULES — {filename: format} overrides,
         consulted before falling back to pipeline.FORMAT_BY_EXTENSION.
         Currently always empty.
@@ -638,21 +663,21 @@ def _group_bronze_by_format(bronze_by_filename, rules):
     :rtype: dict
     """
     groups = {}
-    for filename in bronze_by_filename:
+    for filename in media_by_filename:
         fmt = rules.get(filename) or pipeline.FORMAT_BY_EXTENSION.get(os.path.splitext(filename)[1].lower())
         if fmt in ("image", "pdf", "video", "audio"):
             groups.setdefault(fmt, []).append(filename)
     return {fmt: sorted(files) for fmt, files in groups.items()}
 
 
-def _av_node(item_uri, group, filename, bronze_by_filename):
+def _av_node(item_uri, group, filename, media_by_filename):
     """One minimal audio/video graph node: its bronze file's own content url,
     and nothing else — same bare shape as _image_node()/_pdf_node().
 
     :param str item_uri: This item's own @id.
     :param str group: 'video' or 'audio'.
     :param str filename: The bronze source filename.
-    :param dict bronze_by_filename: {filename: 'cask:/...' bronze path}.
+    :param dict media_by_filename: {filename: 'cask:/...' gold path}.
     :rtype: dict
     """
     node = {
@@ -660,20 +685,22 @@ def _av_node(item_uri, group, filename, bronze_by_filename):
         "@type": _TYPE_BY_GROUP[group],
         "argonath:sourceGroup": group,
     }
-    content_url = _bronze_content_url(filename, bronze_by_filename)
+    content_url = _content_url(filename, media_by_filename)
     if content_url:
         node["contentUrl"] = content_url
     return node
 
 
-def _build_media_graph(item, item_uri):
+def _build_media_graph(item, item_uri, gold_paths):
     """Build this item's whole media side of the graph: one node per bronze
     source file (video/audio/pdf), the image-side node(s) (rule 7), and the
     image<->pdf relationship (rule 4/5) — all driven directly by
-    item.bronze_binary_paths, grouped via _group_bronze_by_format().
+    item.bronze_binary_paths, grouped via _group_bronze_by_format(). Each
+    node's contentUrl points at the file's gold copy.
 
     :param digtk.lib.items.ItemLocation item: Resolved item location.
     :param str item_uri: This item's own @id.
+    :param dict gold_paths: promote_media()'s {bronze path: gold path}.
     :returns: (root_media_refs, root_image_ref, extra_nodes) — root_media_refs
         is this item's own associatedMedia (as {"@id": ...} refs, in
         video/audio/image-or-imagelist/pdf order); root_image_ref is
@@ -681,18 +708,19 @@ def _build_media_graph(item, item_uri):
         every media/ImageList node to add to the graph.
     :rtype: tuple[list[dict], dict|None, list[dict]]
     """
-    bronze_by_filename = {
-        path.rsplit("/", 1)[-1]: path
+    media_by_filename = {
+        path.rsplit("/", 1)[-1]: gold_paths[path]
         for path in pipeline.drop_access_duplicates(item.bronze_binary_paths)
+        if path in gold_paths
     }
-    groups = _group_bronze_by_format(bronze_by_filename, ASSOCIATED_MEDIA_RULES)
+    groups = _group_bronze_by_format(media_by_filename, ASSOCIATED_MEDIA_RULES)
 
     root_refs = []
     extra_nodes = []
 
     for group in ("video", "audio"):
         for filename in groups.get(group) or []:
-            node = _av_node(item_uri, group, filename, bronze_by_filename)
+            node = _av_node(item_uri, group, filename, media_by_filename)
             extra_nodes.append(node)
             root_refs.append({"@id": node["@id"]})
 
@@ -700,14 +728,14 @@ def _build_media_graph(item, item_uri):
     root_image_ref = None
     image_filenames = groups.get("image") or []
     if image_filenames:
-        images_top_node, children, root_image_ref = _image_nodes(item, item_uri, image_filenames, bronze_by_filename)
+        images_top_node, children, root_image_ref = _image_nodes(item, item_uri, image_filenames, media_by_filename)
         extra_nodes.append(images_top_node)
         extra_nodes.extend(children)
         root_refs.append({"@id": images_top_node["@id"]})
 
     pdf_top_node = None
     for filename in groups.get("pdf") or []:
-        pdf_top_node = _pdf_node(item_uri, filename, bronze_by_filename)
+        pdf_top_node = _pdf_node(item_uri, filename, media_by_filename)
         extra_nodes.append(pdf_top_node)
         root_refs.append({"@id": pdf_top_node["@id"]})
 
@@ -721,10 +749,62 @@ def _build_media_graph(item, item_uri):
     return root_refs, root_image_ref, extra_nodes
 
 
+def _media_rel_path(item, bronze_path):
+    """A bronze binary's path relative to the item's bronze folder.
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param str bronze_path: 'cask:/bronze/...' binary path.
+    :returns: e.g. 'Preservation/page_001.tif'.
+    :rtype: str
+    """
+    prefix = f"cask:{_bronze_folder(item)}/"
+    return bronze_path[len(prefix):] if bronze_path.startswith(prefix) else bronze_path.rsplit("/", 1)[-1]
+
+
+def gold_media_path(item, bronze_path, opts={}):
+    """A bronze binary's gold copy path, next to the item record and keeping
+    its path under the item's bronze folder (e.g. Preservation/page_001.tif).
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param str bronze_path: 'cask:/bronze/...' binary path.
+    :param dict opts: 'project' — see _project().
+    :returns: e.g. 'cask:/gold/digital-dev/haeger/tree/quarter-mile/Preservation/page_001.tif'.
+    :rtype: str
+    """
+    rel = _media_rel_path(item, bronze_path)
+    dest = derivative.dest_path(
+        type="gold", collection=item.collection,
+        rel_path=f"{item.item_path}/{rel}" if item.item_path else rel,
+        opts={"app": _project(opts)},
+    )
+    return f"cask:{dest}"
+
+
+def promote_media(item, opts={}):
+    """Copy every bronze binary of an item into gold, next to its record.
+
+    Uses CaskFS's server-side copy, so the gold file shares the bronze blob.
+    Files are copied one by one, never as a directory, so bronze sidecars
+    stay out of gold (their ARK graphs would shadow the item record).
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param dict opts: 'project' — see _project().
+    :returns: {bronze path: gold path}, one entry per binary.
+    :rtype: dict
+    """
+    gold_paths = {}
+    for bronze_path in item.bronze_binary_paths:
+        gold_path = gold_media_path(item, bronze_path, opts)
+        fs.copy(bronze_path, gold_path, {"replace": True})
+        gold_paths[bronze_path] = gold_path
+    return gold_paths
+
+
 def build(target, opts={}):
     """Assemble and write an item's complete, canonical item.jsonld.json to
     gold, plus the gold manifest.json recording the bronze folder it was built
-    from.
+    from, after promoting the item's bronze binaries into gold (see
+    promote_media()).
 
     Reads only from bronze (its descriptive sidecar, identifiers.json, tree
     metadata.json, and binary paths) plus the accessibility alt-text
@@ -780,7 +860,8 @@ def build(target, opts={}):
 
     rel_path = record_rel_path(item)
 
-    root_media_refs, root_image_ref, media_nodes = _build_media_graph(item, item_uri)
+    gold_paths = promote_media(item, opts)
+    root_media_refs, root_image_ref, media_nodes = _build_media_graph(item, item_uri, gold_paths)
 
     root = {
         "@id": item_uri, "ark": item.ark,
@@ -814,9 +895,10 @@ def build(target, opts={}):
         opts={"app": project, "replace": True},
     )
     folder = _bronze_folder(item)
+    outputs = [items.ITEM_RECORD_FILENAME] + sorted(_media_rel_path(item, p) for p in gold_paths)
     utils.write_manifest(
         item.collection, item.item_path,
-        ["digtk", "showcase", "build-item", folder], {}, [items.ITEM_RECORD_FILENAME],
+        ["digtk", "showcase", "build-item", folder], {}, outputs,
         source_files=_lineage_source_files(item), type="gold",
         opts={"app": project, "extra": {"bronze": folder}},
     )
