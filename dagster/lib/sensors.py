@@ -34,7 +34,11 @@ from lib.utils import default_run_config, exec
 _INITIAL_LOOKBACK = datetime.timedelta(days=1)
 
 
-@dg.sensor(job_name="reconcile_collection_job", minimum_interval_seconds=300)
+@dg.sensor(
+    job_name="reconcile_collection_job",
+    minimum_interval_seconds=300,
+    description="""Poll Preservica for changes since the last tick and sync only the specific entities that changed, for only the registered collections actually affected — untouched collections are skipped entirely, and an affected collection gets a targeted sync of just its changed folder(s)/item(s), never a full re-walk. A registered Preservica collection is always checked here regardless of its workflow tags or whether it was first registered manually (`digtk preservica import`) or by this sensor's own auto-discovery.""",
+)
 def preservica_auto_sync_sensor(context: dg.SensorEvaluationContext):
     """Poll Preservica for changes since the last tick and sync only the
     specific entities that changed, for only the registered collections
@@ -85,7 +89,10 @@ def preservica_auto_sync_sensor(context: dg.SensorEvaluationContext):
     ]
 
 
-@dg.sensor(minimum_interval_seconds=300)
+@dg.sensor(
+    minimum_interval_seconds=300,
+    description="""Add a Dagster 'collections' dynamic partition for every active registered collection that doesn't already have one — the bridge between `digtk collection add`/`digtk preservica import` (which always register, see digtk.models.collection.register_collection()) and Dagster, since a partition is otherwise only created lazily as a side effect of a *successful* reconcile_collection_items run. Add-only: a disabled collection's partition is deliberately left in place (pruning it is a separate, explicit ops action) so run/partition history is never silently severed.""",
+)
 def collection_partition_sync_sensor(context: dg.SensorEvaluationContext):
     """Add a Dagster 'collections' dynamic partition for every active
     registered collection that doesn't already have one — the bridge between
@@ -114,7 +121,10 @@ def collection_partition_sync_sensor(context: dg.SensorEvaluationContext):
     )
 
 
-@dg.sensor(minimum_interval_seconds=120)
+@dg.sensor(
+    minimum_interval_seconds=120,
+    description="""Keep the 'workspace' dynamic partition in sync with every workspace folder (anything under /workspace/[username]/[folder] with a source/ directory — see `digtk workspace ls`), so a folder staged with `digtk workspace add` shows up as a pickable partition in the launchpad. Unlike collection_partition_sync_sensor, this also removes partitions whose workspace folder is gone: workspace is scratch space, so a deleted folder has no run history worth keeping a partition around for.""",
+)
 def workspace_partition_sync_sensor(context: dg.SensorEvaluationContext):
     """Keep the 'workspace' dynamic partition in sync with every workspace
     folder (anything under /workspace/[username]/[folder] with a
@@ -143,7 +153,10 @@ def workspace_partition_sync_sensor(context: dg.SensorEvaluationContext):
     )
 
 
-@dg.sensor(job_name="showcase_derivatives_job")
+@dg.sensor(
+    job_name="showcase_derivatives_job",
+    description="""Trigger showcase_derivatives_job when ingest_collection_job completes successfully.""",
+)
 def derivatives_on_ingest(context: dg.SensorEvaluationContext):
     """Trigger showcase_derivatives_job when ingest_collection_job completes successfully.
 
@@ -152,7 +165,10 @@ def derivatives_on_ingest(context: dg.SensorEvaluationContext):
     raise NotImplementedError("phase 0.4")
 
 
-@dg.sensor(job_name="bronze_ocr_job")
+@dg.sensor(
+    job_name="bronze_ocr_job",
+    description="""Trigger bronze_ocr_job when showcase_derivatives_job completes successfully.""",
+)
 def ocr_on_derivatives(context: dg.SensorEvaluationContext):
     """Trigger bronze_ocr_job when showcase_derivatives_job completes successfully.
 
@@ -161,7 +177,10 @@ def ocr_on_derivatives(context: dg.SensorEvaluationContext):
     raise NotImplementedError("phase 0.5")
 
 
-@dg.sensor(job_name="metadata_job")
+@dg.sensor(
+    job_name="metadata_job",
+    description="""Trigger metadata_job when bronze_ocr_job completes successfully.""",
+)
 def metadata_on_ocr(context: dg.SensorEvaluationContext):
     """Trigger metadata_job when bronze_ocr_job completes successfully.
 
@@ -170,7 +189,10 @@ def metadata_on_ocr(context: dg.SensorEvaluationContext):
     raise NotImplementedError("phase 0.6")
 
 
-@dg.sensor(job_name="search_index_job")
+@dg.sensor(
+    job_name="search_index_job",
+    description="""Trigger search_index_job when metadata_job completes successfully.""",
+)
 def rag_on_metadata(context: dg.SensorEvaluationContext):
     """Trigger search_index_job when metadata_job completes successfully.
 
@@ -179,7 +201,10 @@ def rag_on_metadata(context: dg.SensorEvaluationContext):
     raise NotImplementedError("phase 0.7")
 
 
-@dg.sensor(job_name="showcase_search_index_job")
+@dg.sensor(
+    job_name="showcase_search_index_job",
+    description="""Trigger showcase_search_index_job when showcase_derivatives_job completes successfully. Fires off showcase_derivatives_job, not metadata_job like rag_on_metadata does - see index_for_showcase_search's docstring in lib/assets.py for why the showcase search index deliberately doesn't wait on the AI metadata draft step.""",
+)
 def showcase_search_on_derivatives(context: dg.SensorEvaluationContext):
     """Trigger showcase_search_index_job when showcase_derivatives_job completes successfully.
 
@@ -227,7 +252,11 @@ def _change_tags(reindex, cleanup):
     return tags
 
 
-@dg.sensor(job=showcase_apply_cask_changes_job, minimum_interval_seconds=300)
+@dg.sensor(
+    job=showcase_apply_cask_changes_job,
+    minimum_interval_seconds=300,
+    description="""Act on settled bronze item changes from the CaskFS audit log. Items to process are queued for item_queue_sensor's showcase_process_item_job runs. Other changes get one showcase_apply_cask_changes_job run per collection.""",
+)
 def bronze_cask_audit_sensor(context: dg.SensorEvaluationContext):
     """Act on settled bronze item changes from the CaskFS audit log.
     Items to process are queued for item_queue_sensor's showcase_process_item_job runs.

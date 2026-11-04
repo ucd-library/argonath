@@ -38,6 +38,7 @@ the installed dagster package.
 import dagster as dg
 
 from lib.assets import (
+    preservica_import_collection,
     reconcile_collection_items,
     detect_spreads,
     apply_spreads,
@@ -55,6 +56,7 @@ from lib.assets import (
     index_for_showcase_search,
 )
 from lib.jobs import (
+    preservica_import_collection_job,
     reconcile_collection_job,
     bronze_detect_spreads_job,
     bronze_apply_spreads_job,
@@ -97,6 +99,7 @@ from lib.pipeline_index import (
 
 defs = dg.Definitions(
     assets=[
+        preservica_import_collection,
         reconcile_collection_items,
         detect_spreads,
         apply_spreads,
@@ -114,6 +117,7 @@ defs = dg.Definitions(
         index_for_showcase_search,
     ],
     jobs=[
+        preservica_import_collection_job,
         reconcile_collection_job,
         bronze_detect_spreads_job,
         bronze_apply_spreads_job,

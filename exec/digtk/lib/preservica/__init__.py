@@ -18,6 +18,7 @@ from digtk.lib.preservica.client import (
     PreservicaAuthError,
     PreservicaClient,
     PreservicaRequestError,
+    looks_like_ref,
 )
 from digtk.lib.preservica.local_client import LocalPreservicaClient
 from digtk.lib.preservica.xml import (
@@ -37,6 +38,7 @@ __all__ = [
     "NonXmlResponseError",
     "build_client",
     "settings_summary",
+    "looks_like_ref",
     "as_list",
     "attr_of",
     "parse",
