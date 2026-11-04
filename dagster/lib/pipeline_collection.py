@@ -101,7 +101,11 @@ def _item_run_request(row):
     return dg.RunRequest(run_key=f"job_queue-{row['id']}", run_config=run_config, tags=tags)
 
 
-@dg.sensor(job=showcase_process_item_job, minimum_interval_seconds=30)
+@dg.sensor(
+    job=showcase_process_item_job,
+    minimum_interval_seconds=30,
+    description="""Launch showcase_process_item_job runs from collection_state's queue, keeping at most MAX_ITEM_RUNS_IN_FLIGHT item runs queued or running. Rows submitted by one tick are removed from the queue by the next (see this module's docstring).""",
+)
 def item_queue_sensor(context: dg.SensorEvaluationContext):
     """Launch showcase_process_item_job runs from collection_state's queue, keeping at
     most MAX_ITEM_RUNS_IN_FLIGHT item runs queued or running. Rows submitted by
@@ -208,7 +212,11 @@ def showcase_collection_rollup_job():
     check_rollup_failures(pdc_index_collection(rollup_collection()))
 
 
-@dg.sensor(job=showcase_collection_rollup_job, minimum_interval_seconds=300)
+@dg.sensor(
+    job=showcase_collection_rollup_job,
+    minimum_interval_seconds=300,
+    description="""Launch showcase_collection_rollup_job for every collection whose items have results newer than its last rollup, once nothing is queued for it and none of its item runs are queued or running. Keyed by the newest item result, so the same results never roll up twice.""",
+)
 def collection_rollup_sensor(context: dg.SensorEvaluationContext):
     """Launch showcase_collection_rollup_job for every collection whose items have
     results newer than its last rollup, once nothing is queued for it and none

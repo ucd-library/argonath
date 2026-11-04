@@ -623,6 +623,19 @@ class _FakePreservicaClient:
         self.get_children_calls.append(ref)
         return self.children.get(ref, [])
 
+    def resolve_path(self, path):
+        """Same walk-down-via-get_children() logic as the real
+        PreservicaClient.resolve_path() — kept minimal since the tests using
+        this only need a single-segment match, not its full error handling
+        (covered directly against the real client in test_preservica_client.py).
+        """
+        segments = [s for s in path.split("/") if s]
+        ref = None
+        for segment in segments:
+            matches = [c for c in self.get_children(ref) if c["type"] == "SO" and c["title"] == segment]
+            ref = matches[0]["ref"]
+        return ref
+
     def resolve_all_content(self, io_ref, entity_detail=None):
         return self.representations.get(io_ref, [])
 
@@ -695,6 +708,46 @@ def test_preservica_import_writes_by_ref_layout(tmp_path):
     assert run_manifest["errors"] == []
     assert run_manifest["warnings"] == []
     assert "walkedAt" in run_manifest
+
+
+def test_preservica_import_resolves_non_ref_ref_as_a_path(tmp_path, monkeypatch):
+    """A `ref` that doesn't look like a Preservica ref is resolved via
+    client.resolve_path() before anything else happens — only when no
+    opts['client'] was injected (see preservica.looks_like_ref()/resolve_path()).
+    """
+    client = _FakePreservicaClient()
+    client.children[None] = [{"ref": "root-ref", "title": "haeger", "type": "SO"}]
+    client.entities["root-ref"] = {"title": "Haeger", "type": "SO"}
+    client.children["root-ref"] = []
+    monkeypatch.setattr(collection.preservica, "build_client", lambda: client)
+
+    manifest = collection.preservica_import(
+        "haeger", "my-collection", "preservica", {"dest_root": str(tmp_path)},
+    )
+
+    assert manifest["collection"] == "my-collection"
+    assert client.get_children_calls[0] is None
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    assert (root / "by-ref" / "root-ref" / "entity.json").exists()
+
+
+def test_preservica_import_skips_path_resolution_for_a_real_ref(tmp_path, monkeypatch):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.children["root-ref"] = []
+
+    def _fail_build_client():
+        raise AssertionError("build_client() should not be called for an injected client")
+    monkeypatch.setattr(collection.preservica, "build_client", _fail_build_client)
+
+    manifest = collection.preservica_import(
+        "root-ref", "my-collection", "preservica",
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+
+    assert manifest["collection"] == "my-collection"
+    # No extra get_children(None) call for path resolution.
+    assert None not in client.get_children_calls
 
 
 def test_preservica_import_defaults_collection_from_root_title(tmp_path):

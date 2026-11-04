@@ -266,7 +266,10 @@ def showcase_process_item_job():
     pdc_index_item(pdc_generate_item_record(pdc_finalize_item(results, item)))
 
 
-@dg.run_failure_sensor(monitored_jobs=[showcase_process_item_job])
+@dg.run_failure_sensor(
+    monitored_jobs=[showcase_process_item_job],
+    description="""Record "failed" in collection_state for failed showcase_process_item_job runs that didn't record a result themselves — no argonath/result tag, e.g. a crashed celery worker or an unexpected error in an op. The error is taken from the run's step failures. Runs whose op already recorded "failed" are left alone, so that op's more specific error is kept. Canceled runs don't count as failures, so they're not recorded here. The item comes from the run's argonath/item tag. A run that failed before pdc_plan_item tagged it falls back to its run config.""",
+)
 def process_item_failure_sensor(context: dg.RunFailureSensorContext):
     """Record "failed" in collection_state for failed showcase_process_item_job runs
     that didn't record a result themselves — no argonath/result tag, e.g. a

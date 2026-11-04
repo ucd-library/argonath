@@ -9,6 +9,7 @@ import dagster as dg
 from lib.configs import (
     items_partitions,
     IngestItemConfig,
+    PreservicaImportConfig,
     ReconcileCollectionConfig,
     SplitSpreadsConfig,
     RebuildTreeConfig,
@@ -46,6 +47,50 @@ def _reporting_args(context):
     """
     collection_key = context.partition_key.keys_by_dimension["collection"]
     return ["--reporting-job-id", context.run_id, "--reporting-collection", collection_key]
+
+
+@dg.asset(
+    group_name="ingest",
+)
+def preservica_import_collection(context: dg.AssetExecutionContext, config: PreservicaImportConfig):
+    """One-time full walk of a brand-new Preservica collection into bronze's
+    by-ref/ layout (`digtk preservica import`), always registering the
+    collection along the way.
+
+    Not partitioned, and config.collection is plain manual input: this
+    collection has no Dagster partition yet, which is exactly why this asset
+    exists separately from reconcile_collection_items — see that asset's own
+    docstring ("A brand new collection's initial full import is out of scope
+    here; that's still a manual `digtk preservica import`"). Once this run
+    registers the collection, collection_partition_sync_sensor adds the
+    'collections' dynamic partition on its next tick, and all later changes
+    flow through reconcile_collection_items/preservica_auto_sync_sensor's
+    targeted sync instead of another full walk.
+
+    :param context: Dagster asset execution context.
+    :param config: PreservicaImportConfig with ref, collection, group,
+        max_depth, dest_root, source_dir, skip_unchanged.
+    :returns: Dict with the resolved collection name and item/error/warning counts.
+    """
+    cmd = [
+        "digtk", "preservica", "import", config.ref,
+        "--collection", config.collection,
+        "--group", config.group,
+        "--max-depth", str(config.max_depth),
+    ]
+    if config.dest_root:
+        cmd += ["--dest-root", config.dest_root]
+    if config.source_dir:
+        cmd += ["--source-dir", config.source_dir]
+    if config.skip_unchanged:
+        cmd.append("--skip-unchanged")
+
+    result = exec(cmd)
+    context.log.info(
+        f"Imported {result.get('collection')}: {result.get('items')} item(s), "
+        f"{result.get('errors')} error(s), {result.get('warnings')} warning(s)"
+    )
+    return dg.Output(result)
 
 
 @dg.asset(

@@ -1090,7 +1090,11 @@ def preservica_import(ref, collection=None, group="preservica", opts={}):
     manifest rather than aborting the whole walk, so one bad item doesn't block
     the rest of the collection.
 
-    :param str ref: Root Preservica structural object ref to walk.
+    :param str ref: Root Preservica structural object ref to walk. If this
+        doesn't look like a ref (see digtk.lib.preservica.looks_like_ref()) and
+        no `opts['client']` was injected, it's instead treated as a '/'-separated
+        path of folder titles under the tenant root and resolved to a ref via
+        PreservicaClient.resolve_path() before anything else happens.
     :param str|None collection: Collection name. Defaults to a slugified version
         of the root entity's own Preservica title (mirrors preservica-etl's
         resolveSlug()) — this fetches the root entity to read its title, so no
@@ -1119,6 +1123,10 @@ def preservica_import(ref, collection=None, group="preservica", opts={}):
     max_depth = float("inf") if max_depth is None else max_depth
     on_progress = opts.get("on_progress") or (lambda message: None)
     skip_unchanged = bool(opts.get("skip_unchanged"))
+
+    if not opts.get("client") and not preservica.looks_like_ref(ref):
+        on_progress(f"Resolving path {ref!r} to a ref...")
+        ref = client.resolve_path(ref)
 
     root_raw = None
     if not collection:

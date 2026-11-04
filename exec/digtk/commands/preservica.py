@@ -12,11 +12,16 @@ Subcommands:
             directly — no bronze/collection business logic involved)
   import  — walk a Preservica collection into bronze's by-ref/ layout, always
             registering the collection along the way (see
-            digtk.models.collection.preservica_import/register_collection).
+            digtk.models.collection.preservica_import/register_collection). A
+            ref argument that isn't already a Preservica ref (UUID) is treated
+            as a '/'-separated path of folder titles under the tenant root and
+            resolved automatically (see PreservicaClient.resolve_path()) — use
+            `list` (below, no ref) to discover exact titles.
             --source-dir reads a local directory instead of the live API (see
             digtk.lib.preservica.LocalPreservicaClient) for offline staging/
             testing before a collection exists in Preservica, or replaying an
-            already-fetched export.
+            already-fetched export; there, ref is always taken literally as the
+            local directory name, never resolved as a path.
   sync    — sync only specific changed entities (folders/items) for an
             already-registered collection, never a full re-walk (see
             digtk.models.collection.preservica_sync_entities) — used by
@@ -123,8 +128,12 @@ def list_children(
 @app.command("import")
 def import_(
     ref: Annotated[str, typer.Argument(
-        help="Root Preservica structural object ref to walk. With --source-dir, this is "
-        "just the root entry's directory name under it, not a real Preservica ref.",
+        help="Root Preservica structural object ref to walk. If this isn't a ref (a "
+        "UUID), it's treated as a '/'-separated path of folder titles under the "
+        "tenant root and resolved automatically, e.g. 'haeger' or '/haeger/sub-folder' "
+        "(see `digtk preservica list`, with no ref, to browse the tenant root and find "
+        "exact titles). With --source-dir, this is always taken literally as the root "
+        "entry's directory name under it, not a real Preservica ref — never resolved.",
     )],
     collection: Annotated[str | None, typer.Option(
         help="Collection name. Defaults to a slugified version of the root entity's own "

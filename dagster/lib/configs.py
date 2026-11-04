@@ -131,6 +131,49 @@ class ReconcileCollectionConfig(Config):
     )
 
 
+class PreservicaImportConfig(Config):
+    """Config for the preservica_import_collection asset.
+
+    `collection` is required and taken as plain manual input: unlike the other
+    Preservica configs (ReconcileCollectionConfig etc.), there's no
+    collections_partitions key to read it from yet, since the whole point of
+    this asset is bringing a brand-new collection into bronze for the first
+    time (see digtk.models.collection.preservica_import()). Once `digtk
+    preservica import` registers it, collection_partition_sync_sensor adds the
+    'collections' dynamic partition on its next tick, and ongoing changes go
+    through reconcile_collection_items/preservica_auto_sync_sensor instead.
+
+    :param str ref: Root Preservica structural object ref to walk, or (if not a
+        ref/UUID) a '/'-separated path of folder titles under the tenant root
+        to resolve automatically, e.g. 'haeger' or '/haeger/sub-folder' — see
+        `digtk preservica list` to discover exact titles.
+    :param str collection: Collection name (manual input; this collection has
+        no Dagster partition yet).
+    :param str group: Bronze group namespace. Defaults to 'preservica'.
+    :param int max_depth: Maximum folder recursion depth. Defaults to 1 here
+        (unlike `digtk preservica import`'s own CLI default of unlimited), so
+        a first run stays shallow until the collection's shape is known.
+    :param str dest_root: Override the bronze root — see `digtk preservica
+        import --dest-root`'s own help.
+    :param str source_dir: Read from a local directory instead of the live
+        Preservica API — see `digtk preservica import --source-dir`'s own help.
+    :param bool skip_unchanged: Skip re-downloading a file whose Preservica-
+        reported fixity already matches the local copy. Defaults to True here
+        (opt-out), unlike the CLI's own off-by-default; uncheck it for a run
+        that must re-fetch every file regardless of fixity.
+    """
+    ref: str = Field(
+        ..., description="Root Preservica structural object ref to walk, or a '/'-separated "
+        "path of folder titles (e.g. 'haeger' or '/haeger/sub-folder') to resolve automatically.",
+    )
+    collection: str = Field(..., description="Collection name (manual input; not yet a partition).")
+    group: str = Field("preservica", description="Bronze group namespace.")
+    max_depth: int = Field(1, description="Maximum folder recursion depth.")
+    dest_root: str = Field("", description="Override the bronze root.")
+    source_dir: str = Field("", description="Read from a local directory instead of the live API.")
+    skip_unchanged: bool = Field(True, description="Skip re-downloading files whose fixity is unchanged.")
+
+
 class RebuildTreeConfig(Config):
     """Config for the rebuild_collection_tree asset.
 
