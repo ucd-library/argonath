@@ -40,8 +40,8 @@ items_partitions = dg.MultiPartitionsDefinition({
 # Workspace folders — keyed "workspace/[username]/[folder]" (e.g.
 # "workspace/jdoe/box-12"), i.e. cask:/workspace/[username]/[folder]: scans
 # staged before they have an ARK or a bronze copy (see digtk.models.workspace).
-# Kept in sync with CaskFS by lib.sensors.workspace_partition_sync_sensor; used by
-# lib.pipeline_workspace's workspace_process_job and workspace_promote_job.
+# Kept in sync with CaskFS by lib.sensors.workspace_partition_sync; used by
+# lib.pipeline_workspace's workspace_process.
 workspace_partitions = dg.DynamicPartitionsDefinition(name="workspace")
 
 
@@ -49,9 +49,6 @@ workspace_partitions = dg.DynamicPartitionsDefinition(name="workspace")
 # Config schemas
 # ---------------------------------------------------------------------------
 
-# Gold app targets — used by promotion/indexing configs, not by ingest (ingest
-# always lands in bronze; an item only reaches a gold app once promoted).
-GOLD_APPS = Literal["arda", "digital-dev", "digital-prod"]
 # "" = no enhancement, see image_magick.prep_ocr.
 OCR_ENHANCE = Literal["", "auto", "gray"]
 TAG_MODE = Literal["auto", "inplace", "rebuild"]
@@ -115,7 +112,7 @@ class ReconcileCollectionConfig(Config):
         source_type="preservica" (see preservica_changed).
     :param list[PreservicaChangedEntity] preservica_changed: Changed
         Preservica entities to sync — only used when source_type="preservica".
-        Populated by preservica_auto_sync_sensor from
+        Populated by bronze_preservica_auto_sync from
         digtk.models.collection.find_changed_preservica_collections()'s
         per-collection 'changed' list.
     """
@@ -177,7 +174,7 @@ class DerivativesConfig(Config):
 
 
 class CollectionDerivativesConfig(DerivativesConfig):
-    """Config for lib.pipeline_fanout.showcase_process_collection_job — DerivativesConfig
+    """Config for lib.pipeline_fanout.gold_dcs_process_collection — DerivativesConfig
     plus the fan-out's step cap.
 
     :param str widths: Comma-separated thumbnail widths.
@@ -191,7 +188,7 @@ class CollectionDerivativesConfig(DerivativesConfig):
 
 
 class ItemRunConfig(CollectionDerivativesConfig):
-    """Config for lib.pipeline_item.showcase_process_item_job — one item, addressed by
+    """Config for lib.pipeline_item.gold_dcs_process_item — one item, addressed by
     its bronze tree folder, plus CollectionDerivativesConfig's widths/max_steps.
 
     `item` defaults to "" only because lib.utils.default_run_config() builds
@@ -213,7 +210,7 @@ class ItemRunConfig(CollectionDerivativesConfig):
 
 
 class ReindexCollectionConfig(Config):
-    """Config for lib.pipeline_index.showcase_reindex_collection_job.
+    """Config for lib.pipeline_index.gold_dcs_reindex_collection.
 
     :param bool rebuild: Rebuild each gold item record before indexing.
     :param bool prune: Delete indexed items no longer in bronze.
@@ -227,8 +224,8 @@ class ReindexCollectionConfig(Config):
 
 
 class CaskChangesConfig(Config):
-    """Config for lib.pipeline_index.showcase_apply_cask_changes_job, filled in by
-    bronze_cask_audit_sensor. Items to process are queued as showcase_process_item_job runs instead.
+    """Config for lib.pipeline_index.gold_dcs_apply_cask_changes, filled in by
+    bronze_cask_audit. Items to process are queued as gold_dcs_process_item runs instead.
 
     :param list[str] reindex: Bronze item folders to rebuild and reindex.
     :param list[str] delete: Item ARKs to delete from the showcase index.
@@ -242,7 +239,7 @@ class CaskChangesConfig(Config):
 
 
 class UnpublishCollectionConfig(Config):
-    """Config for lib.pipeline_index.showcase_unpublish_collection_job.
+    """Config for lib.pipeline_index.gold_dcs_unpublish_collection.
 
     :param bool purge_silver: Also delete the items' silver website derivatives.
     """
@@ -252,7 +249,7 @@ class UnpublishCollectionConfig(Config):
 
 
 class DeleteItemIndexConfig(Config):
-    """Config for lib.pipeline_index.showcase_delete_item_index_job.
+    """Config for lib.pipeline_index.gold_dcs_delete_item_index.
 
     `ark` defaults to "" only so default_run_config() can build launchpad defaults.
 
@@ -283,14 +280,6 @@ class OcrConfig(Config):
     vision: bool = Field(True, description="Also run Qwen vision OCR for the transcript.")
     ocr_enhance: OCR_ENHANCE = Field("", description="Contrast boost for faded originals.")
     ocr_text_pages: bool = Field(False, description="Also OCR PDF pages that already have text.")
-
-
-class SearchIndexConfig(Config):
-    """Config for the index_for_rag asset.
-
-    :param str app: Gold app to read from when indexing.
-    """
-    app: GOLD_APPS = Field("arda", description="Gold app to index from.")
 
 
 class AltTextConfig(Config):
@@ -362,7 +351,7 @@ class TagPdfConfig(Config):
 
 
 class WorkspaceRunConfig(Config):
-    """Config for lib.pipeline_workspace.workspace_process_job's fan_out_workspace op —
+    """Config for lib.pipeline_workspace.workspace_process's fan_out_workspace op —
     which `digtk workspace run` steps to run, plus each step's tuning options
     (the same fields as SplitSpreadsConfig/OcrConfig/AltTextConfig/TagPdfConfig).
 
@@ -449,53 +438,3 @@ class WorkspaceRunConfig(Config):
     max_steps: int = Field(
         DEFAULT_MAX_STEPS, description="Most steps per fan-out; more files/folders are batched into shared steps. 0 = never batch.",
     )
-
-
-class PromoteItemConfig(Config):
-    """One workspace item to promote, and the ARK it was ingested under.
-
-    :param str source: Item folder under the workspace folder's source/ (""
-        for source/ itself — the usual case, a folder holding a single item).
-    :param str ark: The item's ARK in bronze, e.g. "ark:/87287/d3bv7b33r".
-    """
-    source: str = Field("", description="Item folder under source/ (\"\" = source/ itself).")
-    ark: str = Field(..., description="The item's ARK in bronze.")
-
-
-class PromoteWorkspaceConfig(Config):
-    """Config for lib.pipeline_workspace.workspace_promote_job — which reviewed
-    workspace items to copy into silver, and under which ARKs (see
-    `digtk workspace promote`).
-
-    Three ways to say what to promote, which can be combined:
-      - `ark` (+ `source`) for one item — `source` defaults to the workspace
-        folder's source/ itself, the case where the folder is a single item;
-      - `items`, a list of {source, ark} pairs;
-      - `ark_from_folder` + `naan`, for a batch whose item folders are named
-        after their ARK ids (e.g. source/d3bv7b33r -> ark:/87293/d3bv7b33r):
-        every item folder in the partition is promoted, no list needed. A
-        folder also given explicitly (via `ark`/`source` or `items`) uses that
-        ARK instead.
-
-    :param str ark: ARK for the item at `source`. Leave empty to use only `items`
-        / `ark_from_folder`.
-    :param str source: Item folder under source/ for `ark` ("" = source/ itself).
-    :param list[PromoteItemConfig] items: Additional {source, ark} pairs.
-    :param bool ark_from_folder: Promote every item folder as ark:/<naan>/<folder name>.
-    :param str naan: The ARKs' Name Assigning Authority Number (e.g. "87293") —
-        required with ark_from_folder.
-    :param bool dry_run: Only report what would be copied (default True —
-        check the event log, then launch again with dry_run: false).
-    :param bool replace: Overwrite outputs already in silver.
-    """
-    ark: str = Field("", description="ARK for the item at `source` (the usual single-item case).")
-    source: str = Field("", description="Item folder under source/ for `ark` (\"\" = source/ itself).")
-    items: list[PromoteItemConfig] = Field(
-        default_factory=list, description="More {source, ark} pairs, for a workspace folder with several items.",
-    )
-    ark_from_folder: bool = Field(
-        False, description="Promote every item folder as ark:/<naan>/<folder name> (folders named by ARK id).",
-    )
-    naan: str = Field("", description="ARK NAAN (e.g. 87293), required with ark_from_folder.")
-    dry_run: bool = Field(True, description="Only report what would be copied.")
-    replace: bool = Field(False, description="Overwrite outputs already in silver.")

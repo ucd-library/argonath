@@ -9,7 +9,7 @@ Identity:
     partitions use;
   - an item's `name` is its bronze folder path, with no leading slash (e.g.
     "bronze/preservica/haeger/latest/tree/quarter-mile") — the same form
-    Dagster's showcase_process_item_job is launched with. Its ARK is an identifier
+    Dagster's gold_dcs_process_item is launched with. Its ARK is an identifier
     (item_identifiers, id_type 'ark'), kept after the item leaves bronze.
 
 Visibility: a collection is 'public' if its argonath.collection_registry row's
@@ -21,7 +21,7 @@ The queue: enqueue_collection() writes one job_queue row per item for
 ITEM_JOB, replacing any row already pending for the same item, so the latest
 request wins. Items that have left the collection's bronze tree/ are not
 removed or unlinked here (their ES docs are pruned by `digtk showcase es prune`). Rows aren't claimed
-here — Dagster's item_queue_sensor reads them with pending() and deletes them
+here — Dagster's item_queue reads them with pending() and deletes them
 with ack() one tick after submitting their runs (see
 dagster/lib/pipeline_collection.py), so a crashed sensor tick never loses a row. Outcomes go to job_result via record_result() (one row per job
 and target, through the schema's upsert_job_result()).
@@ -47,8 +47,8 @@ from digtk.models import collection as collection_model
 _SCHEMA_SQL_PATH = Path(__file__).parent.parent / "sql" / "collection_state.sql"
 
 # Queue keys, not current Dagster job names.
-ITEM_JOB = "process_item_job"  # showcase_process_item_job's queue
-ROLLUP_JOB = "collection_rollup_job"  # showcase_collection_rollup_job's results
+ITEM_JOB = "process_item_job"  # gold_dcs_process_item's queue
+ROLLUP_JOB = "collection_rollup_job"  # gold_dcs_collection_rollup's results
 
 
 def init_pg(opts={}):

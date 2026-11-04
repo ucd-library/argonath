@@ -1,6 +1,6 @@
 """
 The per-file pike tool steps (OCR, alt text, figures, PDF tagging) as
-workspace_process_job runs them: one `digtk workspace run <target> --steps ...
+workspace_process runs them: one `digtk workspace run <target> --steps ...
 --file <name>` command per file, built from a WorkspaceRunConfig.
 """
 from lib.fanout_batching import emit

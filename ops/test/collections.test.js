@@ -115,7 +115,7 @@ describe('publish and unpublish', () => {
 
     expect(run).toEqual({ runId: 'r1', url: 'http://localhost:3000/dagster/runs/r1' });
     const params = JSON.parse(fetchMock.mock.calls[0][1].body).variables.executionParams;
-    expect(params.selector.jobName).toBe('showcase_reindex_collection_job');
+    expect(params.selector.jobName).toBe('gold_dcs_reindex_collection');
     expect(params.runConfigData).toEqual({ ops: { fan_out_reindex_tasks: { config: { rebuild: true } } } });
     expect(params.executionMetadata.tags).toEqual([{ key: 'dagster/partition', value: 'bronze/preservica/haeger' }]);
   });
@@ -128,7 +128,7 @@ describe('publish and unpublish', () => {
 
     expect(run.runId).toBe('r2');
     const params = JSON.parse(fetchMock.mock.calls[0][1].body).variables.executionParams;
-    expect(params.selector.jobName).toBe('showcase_unpublish_collection_job');
+    expect(params.selector.jobName).toBe('gold_dcs_unpublish_collection');
     expect(params.runConfigData).toEqual({ ops: { remove_collection_gold: { config: { purge_silver: false } } } });
     expect(params.executionMetadata.tags).toEqual([{ key: 'dagster/partition', value: 'bronze/preservica/haeger' }]);
   });

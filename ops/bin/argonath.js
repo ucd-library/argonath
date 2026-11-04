@@ -39,18 +39,17 @@ processCmd
   .command('collection <name>')
   .description('Trigger a pipeline job for an entire collection.')
   .option('--space <space>', 'App space.', 'digital-dev')
-  .option('--job <job>', 'Job name: full, derivatives, ocr, metadata, alt, tag-pdf, split-detect, split-apply, rag.', 'full')
+  .option('--job <job>', 'Job name: full, derivatives, ocr, metadata, alt, tag-pdf, split-detect, split-apply.', 'full')
   .action(async (name, opts) => {
     const jobMap = {
-      full:          'full_pipeline_job',
-      derivatives:   'showcase_derivatives_job',
-      ocr:           'bronze_ocr_job',
-      metadata:      'metadata_job',
-      alt:           'bronze_alt_text_job',
-      'tag-pdf':     'bronze_tag_pdf_job',
-      'split-detect': 'bronze_detect_spreads_job',
-      'split-apply':  'bronze_apply_spreads_job',
-      rag:           'search_index_job',
+      full:          'silver_full_pipeline',
+      derivatives:   'gold_dcs_derivatives',
+      ocr:           'silver_ocr',
+      metadata:      'silver_metadata',
+      alt:           'silver_alt_text',
+      'tag-pdf':     'silver_tag_pdf',
+      'split-detect': 'silver_detect_spreads',
+      'split-apply':  'silver_apply_spreads',
     };
     const jobName = jobMap[opts.job] || opts.job;
     try {
@@ -66,18 +65,17 @@ processCmd
   .command('item <ark>')
   .description('Trigger a pipeline job for a single item by ARK.')
   .requiredOption('--collection <collection>', 'Collection key, format "[group]/[collection]".')
-  .option('--job <job>', 'Job name: full, derivatives, ocr, metadata, alt, tag-pdf, split-detect, split-apply, rag.', 'full')
+  .option('--job <job>', 'Job name: full, derivatives, ocr, metadata, alt, tag-pdf, split-detect, split-apply.', 'full')
   .action(async (ark, opts) => {
     const jobMap = {
-      full:          'full_pipeline_job',
-      derivatives:   'showcase_derivatives_job',
-      ocr:           'bronze_ocr_job',
-      metadata:      'metadata_job',
-      alt:           'bronze_alt_text_job',
-      'tag-pdf':     'bronze_tag_pdf_job',
-      'split-detect': 'bronze_detect_spreads_job',
-      'split-apply':  'bronze_apply_spreads_job',
-      rag:           'search_index_job',
+      full:          'silver_full_pipeline',
+      derivatives:   'gold_dcs_derivatives',
+      ocr:           'silver_ocr',
+      metadata:      'silver_metadata',
+      alt:           'silver_alt_text',
+      'tag-pdf':     'silver_tag_pdf',
+      'split-detect': 'silver_detect_spreads',
+      'split-apply':  'silver_apply_spreads',
     };
     const jobName = jobMap[opts.job] || opts.job;
     try {
@@ -130,7 +128,7 @@ indexCmd
   .option('--wait', 'Wait for the run to finish.', false)
   .action(async (key, opts) => {
     try {
-      await launch('showcase_reindex_collection_job', {
+      await launch('gold_dcs_reindex_collection', {
         partitionKey: key,
         wait: opts.wait,
         config: {
@@ -158,7 +156,7 @@ indexCmd
   .option('--wait', 'Wait for the run to finish.', false)
   .action(async (key, opts) => {
     try {
-      await launch('showcase_delete_collection_index_job', { partitionKey: key, wait: opts.wait });
+      await launch('gold_dcs_delete_collection_index', { partitionKey: key, wait: opts.wait });
     } catch (err) {
       console.error(`Error: ${err.message}`);
       process.exit(1);
@@ -172,7 +170,7 @@ indexCmd
   .option('--wait', 'Wait for the run to finish.', false)
   .action(async (ark, opts) => {
     try {
-      await launch('showcase_delete_item_index_job', {
+      await launch('gold_dcs_delete_item_index', {
         wait: opts.wait,
         config: { ops: { delete_item_index: { config: { ark, collection: opts.collection } } } },
       });
@@ -191,7 +189,7 @@ const workspaceCmd = program.command('workspace').description('Workspace folder 
 
 workspaceCmd
   .command('run <folder>')
-  .description('Run the pike tools on a workspace folder in Dagster (workspace_process_job). '
+  .description('Run the pike tools on a workspace folder in Dagster (workspace_process). '
     + 'Folder: cask:/workspace/<user>/<folder>.')
   .option('--steps <steps>', `Steps to run (comma-separated): ${Object.keys(STEP_FIELDS).join(', ')}, or all. `
     + `Also turns on options listed here: ${Object.keys(OPTION_FIELDS).join(', ')}. Required: every step defaults to off.`)
@@ -213,9 +211,9 @@ workspaceCmd
       // sensor registers new folders (~2 min)
       await waitForPartition(plan.jobName, plan.partitionKey, {
         ...conn,
-        onWait: () => console.log(`Waiting for workspace_partition_sync_sensor to register ${plan.partitionKey}...`),
+        onWait: () => console.log(`Waiting for workspace_partition_sync to register ${plan.partitionKey}...`),
       }).catch((err) => {
-        throw new Error(`${err.message}. Check workspace_partition_sync_sensor is on and the folder has a source/ directory.`);
+        throw new Error(`${err.message}. Check workspace_partition_sync is on and the folder has a source/ directory.`);
       });
       console.log(`Partition ${plan.partitionKey}`);
       await launch(plan.jobName, {

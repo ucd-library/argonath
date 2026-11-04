@@ -8,8 +8,6 @@ from digtk.models import workspace as workspace_model
 
 runner = CliRunner()
 
-ARK = "ark:/87287/d7abc1234"
-
 
 def last_json_line(output):
     return json.loads(output.strip().splitlines()[-1])
@@ -61,21 +59,6 @@ def test_run_file_option_is_repeatable(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert seen["opts"]["files"] == ["a.tif", "b.pdf"]
-
-
-def test_promote_forwards_ark_and_flags(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(workspace_model, "promote", lambda path, ark, opts={}: seen.update(
-        path=path, ark=ark, opts=opts,
-    ) or {"status": "success", "promoted": []})
-
-    result = runner.invoke(app, [
-        "workspace", "promote", "cask:/workspace/jdoe/box-12/source", "--ark", ARK, "--dry-run",
-    ])
-
-    assert result.exit_code == 0, result.output
-    assert seen == {"path": "cask:/workspace/jdoe/box-12/source", "ark": ARK,
-                    "opts": {"replace": False, "dry_run": True}}
 
 
 def test_ls_returns_folders(monkeypatch):

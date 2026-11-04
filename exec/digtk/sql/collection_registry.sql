@@ -8,8 +8,7 @@
 -- (argonath itself does not provision that infrastructure) — coordinate with
 -- whoever administers it, or run `digtk collection init-pg` against it. Lives
 -- in its own 'argonath' schema, namespaced apart from anything else in that
--- shared instance (e.g. project-anduin's own tables, or the pgvector store
--- digtk.lib.ai's RAG indexing uses). Not Dagster's own run/event-log Postgres
+-- shared instance (e.g. project-anduin's own tables). Not Dagster's own run/event-log Postgres
 -- database either (see dagster/dagster.yaml's storage.postgres block) — a
 -- separate database/credentials, resolved via digtk.lib.db / CONFIG["postgres"].
 

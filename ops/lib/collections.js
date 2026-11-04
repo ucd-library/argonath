@@ -10,8 +10,8 @@ import { loadCredentials, runUrl, triggerJob } from './dagster.js';
 const LOCAL_CASK_API = 'http://localhost:3001/cask/api';
 const LS_PAGE_SIZE = 10000;
 
-const PUBLISH_JOB = 'showcase_reindex_collection_job';
-const UNPUBLISH_JOB = 'showcase_unpublish_collection_job';
+const PUBLISH_JOB = 'gold_dcs_reindex_collection';
+const UNPUBLISH_JOB = 'gold_dcs_unpublish_collection';
 
 /**
  * Work out which CaskFS API to talk to and how to authenticate.

@@ -11,11 +11,6 @@ Subcommands:
   prune              — delete indexed items no longer in bronze
   delete             — delete one or more items by ark
   delete-collection  — delete a collection and all its items
-
-Distinct from `digtk search` (LlamaIndex/pgvector RAG indexing/querying) -
-different index, different consumer. See digtk.lib.showcase_index's module
-docstring for why this is a separate command group rather than a `search`
-subcommand.
 """
 import json
 from typing import Annotated, List

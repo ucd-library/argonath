@@ -6,7 +6,7 @@
 /
 ├── bronze/         # Raw, immutable, append-only captures
 ├── silver/         # Derived products: final derivatives (thumbnails, tiles, HLS,
-│                   # captions) plus intermediate work product (OCR, AI metadata, RAG)
+│                   # captions) plus intermediate work product (OCR, AI metadata)
 ├── gold/           # Access-controlled preservation/download products
 └── workspace/      # Per-user staging (formerly user/)
     └── [username]/
@@ -97,13 +97,10 @@ silver/[group]/[collection]/[time]/[item]/
 │   └── ocr-result.json
 ├── accessibility/              # digtk accessibility alt-text / tag-pdf
 ├── split-spreads/              # digtk split-spreads detect / apply
-├── metadata/
-│   ├── manifest.json
-│   ├── ai-metadata.jsonld.json    # AI-generated draft
-│   └── human-metadata.jsonld.json # Human input (partial — only touched fields)
-└── rag/
+└── metadata/
     ├── manifest.json
-    └── chunks.json                # text chunks + embedding IDs
+    ├── ai-metadata.jsonld.json    # AI-generated draft
+    └── human-metadata.jsonld.json # Human input (partial — only touched fields)
 ```
 
 Silver holds two kinds of output side by side:
@@ -118,7 +115,7 @@ Silver holds two kinds of output side by side:
   `/cask/api/fs/<path>` prefix (e.g. `/cask/api/fs/silver/preservica/haeger/latest/tree/<item>/public-frontend-derivatives/...`).
   Whether the public can see them is decided per collection/item, not per
   environment, so a public item is equally visible from dev and prod.
-- **Intermediate work product** — `ocr/`, `text/`, `metadata/`, `rag/`, and the other
+- **Intermediate work product** — `ocr/`, `text/`, `metadata/`, and the other
   tool outputs: inputs to later steps (OCR text feeds the AI-metadata step) rather
   than something the webapp renders directly.
 
@@ -129,13 +126,13 @@ Every source image gets its own nested directory under silver's
 `public-frontend-derivatives/images/`, named after its own bronze filename — this
 holds regardless of whether the item has one source image or several, so there's no
 filename-prefixing scheme to disambiguate a multi-image item; each source's
-small/medium/large set and manifest just live in their own directory instead. `ocr/`,
-`metadata/`, and `rag/` are unaffected by this and remain flat, shared silver
+small/medium/large set and manifest just live in their own directory instead. `ocr/`
+and `metadata/` are unaffected by this and remain flat, shared silver
 directories.
 
 ### Scan Orientation
 
-`digtk showcase image derivatives` (the command `showcase_derivatives_job` runs) decides an item's
+`digtk showcase image derivatives` (the command `gold_dcs_derivatives` runs) decides an item's
 scan orientation once, using a real OCR comparison rather than a fixed rule: it
 generates both a deskewed and non-deskewed OCR-prep candidate, runs Tesseract
 against each, and keeps whichever has both a higher word count and a higher (or
@@ -549,7 +546,7 @@ location (preferring the configured `[app]` when several hold a record).
 
 `collection.jsonld.json` is written only by `digtk showcase build-collection`
 (`digtk.models.digital_website.collection_record`, run by Dagster's
-`showcase_collection_rollup_job`). It is built from the bronze collection root's
+`gold_dcs_collection_rollup`). It is built from the bronze collection root's
 `tree/metadata.json` (Dublin Core, falling back to the Preservica title/description)
 and `tree/identifiers.json` (the collection ark plus any call number). Its root node's
 `@id` is the same `https://digital.ucdavis.edu/collection/<ark>` URI items point at via
@@ -602,10 +599,7 @@ workspace/[username]/[folder]/
 ```
 
 No time dimension and no sidecars. Outputs follow "Root-Level Tool Outputs" above.
-Once an item is ingested to bronze under an ARK, `digtk workspace promote <item-dir>
---ark <ark>` copies its outputs into the ARK's silver location unchanged (no
-OCR/vision re-run), re-pointing lineage at the same-named bronze binaries. Workspace
-folders are what Dagster's `workspace` partitions list (`workspace/[username]/[folder]`).
+Workspace folders are what Dagster's `workspace` partitions list (`workspace/[username]/[folder]`).
 A workspace folder isn't necessarily a collection: it can be part of one, or span several.
 
 ## Multi-Part Items
@@ -623,7 +617,7 @@ bronze item's pages are `public-frontend-derivatives/<pdf-filename>/images/<n>`/
 `ocr/page-NNN` subdirectories under one ARK, with no per-page ARK and no `parts/` —
 a lighter-weight model for pages that don't need independent identity. Use this
 `parts/` convention instead when individual pages/parts genuinely need their own
-ARK (independently citable, searchable, or RAG-indexable).
+ARK (independently citable or searchable).
 
 ## Structural vs. Domain Metadata
 

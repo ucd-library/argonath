@@ -308,7 +308,7 @@ class PreservicaClient:
     def get_entities_updated_since(self, since, opts={}):
         """List entities changed since a given timestamp (paged) — the basis for
         the Preservica auto-sync sensor's polling
-        (dagster/lib/sensors.py's preservica_auto_sync_sensor).
+        (dagster/lib/sensors.py's bronze_preservica_auto_sync).
 
         Unlike get_children(), this is tenant-wide, not scoped to one folder —
         resolving a changed ref to a registered collection (root-level match, or

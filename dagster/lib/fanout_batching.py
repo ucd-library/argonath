@@ -1,6 +1,6 @@
 """
 Batching and naming helpers shared by the fan-out jobs (lib/pipeline_fanout.py's
-showcase_process_collection_job, lib/pipeline_workspace.py's workspace_process_job).
+gold_dcs_process_collection, lib/pipeline_workspace.py's workspace_process).
 
 Both jobs fan out one Dagster step per file (or per item folder). A large
 collection can hold tens of thousands of files, which is more steps than one

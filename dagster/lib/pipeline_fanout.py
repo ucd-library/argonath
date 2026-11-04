@@ -16,7 +16,7 @@ and digtk.lib.reporting rows (see each op's exec() call, which passes this
 run's own id as --reporting-job-id) -- not via Dagster partition status. Which
 design a given phase should use is a per-phase choice, not an all-or-nothing
 migration; this module only covers derivatives (the `digtk showcase`
-commands the webapp relies on). OCR runs separately via lib.jobs.bronze_ocr_job.
+commands the webapp relies on). OCR runs separately via lib.jobs.silver_ocr.
 
 Derivatives run one step per IMAGE and per PDF file, not per item: each step
 is `digtk showcase image|pdf derivatives <item-path> --file <bronze path>`,
@@ -43,7 +43,7 @@ partition (e.g. "latest/tree/x/Preservation/page_003.tif").
 Each op shells out to a digtk command via lib.utils.exec(), the same
 bridge lib/assets.py's per-item assets use.
 
-lib/pipeline_item.py's showcase_process_item_job (one item, no partition) reuses this
+lib/pipeline_item.py's gold_dcs_process_item (one item, no partition) reuses this
 module's per-item pieces: item_tasks() / _error_task() to build an item's
 tasks, process_derivative_batch to run them, and finalize_one_item() to
 finalize it. So every task carries its own `collection_key` (used for
@@ -445,14 +445,16 @@ def check_derivative_failures(context: OpExecutionContext, summary: dict):
     executor_def=celery_job_executor(),
     config=default_run_config({"fan_out_derivative_tasks": CollectionDerivativesConfig}),
 )
-def showcase_process_collection_job():
+def gold_dcs_process_collection():
     """Collection-partitioned fan-out: one derivative step per image/PDF file
     (and per video/audio item) across the partition's collection, then one
     finalize step per image/PDF item — one Dagster run per collection, each
-    step its own celery task. See this module's docstring for how this
-    differs from lib.jobs.showcase_derivatives_job (the MultiPartitionsDefinition,
+    step its own celery task. Touches silver and gold: derivatives and
+    finalize outputs go to silver, item records and downloads to gold. See
+    this module's docstring for how this
+    differs from lib.jobs.gold_dcs_derivatives (the MultiPartitionsDefinition,
     per-item-partition design). OCR is not part of this job; run
-    lib.jobs.bronze_ocr_job for that.
+    lib.jobs.silver_ocr for that.
     """
     results = fan_out_derivative_tasks().map(process_derivative_batch).collect()
     items, summary = fan_out_finalize(results)

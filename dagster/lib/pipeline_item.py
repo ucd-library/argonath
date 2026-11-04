@@ -1,5 +1,5 @@
 """
-showcase_process_item_job: run one item's showcase derivatives on demand. The job is
+gold_dcs_process_item: run one item's showcase derivatives on demand. The job is
 manual and unpartitioned, and the item is addressed by its bronze tree folder
 (ItemRunConfig.item, e.g. "bronze/preservica/haeger/latest/tree/quarter-mile")
 throughout the derivative and finalize steps, which never read or record an
@@ -8,7 +8,7 @@ folder's identifiers.json when it builds the gold item.jsonld.json), and
 pdc_index_item's Elasticsearch upsert uses that ARK (see below).
 
 It works like one item's slice of lib/pipeline_fanout.py's
-showcase_process_collection_job and reuses that module's pieces: item_tasks() builds
+gold_dcs_process_collection and reuses that module's pieces: item_tasks() builds
 the tasks (one per image/PDF file, one per video/audio item),
 process_derivative_batch runs them, finalize_one_item() writes the item-level
 derivative outputs, and build_item_record() assembles the canonical gold
@@ -30,15 +30,15 @@ reports it and fails like any other failed step.
 
 Task ids, events and digtk reporting rows use the item's collection key (the
 first three path segments, "bronze/[group]/[collection]"), the same as
-showcase_process_collection_job. Runs are tagged argonath/item and argonath/collection,
+gold_dcs_process_collection. Runs are tagged argonath/item and argonath/collection,
 plus argonath/ark once pdc_generate_item_record has built the record, so
-they're searchable in the Runs screen. Queued runs (see lib.pipeline_collection.item_queue_sensor) already
+they're searchable in the Runs screen. Queued runs (see lib.pipeline_collection.item_queue) already
 have argonath/item and argonath/collection at launch.
 
-Each run's outcome is recorded as the item's showcase_process_item_job result in
+Each run's outcome is recorded as the item's gold_dcs_process_item result in
 collection_state (see lib.collection_state): "success" after pdc_index_item, and
 "failed" from the op that fails. A recorded
-result also tags the run argonath/result=<status>. process_item_failure_sensor
+result also tags the run argonath/result=<status>. process_item_failure
 records "failed" for failed runs without that tag, e.g. a crashed worker or an
 unexpected error, using the run's step errors. In-flight state isn't recorded:
 it lives in Dagster's own run tracking.
@@ -247,18 +247,20 @@ def _record(context, item, status, opts={}):
 
 @job(
     # "dagster/max_runtime": "0": no duration-based auto-cancel. A large item
-    # can have hundreds of pages. See showcase_process_collection_job's comment in
+    # can have hundreds of pages. See gold_dcs_process_collection's comment in
     # lib/pipeline_fanout.py.
     tags={"argonath/kind": "item", "dagster/max_runtime": "0"},
     executor_def=celery_job_executor(),
     config=default_run_config({"pdc_plan_item": ItemRunConfig}),
 )
-def showcase_process_item_job():
+def gold_dcs_process_item():
     """One item's derivatives, addressed by its bronze folder: one step per
     image/PDF file (and per video/audio format), then finalize, then building
-    its canonical item.jsonld.json, then the Elasticsearch upsert. Launch it
+    its canonical item.jsonld.json, then the Elasticsearch upsert. Touches
+    silver and gold: derivatives and finalize outputs go to silver, the item
+    record and downloads to gold. Launch it
     from the launchpad with ops.pdc_plan_item.config.item set, or let
-    lib.pipeline_collection.item_queue_sensor launch it from the queue. See
+    lib.pipeline_collection.item_queue launch it from the queue. See
     this module's docstring.
     """
     tasks, item = pdc_plan_item()
@@ -266,9 +268,9 @@ def showcase_process_item_job():
     pdc_index_item(pdc_generate_item_record(pdc_finalize_item(results, item)))
 
 
-@dg.run_failure_sensor(monitored_jobs=[showcase_process_item_job])
-def process_item_failure_sensor(context: dg.RunFailureSensorContext):
-    """Record "failed" in collection_state for failed showcase_process_item_job runs
+@dg.run_failure_sensor(monitored_jobs=[gold_dcs_process_item], description="TODO")
+def process_item_failure(context: dg.RunFailureSensorContext):
+    """Record "failed" in collection_state for failed gold_dcs_process_item runs
     that didn't record a result themselves — no argonath/result tag, e.g. a
     crashed celery worker or an unexpected error in an op. The error is taken
     from the run's step failures. Runs whose op already recorded "failed" are

@@ -3,9 +3,7 @@ digtk workspace — run the root-level tools on scans before they have an ARK.
 
 Stages local folders into /workspace/[username]/[folder]/source/, runs any
 of the root-level tools over them (outputs land in that folder's
-derivatives/), pulls outputs back down for review, and promotes a reviewed
-item's outputs into silver once it's been ingested under an ARK. See
-digtk.models.workspace.
+derivatives/), and pulls outputs back down for review. See digtk.models.workspace.
 
 Subcommands:
   add      — stage a local folder into a workspace folder
@@ -13,7 +11,6 @@ Subcommands:
   items    — list the item directories under a workspace path
   run      — run one or more tool steps over a folder, workspace path, or ARK
   pull     — download a CaskFS directory (e.g. review sheets) to local disk
-  promote  — copy a workspace item's outputs into an ARK's silver location
 """
 import subprocess
 from typing import Annotated
@@ -89,7 +86,7 @@ def items_cmd(
     )] = False,
 ):
     """List the item directories under a workspace path (used by Dagster's
-    workspace_process_job to fan out its steps)."""
+    workspace_process to fan out its steps)."""
     try:
         if files:
             found = workspace.list_items(path)
@@ -202,24 +199,3 @@ def pull(
     except _ERRORS as e:
         utils.error(str(e))
 
-
-@app.command()
-def promote(
-    path: Annotated[str, typer.Argument(help="Workspace item directory, e.g. cask:/workspace/<user>/<folder>/source/folder-3.")],
-    ark: Annotated[str, typer.Option(help="The item's ARK, once ingested to bronze.")],
-    replace: Annotated[bool, typer.Option(help="Overwrite outputs already in silver.")] = False,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would be copied without copying.")] = False,
-):
-    """Copy a workspace item's outputs into the ARK's silver location.
-
-    Copies as-is (no OCR/vision re-runs), re-pointing lineage at the
-    matching bronze binaries. Every workspace source file must have a
-    same-named binary under the ARK.
-    """
-    try:
-        result = workspace.promote(path, ark, opts={"replace": replace, "dry_run": dry_run})
-        verb = "Would copy" if dry_run else "Copied"
-        utils.log(f"{verb} {len(result['promoted'])} output(s) to silver for {ark}")
-        utils.result(result)
-    except _ERRORS as e:
-        utils.error(str(e))

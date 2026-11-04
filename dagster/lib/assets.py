@@ -14,7 +14,6 @@ from lib.configs import (
     RebuildTreeConfig,
     DerivativesConfig,
     OcrConfig,
-    SearchIndexConfig,
     AltTextConfig,
     FiguresConfig,
     TagPdfConfig,
@@ -63,7 +62,7 @@ def reconcile_collection_items(context: dg.AssetExecutionContext, config: Reconc
     auto-deleted for them.
 
     Preservica sources are targeted, not a full re-ingest: `config.preservica_changed`
-    (populated by preservica_auto_sync_sensor from
+    (populated by bronze_preservica_auto_sync from
     digtk.models.collection.find_changed_preservica_collections()) names the
     specific folder(s)/item(s) that actually changed, and only those are
     synced — see digtk.models.collection.preservica_sync_entities(). A brand
@@ -125,7 +124,7 @@ def rebuild_collection_tree(context: dg.AssetExecutionContext, config: RebuildTr
 
     Runs immediately after reconcile_collection_items in the same job, so
     tree/ stays current after every incremental Preservica sync (see
-    preservica_auto_sync_sensor) instead of only after a manual `digtk
+    bronze_preservica_auto_sync) instead of only after a manual `digtk
     preservica tree` run. A no-op for the other three source types — tree/
     is derived purely from by-ref/, and only Preservica writes by-ref/.
 
@@ -221,7 +220,7 @@ def apply_spreads(context: dg.AssetExecutionContext):
 
     The deps=[detect_spreads] declaration is for asset-graph accuracy only
     (apply reads what detect produces) — nothing here auto-chains the two;
-    an operator triggers bronze_apply_spreads_job manually after confirming a human
+    an operator triggers silver_apply_spreads manually after confirming a human
     has reviewed/corrected gutters.json.
 
     :param context: Dagster asset execution context.
@@ -466,20 +465,6 @@ def generate_metadata(context: dg.AssetExecutionContext):
 
 @dg.asset(
     partitions_def=items_partitions,
-    deps=[generate_metadata],
-    group_name="rag",
-)
-def index_for_rag(context: dg.AssetExecutionContext, config: SearchIndexConfig):
-    """Index an item's OCR text and metadata into the pgvector RAG store.
-
-    :param context: Dagster asset execution context.
-    :param config: SearchIndexConfig with target gold app.
-    """
-    raise NotImplementedError("phase 0.7")
-
-
-@dg.asset(
-    partitions_def=items_partitions,
     deps=[generate_derivatives],
     group_name="showcase_search",
 )
@@ -494,11 +479,6 @@ def index_for_showcase_search(context: dg.AssetExecutionContext):
     it should only ever index reviewed/structural metadata, never an
     unreviewed AI draft. Revisit this dependency if/when a "metadata
     approved" step is added to the pipeline.
-
-    Distinct from index_for_rag above, which feeds an unrelated
-    LlamaIndex/pgvector RAG search space - named index_for_showcase_search
-    rather than overloading index_for_rag's name so the two indexing
-    concerns (public website search vs. AI RAG search) don't get conflated.
 
     :param context: Dagster asset execution context.
     """
