@@ -13,12 +13,10 @@ Subcommands:
   build-item — assemble and write the item's complete, canonical gold item.jsonld.json
   build-collection — write the collection's gold collection.jsonld.json
   clean-item — delete a removed bronze item's silver and gold directories
-  init-db    — apply dc-showcase's init SQL to its database
-  init-cask  — seed dc-showcase's gold files into CaskFS
+  unpublish-collection — delete a collection's gold folder for one project
 """
 from typing import Annotated, List
 
-import psycopg2
 import typer
 
 from digtk.commands import audio, es, image, pdf, video
@@ -28,7 +26,7 @@ from digtk.lib.config import (
 )
 from digtk.models.digital_website import finalize as finalize_model
 from digtk.models.digital_website import collection_index, collection_record, item_record
-from digtk.models.digital_website import pipeline, showcase_cask, showcase_db
+from digtk.models.digital_website import pipeline
 
 app = typer.Typer(help="Public Digital Collections website commands.", no_args_is_help=True)
 
@@ -99,10 +97,10 @@ def build_item(
     reporting_job_id: ReportingJobIdOption = None,
     reporting_collection: ReportingCollectionOption = None,
 ):
-    """Assemble and promote the item's complete, canonical item.jsonld.json to
-    gold: identifiers, whatever descriptive metadata bronze already resolved,
-    and a freshly rebuilt associatedMedia/hasPart structure read from silver's
-    published derivatives and bronze's preservation originals. Run after
+    """Promote the item's bronze binaries into gold (the website's downloads),
+    then assemble its complete, canonical item.jsonld.json there: identifiers,
+    whatever descriptive metadata bronze already resolved, and a freshly
+    rebuilt associatedMedia/hasPart structure pointing at those gold copies. Run after
     `digtk showcase finalize` (and any video/audio derivatives()) have
     published this item's media. Unlike every other showcase step, this one
     requires the item to have an ARK and fails if it doesn't — the canonical
@@ -134,6 +132,29 @@ def build_collection(
         utils.error(str(e))
 
 
+@app.command("unpublish-collection")
+def unpublish_collection(
+    key: Annotated[str, typer.Argument(help="Collection key: [bronze/]<group>/<collection>.")],
+    project: ShowcaseGoldProjectOption = CONFIG["showcase"]["gold_project"],
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Report what would be removed.")] = False,
+    purge_silver: Annotated[bool, typer.Option(
+        "--purge-silver", help="Also delete the items' silver website derivatives, unless another project has the collection.",
+    )] = False,
+):
+    """Delete the collection's gold folder for this project: item records,
+    promoted download files and the collection record. With --purge-silver,
+    also delete its silver website derivatives. Run `digtk showcase es
+    delete-collection` first, since it reads the gold collection record."""
+    try:
+        opts = {"project": project, "dry_run": dry_run}
+        result = collection_index.remove_collection_gold(key, opts)
+        if purge_silver:
+            result["silver"] = collection_index.remove_collection_silver(key, opts)
+        utils.result({"status": "success", **result})
+    except _ERRORS as e:
+        utils.error(str(e))
+
+
 @app.command("clean-item")
 def clean_item(
     folders: Annotated[List[str], typer.Argument(help="Bronze item folder(s) no longer in bronze.")],
@@ -149,36 +170,3 @@ def clean_item(
     except _ERRORS as e:
         utils.error(str(e))
 
-
-@app.command("init-db")
-def init_db(
-    init_dir: Annotated[str | None, typer.Option(
-        "--init-dir", help="Directory of dc-showcase's init .sql files (default: showcase_db.init_dir).",
-    )] = None,
-):
-    """Apply dc-showcase's init SQL to its database, in filename order. The
-    SQL is dc-showcase's own, mounted from its repo. Safe to run repeatedly."""
-    try:
-        files = showcase_db.init_db({"init_dir": init_dir})
-        utils.log(f"Applied {len(files)} dc-showcase init file(s)")
-        utils.result({"status": "success", "files": files})
-    except (*_ERRORS, psycopg2.Error) as e:
-        utils.error(str(e))
-
-
-@app.command("init-cask")
-def init_cask(
-    init_dir: Annotated[str | None, typer.Option(
-        "--init-dir", help="Directory of dc-showcase's gold seed files (default: showcase_cask.init_dir).",
-    )] = None,
-    project: ShowcaseGoldProjectOption = CONFIG["showcase"]["gold_project"],
-):
-    """Copy dc-showcase's gold seed files (hero banner and browse by images)
-    into the gold project. Existing files are skipped, so it's safe to run
-    repeatedly."""
-    try:
-        result = showcase_cask.init_cask({"init_dir": init_dir, "project": project})
-        utils.log(f"Added {len(result['added'])} file(s), skipped {len(result['skipped'])} existing (project={project})")
-        utils.result({"status": "success", **result})
-    except _ERRORS as e:
-        utils.error(str(e))

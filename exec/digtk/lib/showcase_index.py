@@ -29,7 +29,7 @@ import urllib.parse
 
 import httpx
 
-from digtk.lib import items, fs, utils
+from digtk.lib import edtf_dates, items, fs, utils
 from digtk.lib.config import CONFIG
 from digtk.models.digital_website import (
     audio, captions, collection_record, image, item_record, pdf, pipeline, video, visibility,
@@ -218,8 +218,8 @@ def _silver_media(location):
     """Every published silver associatedMedia entry for the item's formats
     (renditions, streams, transcoded copies), each stamped with the
     "argonath:sourceGroup" it was built for, with captions attached to their
-    video/audio entries. The gold item record only points at bronze
-    preservation masters (see item_record), so the website-facing media
+    video/audio entries. The gold item record only points at the gold copies
+    of preservation masters (see item_record), so the website-facing media
     comes from silver here.
 
     :param digtk.lib.items.ItemLocation location:
@@ -261,7 +261,7 @@ def _caption_links(entry):
 
 def _original_download(gold_node, sizes):
     """A download entry for a media node's original binary, from its gold
-    node's bronze contentUrl.
+    node's contentUrl (the master's gold copy — see item_record.promote_media()).
 
     :param dict|None gold_node: The media node's gold record node.
     :param dict sizes: See _file_size().
@@ -510,7 +510,8 @@ def build_document(ark, opts={}):
     clientMedia moves to the root "clientMedia" map keyed by node @id, with
     downloads pointing at the original bronze binaries. The
     root gets "subjects" (from about), a {name} creator and publisher,
-    string identifiers and full @type URIs, matching the item index mapping.
+    string identifiers and full @type URIs, matching the item index mapping,
+    plus the date fields from _date_fields() (EDTF-aware, see edtf_dates).
     "about" is left out, since the mapping indexes it as text. Two
     document-level fields are required: "name" (search sorts by "name.raw")
     and "roles", from the visibility of the collection the item isPartOf
@@ -519,7 +520,8 @@ def build_document(ark, opts={}):
     :param str ark: Item ARK.
     :param dict opts: 'project' — the gold app segment to read the record
         from (see item_record.gold_location(), which never reads bronze);
-        'roles_cache' — see visibility.roles().
+        'roles_cache' — see visibility.roles(); 'collection_cache' — see
+        _collection_root().
     :returns: ES document body: {"@id", "@graph", "clientMedia",
         "displayImage", "name", "roles"}.
     :rtype: dict
@@ -564,6 +566,7 @@ def build_document(ark, opts={}):
     root["isPartOf"] = _is_part_of(root.get("isPartOf"))
     if root.get("encodingFormat"):
         root["fileFormat"] = root["encodingFormat"]
+    root.update(_date_fields(root, _collection_root(location.collection, opts)))
     for node in graph:
         if node is not root and node.get("@type"):
             node["@type"] = _full_types(node["@type"])
@@ -580,6 +583,78 @@ def build_document(ark, opts={}):
     if display_image:
         document["displayImage"] = display_image
     return document
+
+
+def _jsonld_value(node, key):
+    """A node's first plain value for a key, compact or ucdlib-prefixed.
+
+    :param dict node: A JSON-LD node.
+    :param str key: Compact key, e.g. "dateUncertaintyYears".
+    :returns: The @value of a typed literal, the plain value, or None.
+    """
+    value = node.get(key)
+    if value is None:
+        value = node.get(f"ucdlib:{key}")
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if isinstance(value, dict):
+        value = value.get("@value")
+    return value
+
+
+def _collection_root(name, opts={}):
+    """An item's collection root node, for its date settings.
+
+    :param str name: Collection name.
+    :param dict opts: 'project' (see collection_record.read());
+        'collection_cache' (dict, filled by name so a batch reads each once).
+    :returns: The collection's root node, or {} if it has no record yet.
+    :rtype: dict
+    """
+    cache = opts.get("collection_cache")
+    if cache is not None and name in cache:
+        return cache[name]
+    try:
+        root = collection_record.root_node(collection_record.read(name, opts))
+    except FileNotFoundError:
+        root = {}
+    if cache is not None:
+        cache[name] = root
+    return root
+
+
+def _date_fields(node, collection={}):
+    """The website's date fields for a node, from its datePublished or
+    dateCreated. Uncertainty years and labels come from the node, then
+    its collection (see edtf_dates.compute_fields()).
+
+    :param dict node: An item or collection root node.
+    :param dict collection: The item's collection root node, if any.
+    :returns: yearPublished/yearPublishedStart/yearPublishedEnd/datePrecision/
+        dateDisplay, plus datePublished as a plain string; {} with no date.
+    :rtype: dict
+    """
+    raw = _jsonld_value(node, "datePublished") or _jsonld_value(node, "dateCreated")
+    parsed = edtf_dates.parse(raw)
+    if not parsed:
+        return {}
+
+    def setting(key):
+        value = _jsonld_value(node, key)
+        return value if value is not None else _jsonld_value(collection, key)
+
+    years = setting("dateUncertaintyYears")
+    if isinstance(years, str) and years.strip().isdigit():
+        years = int(years)
+    explicit = isinstance(years, int) and not isinstance(years, bool)
+    fields = edtf_dates.compute_fields(parsed, {
+        "uncertainty_years": years if explicit else None,
+        "uncertainty_years_explicit": explicit,
+        "approximate_prefix": setting("approximateDateLabel"),
+        "uncertain_suffix": setting("uncertainDateLabel"),
+    })
+    fields["datePublished"] = raw.strip()
+    return fields
 
 
 def _collection_id(is_part_of):
@@ -822,6 +897,7 @@ def index_items(arks, opts={}):
     documents = {}
     build_opts = {k: v for k, v in opts.items() if k == "project"}
     build_opts["roles_cache"] = {}
+    build_opts["collection_cache"] = {}
     for ark in arks:
         try:
             documents[ark] = build_document(ark, build_opts)
@@ -944,6 +1020,7 @@ def build_collection_document(name, opts={}):
         "visibility": "public" if "public" in roles else "private",
         # dc-showcase stores collection files here
         "goldPath": posixpath.dirname(collection_record.record_path(name, opts).removeprefix("cask:")),
+        **_date_fields(record),
     }
     return {
         "@id": root["@id"],

@@ -141,6 +141,24 @@ def move(path, dest_path, opts={}):
     shutil.move(path, dest_path)
 
 
+def copy(path, dest_path, opts={}):
+    """Copy a local file.
+
+    :param str path: Absolute local source path.
+    :param str dest_path: Absolute local destination path.
+    :param dict opts: 'replace' (bool, default False — overwrite vs. fail if the
+        destination exists).
+    :raises FileNotFoundError: If `path` does not exist.
+    :raises FileExistsError: If `dest_path` exists and 'replace' isn't set.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    if os.path.exists(dest_path) and not opts.get("replace"):
+        raise FileExistsError(dest_path)
+    _ensure_parent(dest_path)
+    shutil.copy2(path, dest_path)
+
+
 def delete(path, opts={}):
     """Delete a local file or directory.
 

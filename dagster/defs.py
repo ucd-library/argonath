@@ -26,7 +26,8 @@ Submodule layout (all files live alongside this one in dagster/):
                             from the queue) and showcase_collection_rollup_job/sensor.
   lib/pipeline_index.py  — showcase_reindex_collection_job, showcase_apply_cask_changes_job
                             (audit reindex/delete changes),
-                            showcase_delete_collection_index_job and showcase_delete_item_index_job
+                            showcase_delete_collection_index_job, showcase_unpublish_collection_job
+                            and showcase_delete_item_index_job
   lib/collection_state.py — the collection_state queue/results store, via
                             `digtk state` (see digtk.models.collection_state)
 
@@ -91,6 +92,7 @@ from lib.pipeline_collection import (
 from lib.pipeline_index import (
     showcase_reindex_collection_job,
     showcase_delete_collection_index_job,
+    showcase_unpublish_collection_job,
     showcase_delete_item_index_job,
     showcase_apply_cask_changes_job,
 )
@@ -136,6 +138,7 @@ defs = dg.Definitions(
         showcase_collection_rollup_job,
         showcase_reindex_collection_job,
         showcase_delete_collection_index_job,
+        showcase_unpublish_collection_job,
         showcase_delete_item_index_job,
         showcase_apply_cask_changes_job,
     ],

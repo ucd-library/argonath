@@ -137,3 +137,28 @@ def test_delete_directory_requires_directory_opt(tmp_path):
         local.delete(str(d))
     local.delete(str(d), opts={"directory": True})
     assert not d.exists()
+
+
+def test_copy_creates_parent_dirs(tmp_path):
+    src = str(tmp_path / "a.txt")
+    dest = str(tmp_path / "sub" / "b.txt")
+    local.write_bytes(src, b"hi")
+    local.copy(src, dest)
+    assert local.read_bytes(dest) == b"hi"
+    assert local.read_bytes(src) == b"hi"
+
+
+def test_copy_fails_if_exists_without_replace(tmp_path):
+    src = str(tmp_path / "a.txt")
+    dest = str(tmp_path / "b.txt")
+    local.write_bytes(src, b"new")
+    local.write_bytes(dest, b"old")
+    with pytest.raises(FileExistsError):
+        local.copy(src, dest)
+    local.copy(src, dest, {"replace": True})
+    assert local.read_bytes(dest) == b"new"
+
+
+def test_copy_missing_source_raises_file_not_found(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        local.copy(str(tmp_path / "nope.txt"), str(tmp_path / "b.txt"))

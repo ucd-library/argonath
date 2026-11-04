@@ -241,6 +241,16 @@ class CaskChangesConfig(Config):
     batch_size: int = Field(200, description="Items per reindex step.")
 
 
+class UnpublishCollectionConfig(Config):
+    """Config for lib.pipeline_index.showcase_unpublish_collection_job.
+
+    :param bool purge_silver: Also delete the items' silver website derivatives.
+    """
+    purge_silver: bool = Field(
+        False, description="Also delete silver website derivatives (kept while another gold project has the collection).",
+    )
+
+
 class DeleteItemIndexConfig(Config):
     """Config for lib.pipeline_index.showcase_delete_item_index_job.
 

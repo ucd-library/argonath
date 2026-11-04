@@ -102,6 +102,124 @@ def gold_item_folders(key, opts={}):
     return sorted(folders)
 
 
+def remove_collection_gold(key, opts={}):
+    """Deletes a collection's gold folder for one project (its item records,
+    promoted binaries and collection record). Bronze, silver, ES and Postgres
+    are left alone.
+
+    :param str key: Collection key, [bronze/]<group>/<collection>.
+    :param dict opts: 'project' (see item_record._project()), 'dry_run' (bool — report only).
+    :returns: {"collection": key, "path", "files": int, "removed": bool, "dryRun": bool}.
+    :rtype: dict
+    """
+    _, name = collection_record.parse_key(key)
+    path = f"cask:/gold/{item_record._project(opts)}/{name}"
+    result = {"collection": key, "path": path, "files": 0, "removed": False, "dryRun": bool(opts.get("dry_run"))}
+    if not fs.exists(path):
+        utils.log(f"{key}: no gold folder at {path}")
+        return result
+    result["files"] = _count_files(path)
+    if not opts.get("dry_run"):
+        fs.delete(path, opts={"directory": True})
+        result["removed"] = True
+    utils.log(f"{key}: {'would remove' if opts.get('dry_run') else 'removed'} {path} ({result['files']} file(s))")
+    return result
+
+
+# Website derivative folders under a silver item.
+SILVER_WEBSITE_DIRS = ("public-frontend-derivatives", "captions", "ocr")
+
+
+def other_gold_projects(key, opts={}):
+    """Gold projects other than this one that still hold the collection.
+
+    :param str key: Collection key, [bronze/]<group>/<collection>.
+    :param dict opts: 'project' (see item_record._project()).
+    :returns: Project names, sorted.
+    :rtype: list[str]
+    """
+    _, name = collection_record.parse_key(key)
+    current = item_record._project(opts)
+    try:
+        projects = [e.name for e in fs.ls("cask:/gold") if e.kind == "directory"]
+    except FileNotFoundError:
+        return []
+    return sorted(p for p in projects if p != current and fs.exists(f"cask:/gold/{p}/{name}"))
+
+
+def _website_dirs(path):
+    """SILVER_WEBSITE_DIRS folders anywhere under a silver item folder.
+
+    :param str path: fs-compatible silver item folder.
+    :returns: fs-compatible folder paths.
+    :rtype: list[str]
+    """
+    found = []
+    try:
+        entries = fs.ls(path)
+    except FileNotFoundError:
+        return found
+    for entry in entries:
+        if entry.kind != "directory":
+            continue
+        child = f"cask:{entry.path}"
+        if entry.name in SILVER_WEBSITE_DIRS:
+            found.append(child)
+        else:
+            found += _website_dirs(child)
+    return found
+
+
+def remove_collection_silver(key, opts={}):
+    """Deletes the website derivatives (SILVER_WEBSITE_DIRS) of every item in
+    a collection's bronze. Other silver work (text, accessibility, AI metadata,
+    RAG) is kept. Skipped while another gold project still has the collection,
+    since every project reads the same silver.
+
+    :param str key: Collection key, [bronze/]<group>/<collection>.
+    :param dict opts: 'project' (see item_record._project()), 'dry_run' (bool — report only).
+    :returns: {"removed": [{"path", "files"}], "files": int, "skipped": str|None, "dryRun": bool}.
+    :rtype: dict
+    """
+    group, name = collection_record.parse_key(key)
+    result = {"removed": [], "files": 0, "skipped": None, "dryRun": bool(opts.get("dry_run"))}
+    others = other_gold_projects(key, opts)
+    if others:
+        result["skipped"] = f"still published in {', '.join(others)}"
+        utils.warn(f"{key}: silver kept, {result['skipped']}")
+        return result
+
+    for folder in collection_model.list_item_folders(name, {"group": group}):
+        silver = item_output_dirs(folder)[0]
+        for path in _website_dirs(silver):
+            files = _count_files(path)
+            if not opts.get("dry_run"):
+                fs.delete(path, opts={"directory": True})
+            result["removed"].append({"path": path, "files": files})
+            result["files"] += files
+    utils.log(
+        f"{key}: {'would remove' if opts.get('dry_run') else 'removed'} "
+        f"{len(result['removed'])} silver folder(s), {result['files']} file(s)"
+    )
+    return result
+
+
+def missing_silver(key, opts={}):
+    """The collection's bronze item folders, and which of them have no silver
+    website derivatives (no public-frontend-derivatives/ folder), e.g. after
+    an unpublish with purge_silver or for items never processed.
+
+    :param str key: Collection key, [bronze/]<group>/<collection>.
+    :param dict opts: Unused, for a consistent signature.
+    :returns: {"items": [folder], "missing": [folder]}, both sorted.
+    :rtype: dict
+    """
+    group, name = collection_record.parse_key(key)
+    folders = collection_model.list_item_folders(name, {"group": group})
+    missing = [f for f in folders if not fs.exists(f"{item_output_dirs(f)[0]}/{SILVER_WEBSITE_DIRS[0]}")]
+    return {"items": sorted(folders), "missing": sorted(missing)}
+
+
 def reindex_items(folders, opts={}):
     """Bulk-indexes items given by bronze folder, from their gold records.
     Without 'rebuild' bronze is never read and a folder with no gold record

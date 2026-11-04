@@ -884,6 +884,20 @@ How `argonath` reaches Dagster:
   deletes the collection doc, its items and their pages. `showcase_delete_item_index_job` (config
   `ark`) deletes one item and refreshes its collection doc. Both touch ES only, so an
   item that's still in bronze comes back on the next reindex.
+- **Publishing and unpublishing:** a deployment publishes into its own gold project
+  (`DIGTK_SHOWCASE_GOLD_PROJECT`) and its own ES. Publishing runs
+  `showcase_reindex_collection_job` with `rebuild` on, which rebuilds each item record (and its
+  promoted download files), reindexes, prunes and rebuilds the collection record. Items with no
+  silver website derivatives (`digtk showcase es missing-silver <key>`) are queued for
+  `showcase_process_item_job` runs instead, and the rollup refreshes the collection doc once
+  they finish.
+  `showcase_unpublish_collection_job` deletes the collection from ES, then deletes its gold
+  folder. With `purge_silver` it also deletes the items' silver website derivatives
+  (`public-frontend-derivatives/`, `captions/`, `ocr/`); other silver work is kept. Silver is
+  shared by every gold project, so the purge is refused (and the run fails after removing gold)
+  while another project still has the collection. Publishing again regenerates the purged
+  derivatives through item runs. Bronze and
+  the collection registry are left alone, so the next collection run publishes it again.
 - **The same from a terminal:**
 
   | Task | digtk (runs directly) | argonath (launches the Dagster job) |
@@ -892,6 +906,9 @@ How `argonath` reaches Dagster:
   | Prune only | `digtk showcase es prune <key> [--dry-run] [--force]` | n/a |
   | Delete a collection | `digtk showcase es delete-collection <key>` | `argonath index delete-collection <key> [--wait]` |
   | Delete an item | `digtk showcase es delete <ark>` | `argonath index delete-item <ark> [--collection <key>] [--wait]` |
+  | Publish a collection | `digtk showcase es bulk-upsert <key> --rebuild` | `argonath publish <collection> --group <group> [--wait]` |
+  | Unpublish a collection | `digtk showcase es delete-collection <key>`, then `digtk showcase unpublish-collection <key> [--purge-silver] [--dry-run]` | `argonath unpublish <collection> --group <group> [--purge-silver] [--wait]` |
+  | List collections / items | `digtk collection list` / `digtk collection items --collection <name>` | `argonath list collections --group <group>` / `argonath list items <collection> --group <group>` |
 
   `<key>` is `bronze/<group>/<collection>`. For which Dagster `argonath` talks to, see
   [Launching from your laptop](#launching-from-your-laptop).
