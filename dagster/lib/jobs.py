@@ -14,7 +14,8 @@ from lib.assets import (
 bronze_preservica_import_collection = dg.define_asset_job(
     name="bronze_preservica_import_collection",
     selection=[preservica_import_collection],
-    description="Sync a Preservica collection into bronze cask using `digtk preservica import`. "
+    description="Sync a Preservica collection into bronze cask using `digtk preservica import`, "
+    "then rebuild its tree structure (`digtk preservica tree`). "
     "Collection is a property in the launchpad vs using a registered partition. "
     "If the collection is already in bronze cask, any items that are already in bronze cask will be skipped and not removed. ",
 )

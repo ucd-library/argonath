@@ -22,7 +22,8 @@ from lib.utils import exec
 def preservica_import_collection(context: dg.AssetExecutionContext, config: PreservicaImportConfig):
     """One-time full walk of a brand-new Preservica collection into bronze's
     by-ref/ layout (`digtk preservica import`), always registering the
-    collection along the way.
+    collection along the way, then a full rebuild of its tree/ layout from
+    that by-ref/ (`digtk preservica tree`).
 
     Not partitioned, and config.collection is plain manual input: this
     collection has no Dagster partition yet, which is exactly why this asset
@@ -37,7 +38,8 @@ def preservica_import_collection(context: dg.AssetExecutionContext, config: Pres
     :param context: Dagster asset execution context.
     :param config: PreservicaImportConfig with ref, collection, group,
         max_depth, dest_root, source_dir, skip_unchanged.
-    :returns: Dict with the resolved collection name and item/error/warning counts.
+    :returns: Dict with the resolved collection name, item/error/warning
+        counts, and the tree rebuild's result under "tree".
     """
     cmd = [
         "digtk", "preservica", "import", config.ref,
@@ -53,11 +55,19 @@ def preservica_import_collection(context: dg.AssetExecutionContext, config: Pres
         cmd.append("--skip-unchanged")
 
     result = exec(cmd)
+    collection = result.get("collection") or config.collection
     context.log.info(
-        f"Imported {result.get('collection')}: {result.get('items')} item(s), "
+        f"Imported {collection}: {result.get('items')} item(s), "
         f"{result.get('errors')} error(s), {result.get('warnings')} warning(s)"
     )
-    return dg.Output(result)
+
+    # Full tree/ rebuild, same root as the import.
+    tree_cmd = ["digtk", "preservica", "tree", "--collection", collection, "--group", config.group]
+    if config.dest_root:
+        tree_cmd += ["--dest-root", config.dest_root]
+    tree = exec(tree_cmd)
+    context.log.info(f"Rebuilt tree for {config.group}/{collection}: {tree.get('items')} item(s)")
+    return dg.Output({**result, "tree": tree})
 
 
 @dg.asset(
