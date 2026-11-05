@@ -72,11 +72,10 @@ def enqueue_collection_items(context: OpExecutionContext):
 
 @job(partitions_def=collections_partitions, tags={"argonath/kind": "collection-launch"})
 def gold_dcs_process_collection():
-    """Queue one gold_dcs_process_item run per item of a collection, the same
-    path bronze_collection_cask_audit uses; item_queue launches them, and
-    gold_dcs_collection_rollup follows once they finish. Item runs are tagged
-    argonath/batch=<this run's id>. Processing always replaces existing
-    derivatives for now. See this module's docstring.
+    """Manually rebuilds derivatives and indexes all items and the collection in elastic, 
+    then updates the item count by triggering the `gold_dcs_collection_rollup` job.
+    This is equivalent to what the `bronze_collection_cask_audit` sensor does automatically for changes in bronze cask.
+    If you just need to reindex a collection, use `gold_dcs_reindex_collection` instead.
     """
     enqueue_collection_items()
 
@@ -211,9 +210,8 @@ def check_rollup_failures(summary: dict):
 
 @job(partitions_def=collections_partitions, tags={"argonath/kind": "collection-rollup"})
 def gold_dcs_collection_rollup():
-    """A collection's rollup after its item runs: item count and failed items,
-    recorded in collection_state, then the collection's ES document. Launched
-    by gold_dcs_collection_rollup_trigger.
+    """Called by the `gold_dcs_collection_rollup_trigger` sensor after all items for a collection have finished processing.
+    Updates elastic with the collection gold document, and updates the item count.
     """
     check_rollup_failures(pdc_index_collection(rollup_collection()))
 

@@ -23,16 +23,17 @@ from lib.assets import (
 bronze_preservica_import_collection = dg.define_asset_job(
     name="bronze_preservica_import_collection",
     selection=[preservica_import_collection],
-    description="Sync a Preservica collection into bronze using `digtk preservica import`."
-    "Collection is manual input in the launchpad vs using a registered partition. "
-    "If the collection is already in bronze cask, any items that are already in bronze will be skipped and not removed. ",
+    description="Sync a Preservica collection into bronze cask using `digtk preservica import`. "
+    "Collection is a property in the launchpad vs using a registered partition. "
+    "If the collection is already in bronze cask, any items that are already in bronze cask will be skipped and not removed. ",
 )
 
 bronze_reconcile_collection = dg.define_asset_job(
     name="bronze_reconcile_collection",
     selection=[reconcile_collection_items, rebuild_collection_tree],
-    description="Reconcile a collection's bronze item list against its source, register/prune "
-    "partitions, and (Preservica sources) rebuild its tree/ layout. bronze_collection_cask_audit updates ES from the changes.",
+    description="Called by `bronze_preservica_auto_sync` when preservica changes are detected. "
+    "Adds new items into bronze cask for a collection, removes items that are no longer in the collection, "
+    "and rebuilds the tree structure for the collection in bronze cask.",
 )
 
 silver_detect_spreads = dg.define_asset_job(

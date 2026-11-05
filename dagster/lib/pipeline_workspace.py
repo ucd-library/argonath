@@ -215,10 +215,9 @@ def process_workspace_document(context: OpExecutionContext, tasks: list):
     config=default_run_config({"fan_out_workspace": WorkspaceRunConfig}),
 )
 def workspace_process():
-    """Workspace-folder-partitioned fan-out: one step per folder for
-    split-spreads and one step per file for OCR / alt text / PDF tagging, all
-    from fan_out_workspace's single WorkspaceRunConfig — one Dagster run per
-    workspace folder, each mapped step its own celery task. See this module's docstring.
+    """Process a workspace folder and its contents, one step per folder.
+    Steps include split-spreads, OCR, alt text, PDF tagging, and others.
+    Files are processed and saved to the workspace folder's derivatives/ subfolder.
     """
     folders, files, documents, documents_now = fan_out_workspace()
     folders.map(process_workspace_folder)

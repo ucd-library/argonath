@@ -253,14 +253,10 @@ def _record(context, item, status, opts={}):
     config=default_run_config({"pdc_plan_item": ItemRunConfig}),
 )
 def gold_dcs_process_item():
-    """One item's derivatives, addressed by its bronze folder: one step per
-    image/PDF file (and per video/audio format), then finalize, then building
-    its canonical item.jsonld.json, then the Elasticsearch upsert. Touches
-    silver and gold: derivatives and finalize outputs go to silver, the item
-    record and downloads to gold. Launch it
-    from the launchpad with ops.pdc_plan_item.config.item set, or let
-    lib.pipeline_collection.item_queue launch it from the queue. See
-    this module's docstring.
+    """Builds an items derivatives in silver, the metadata records in gold, moves
+    download files to gold, and updates elastic with the item record.
+    Usually this is triggered from the `item_queue` sensor, by the 
+    `bronze_collection_cask_audit` sensor or the `gold_dcs_process_collection` job.
     """
     tasks, item = pdc_plan_item()
     results = tasks.map(process_derivative_batch.alias("pdc_process_derivative_batch")).collect()

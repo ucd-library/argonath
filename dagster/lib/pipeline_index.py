@@ -173,9 +173,9 @@ def check_reindex_failures(summary: dict):
     config=default_run_config({"fan_out_reindex_tasks": ReindexCollectionConfig}),
 )
 def gold_dcs_reindex_collection():
-    """Bulk-reindex a collection's items into the showcase ES index without
-    making derivatives, prune orphans, then refresh the collection document
-    the same way gold_dcs_collection_rollup does.
+    """Reindex a collection and its items into the showcase elastic indexes.
+    If you need to rebuild derivatives, use `gold_dcs_process_collection` instead, which 
+    also reindexes the items and collection.
     """
     batches, settings = fan_out_reindex_tasks()
     results = batches.map(reindex_batch).collect()
@@ -320,10 +320,10 @@ def clean_cask_removed(context: OpExecutionContext, summary: dict, settings: dic
     config=default_run_config({"plan_cask_changes": CaskChangesConfig}),
 )
 def gold_dcs_apply_cask_changes():
-    """Apply bronze_collection_cask_audit's non-processing changes for one collection.
-    Reindexes metadata edits, deletes removed items from ES and silver/gold,
-    then refreshes the collection doc. Touches silver and gold: removed items'
-    silver and gold folders are deleted, edited items' gold records rebuilt.
+    """
+    Called by the `bronze_collection_cask_audit` sensor for each collection.
+    Reindexes metadata, deletes removed items from elastic and silver/gold cask,
+    and refreshes the collection elastic document.
     """
     settings = plan_cask_changes()
     summary = index_cask_items(settings)
@@ -379,8 +379,8 @@ def remove_collection_gold(context: OpExecutionContext, deleted: dict, config: U
 
 @job(partitions_def=collections_partitions, tags={"argonath/kind": "collection-delete"})
 def gold_dcs_delete_collection_index():
-    """Remove a collection and everything in it from the showcase ES indexes.
-    Cask and Postgres are left alone.
+    """Remove a collection and everything in it from the showcase elastic indexes.
+    Cask and Postgres are left alone. If you want to remove the silver/gold cask folders, use `gold_dcs_unpublish_collection` instead.
     """
     delete_collection_index()
 
@@ -391,12 +391,8 @@ def gold_dcs_delete_collection_index():
     config=default_run_config({"remove_collection_gold": UnpublishCollectionConfig}),
 )
 def gold_dcs_unpublish_collection():
-    """Unpublish a collection from this deployment: delete it from the showcase
-    ES indexes, then delete its gold folder. With purge_silver, also delete its
-    silver website derivatives; publishing it again then needs
-    gold_dcs_process_collection, not a reindex. Bronze and the collection
-    registry are left alone, so a later collection run publishes it again.
-    Touches gold, and silver too with purge_silver (deletes only).
+    """Delete a collection from showcase elastic indexes, and remove the silver and gold data for the collection
+    and its items. Bronze is left alone, and the collection can be reprocessed later, retaining its visiblity settings from Postgres.
     """
     remove_collection_gold(delete_collection_index())
 
@@ -440,7 +436,7 @@ def refresh_collection_index(context: OpExecutionContext, collection_key: str):
     config=default_run_config({"delete_item_index": DeleteItemIndexConfig}),
 )
 def gold_dcs_delete_item_index():
-    """Remove one item from the showcase ES indexes and refresh its collection
-    doc. The item returns on the next reindex if it's still in bronze.
+    """Remove an item from the showcase elastic indexes and refresh its collection
+    doc. The item returns on the next reindex if it's still in bronze cask.
     """
     refresh_collection_index(delete_item_index())
