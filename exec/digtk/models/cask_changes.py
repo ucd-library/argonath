@@ -1,7 +1,7 @@
 """
 Turns CaskFS audit-log events under registered collections' bronze items
 into per-item work: process (derivatives and all), reindex (metadata only)
-or delete from the showcase index. Read by Dagster's bronze_cask_audit.
+or delete from the showcase index. Read by Dagster's bronze_collection_cask_audit.
 """
 from datetime import datetime, timezone
 

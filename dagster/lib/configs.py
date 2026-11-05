@@ -55,16 +55,6 @@ TAG_MODE = Literal["auto", "inplace", "rebuild"]
 GEOMETRY = Literal["tesseract", "qwen"]
 
 
-class IngestItemConfig(Config):
-    """Config for the ingest_item asset.
-
-    :param str group: Group namespace the collection belongs to (bronze path segment).
-    :param str collection: Collection name.
-    """
-    group: str = Field(..., description="Group namespace the collection belongs to.")
-    collection: str = Field(..., description="Collection name.")
-
-
 class IngestCollectionConfig(Config):
     """Config for batch collection ingestion.
 
@@ -209,7 +199,7 @@ class SplitSpreadsConfig(Config):
 
 
 class DerivativesConfig(Config):
-    """Config for the generate_derivatives asset.
+    """Thumbnail widths; base of CollectionDerivativesConfig.
 
     :param str widths: Comma-separated thumbnail widths.
     """
@@ -217,8 +207,8 @@ class DerivativesConfig(Config):
 
 
 class CollectionDerivativesConfig(DerivativesConfig):
-    """Config for lib.pipeline_fanout.gold_dcs_process_collection — DerivativesConfig
-    plus the fan-out's step cap.
+    """DerivativesConfig plus the fan-out's step cap. Base of ItemRunConfig
+    (lib.pipeline_item.gold_dcs_process_item).
 
     :param str widths: Comma-separated thumbnail widths.
     :param int max_steps: Most steps each fan-out (per-file derivatives,
@@ -268,7 +258,7 @@ class ReindexCollectionConfig(Config):
 
 class CaskChangesConfig(Config):
     """Config for lib.pipeline_index.gold_dcs_apply_cask_changes, filled in by
-    bronze_cask_audit. Items to process are queued as gold_dcs_process_item runs instead.
+    bronze_collection_cask_audit. Items to process are queued as gold_dcs_process_item runs instead.
 
     :param list[str] reindex: Bronze item folders to rebuild and reindex.
     :param list[str] delete: Item ARKs to delete from the showcase index.

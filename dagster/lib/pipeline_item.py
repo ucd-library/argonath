@@ -7,8 +7,8 @@ ARK. pdc_generate_item_record is the first step to use one (read from the
 folder's identifiers.json when it builds the gold item.jsonld.json), and
 pdc_index_item's Elasticsearch upsert uses that ARK (see below).
 
-It works like one item's slice of lib/pipeline_fanout.py's
-gold_dcs_process_collection and reuses that module's pieces: item_tasks() builds
+lib/pipeline_collection.py's gold_dcs_process_collection queues one run of
+this job per item. It's built from lib/pipeline_fanout.py's pieces: item_tasks() builds
 the tasks (one per image/PDF file, one per video/audio item),
 process_derivative_batch runs them, finalize_one_item() writes the item-level
 derivative outputs, and build_item_record() assembles the canonical gold
@@ -29,8 +29,7 @@ pdc_generate_item_record just wrote. An item whose formats listing itself fails
 reports it and fails like any other failed step.
 
 Task ids, events and digtk reporting rows use the item's collection key (the
-first three path segments, "bronze/[group]/[collection]"), the same as
-gold_dcs_process_collection. Runs are tagged argonath/item and argonath/collection,
+first three path segments, "bronze/[group]/[collection]"). Runs are tagged argonath/item and argonath/collection,
 plus argonath/ark once pdc_generate_item_record has built the record, so
 they're searchable in the Runs screen. Queued runs (see lib.pipeline_collection.item_queue) already
 have argonath/item and argonath/collection at launch.
@@ -247,8 +246,8 @@ def _record(context, item, status, opts={}):
 
 @job(
     # "dagster/max_runtime": "0": no duration-based auto-cancel. A large item
-    # can have hundreds of pages. See gold_dcs_process_collection's comment in
-    # lib/pipeline_fanout.py.
+    # can have hundreds of pages. project-anduin's base image sets a global
+    # max_runtime_seconds: 600; dead-run detection still applies.
     tags={"argonath/kind": "item", "dagster/max_runtime": "0"},
     executor_def=celery_job_executor(),
     config=default_run_config({"pdc_plan_item": ItemRunConfig}),
@@ -268,7 +267,14 @@ def gold_dcs_process_item():
     pdc_index_item(pdc_generate_item_record(pdc_finalize_item(results, item)))
 
 
-@dg.run_failure_sensor(monitored_jobs=[gold_dcs_process_item], description="TODO")
+@dg.run_failure_sensor(
+    monitored_jobs=[gold_dcs_process_item], 
+    description=(
+        "Listens for failed item runs triggered by `gold_dcs_process_item`. That job does finalize and report success and failures, "
+        "but if it failed unexpectedly (ie a crashed worker) and didn't record a result, "
+        "the `gold_dcs_collection_rollup_trigger` will never be triggered and the collection's gold record won't be updated. "
+    ),
+)
 def process_item_failure(context: dg.RunFailureSensorContext):
     """Record "failed" in collection_state for failed gold_dcs_process_item runs
     that didn't record a result themselves — no argonath/result tag, e.g. a

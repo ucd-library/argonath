@@ -1,10 +1,11 @@
 """
 Collection-level orchestration of item runs, through the collection_state
 queue (see lib.collection_state and digtk.models.collection_state).
-bronze_cask_audit queues changed items, item_queue runs them
-as gold_dcs_process_item, and gold_dcs_collection_rollup_trigger rolls each collection up.
+bronze_collection_cask_audit (changed items) and gold_dcs_process_collection
+(every item, launched by hand) queue items, item_queue runs them as
+gold_dcs_process_item, and gold_dcs_collection_rollup_trigger rolls each collection up.
 
-  collection_launch (collection partition, not registered)
+  gold_dcs_process_collection (collection partition)
       -> `digtk state enqueue-collection`: one job_queue row per item
   item_queue
       -> one gold_dcs_process_item run per queued row, at most
@@ -47,8 +48,8 @@ _IN_FLIGHT = [
 @op
 def enqueue_collection_items(context: OpExecutionContext):
     """Queue a gold_dcs_process_item run for every item in the partition's
-    collection. Items that have left its bronze tree/ are left alone here;
-    gold_dcs_reindex_collection prunes their ES docs.
+    collection, tagged with this run's id as its batch. Items that have left
+    its bronze tree/ are left alone; gold_dcs_reindex_collection prunes their ES docs.
 
     :param context: Dagster op execution context; partitioned by collection.
     """
@@ -59,7 +60,7 @@ def enqueue_collection_items(context: OpExecutionContext):
         f"{result['enqueued']} run(s) queued"
     )
     context.log_event(AssetMaterialization(
-        asset_key="argonath_collection_launch",
+        asset_key="argonath_process_collection",
         partition=key,
         metadata={
             "items": MetadataValue.int(result["items"]),
@@ -70,10 +71,12 @@ def enqueue_collection_items(context: OpExecutionContext):
 
 
 @job(partitions_def=collections_partitions, tags={"argonath/kind": "collection-launch"})
-def collection_launch():
-    """Queue one gold_dcs_process_item run per item of a collection;
-    item_queue launches them. Processing always replaces existing derivatives for now. See this
-    module's docstring.
+def gold_dcs_process_collection():
+    """Queue one gold_dcs_process_item run per item of a collection, the same
+    path bronze_collection_cask_audit uses; item_queue launches them, and
+    gold_dcs_collection_rollup follows once they finish. Item runs are tagged
+    argonath/batch=<this run's id>. Processing always replaces existing
+    derivatives for now. See this module's docstring.
     """
     enqueue_collection_items()
 
@@ -101,7 +104,14 @@ def _item_run_request(row):
     return dg.RunRequest(run_key=f"job_queue-{row['id']}", run_config=run_config, tags=tags)
 
 
-@dg.sensor(job=gold_dcs_process_item, minimum_interval_seconds=30, description="TODO")
+@dg.sensor(
+    job=gold_dcs_process_item, 
+    minimum_interval_seconds=30, 
+    description=(
+        "Listens to the Postgres `collection_state.job_queue` table and launches `gold_dcs_process_item` runs for queued items, "
+        "keeping at most MAX_ITEM_RUNS_IN_FLIGHT item runs queued or running. "
+    ),
+)
 def item_queue(context: dg.SensorEvaluationContext):
     """Launch gold_dcs_process_item runs from collection_state's queue, keeping at
     most MAX_ITEM_RUNS_IN_FLIGHT item runs queued or running. Rows submitted by
@@ -212,8 +222,8 @@ def gold_dcs_collection_rollup():
     job=gold_dcs_collection_rollup, 
     minimum_interval_seconds=300, 
     description=(
-        "Listens for all items in a collection to finish processing, then indexes the collections gold record and recalculates the collection's item count. "
-        "This runs as part of the `bronze_cask_audit` sensor chain, after all item runs are complete and the queue is empty. "
+        "Listens for all items in a collection to finish processing, then indexes the collections' gold record and recalculates the item count. "
+        "This runs as part of the `bronze_collection_cask_audit` sensor chain, after all item runs are complete and the queue is empty. "
     ),
 )
 def gold_dcs_collection_rollup_trigger(context: dg.SensorEvaluationContext):

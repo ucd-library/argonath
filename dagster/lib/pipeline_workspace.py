@@ -3,8 +3,8 @@ Workspace fan-out: run the root-level digtk tools (split-spreads, OCR, alt
 text, PDF tagging) over a folder of scans staged into CaskFS workspace before
 it has an ARK or a bronze copy — see digtk.models.workspace.
 
-Same op-based DynamicOut pattern as lib/pipeline_fanout.py's
-gold_dcs_process_collection, but partitioned by lib.configs.workspace_partitions
+Op-based DynamicOut fan-out (like lib/pipeline_item.py's
+gold_dcs_process_item, over a whole folder), partitioned by lib.configs.workspace_partitions
 ("workspace/[username]/[folder]", kept in sync by
 lib.sensors.workspace_partition_sync) instead of registered bronze
 collections: one run per workspace folder. fan_out_workspace lists every
@@ -208,8 +208,8 @@ def process_workspace_document(context: OpExecutionContext, tasks: list):
 
 @job(
     partitions_def=workspace_partitions,
-    # Same reasoning as gold_dcs_process_collection's tags: a run covers a whole
-    # workspace folder, so its duration has no sane fixed ceiling.
+    # "dagster/max_runtime": "0" disables duration-based auto-cancel: a run
+    # covers a whole workspace folder, so it has no sane fixed ceiling.
     tags={"group": "workspace", "dagster/max_runtime": "0"},
     executor_def=celery_job_executor(),
     config=default_run_config({"fan_out_workspace": WorkspaceRunConfig}),

@@ -13,7 +13,7 @@ and exec/digtk/sql/collection_registry.sql, applied via `digtk collection init-p
                                       first successful reconcile run) is
                                       immediately visible as a partition.
 
-Plus bronze_cask_audit, which reads CaskFS's audit log for bronze item
+Plus bronze_collection_cask_audit, which reads CaskFS's audit log for bronze item
 changes (see digtk.models.cask_changes), and workspace_partition_sync, which keeps the 'workspace' dynamic
 partition in sync with the collections staged under CaskFS's /workspace (see
 digtk.models.workspace) for lib.pipeline_workspace.workspace_process.
@@ -39,7 +39,7 @@ _INITIAL_LOOKBACK = datetime.timedelta(days=1)
     minimum_interval_seconds=300, 
     description=(
         "Listens for changes in Preservica for registered collections and syncs changes to the collection's bronze item list, rebuilding the tree structure. "
-        "This should trigger the `bronze_cask_audit` sensor to process any changed items and update the showcase indexes."
+        "This should trigger the `bronze_collection_cask_audit` sensor to process any changed items and update the showcase indexes."
     ),
 )
 def bronze_preservica_auto_sync(context: dg.SensorEvaluationContext):
@@ -127,7 +127,13 @@ def bronze_collection_partition_sync(context: dg.SensorEvaluationContext):
     )
 
 
-@dg.sensor(minimum_interval_seconds=120, description="TODO")
+@dg.sensor(
+    minimum_interval_seconds=120, 
+    description=(
+        "Listens for workspace folders staged under CaskFS's /workspace/<casId> and adds a Dagster partition for each new folder. "
+        "Workspace folders are added via `digtk workspace add`."
+    ),
+)
 def workspace_partition_sync(context: dg.SensorEvaluationContext):
     """Keep the 'workspace' dynamic partition in sync with every workspace
     folder (anything under /workspace/[username]/[folder] with a
@@ -154,46 +160,6 @@ def workspace_partition_sync(context: dg.SensorEvaluationContext):
     return dg.SkipReason(
         f"{len(missing)} partition(s) added, {len(stale)} removed, {len(current)} workspace folder(s) total"
     )
-
-
-@dg.sensor(job_name="gold_dcs_derivatives", description="TODO")
-def derivatives_on_ingest(context: dg.SensorEvaluationContext):
-    """Trigger gold_dcs_derivatives when silver_ingest_collection completes successfully.
-
-    :param context: Dagster sensor evaluation context.
-    """
-    raise NotImplementedError("phase 0.4")
-
-
-@dg.sensor(job_name="silver_ocr", description="TODO")
-def ocr_on_derivatives(context: dg.SensorEvaluationContext):
-    """Trigger silver_ocr when gold_dcs_derivatives completes successfully.
-
-    :param context: Dagster sensor evaluation context.
-    """
-    raise NotImplementedError("phase 0.5")
-
-
-@dg.sensor(job_name="silver_metadata", description="TODO")
-def metadata_on_ocr(context: dg.SensorEvaluationContext):
-    """Trigger silver_metadata when silver_ocr completes successfully.
-
-    :param context: Dagster sensor evaluation context.
-    """
-    raise NotImplementedError("phase 0.6")
-
-
-@dg.sensor(job_name="gold_dcs_search_index", description="TODO")
-def showcase_search_on_derivatives(context: dg.SensorEvaluationContext):
-    """Trigger gold_dcs_search_index when gold_dcs_derivatives completes successfully.
-
-    Fires off gold_dcs_derivatives, not silver_metadata - see
-    index_for_showcase_search's docstring in lib/assets.py for why the showcase
-    search index deliberately doesn't wait on the AI metadata draft step.
-
-    :param context: Dagster sensor evaluation context.
-    """
-    raise NotImplementedError("not yet wired - new asset, added alongside the fin/argonath migration's dams-router work, not part of the original phased buildout")
 
 
 # Longest folder list shown in one tag.
@@ -237,13 +203,11 @@ def _change_tags(reindex, cleanup):
     description=(
         "Listens for changes to the CaskFS audit log and builds silver level derivatives and gold level "
         "metadata/binaries for each changed item, as well as the collection, and inserts into "
-        "elastic for the showcase app (defaulting to private). If you need to manually process this, you can run "
-        "the `gold_dcs_process_collection` (to build derivatives) and "
-        "`gold_dcs_reindex_collection` (to build gold level metadata/binaries and index "
-        "into elastic) jobs."
+        "elastic for the showcase app (defaulting to private). To process a whole collection manually, run "
+        "`gold_dcs_process_collection`."
     ),
 )
-def bronze_cask_audit(context: dg.SensorEvaluationContext):
+def bronze_collection_cask_audit(context: dg.SensorEvaluationContext):
     """Act on settled bronze item changes from the CaskFS audit log.
     Items to process are queued for item_queue's gold_dcs_process_item runs.
     Other changes get one gold_dcs_apply_cask_changes run per collection.

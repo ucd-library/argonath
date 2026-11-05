@@ -1,9 +1,9 @@
 """
-Batching and naming helpers shared by the fan-out jobs (lib/pipeline_fanout.py's
-gold_dcs_process_collection, lib/pipeline_workspace.py's workspace_process).
+Batching and naming helpers shared by the fan-out jobs (lib/pipeline_item.py's
+gold_dcs_process_item, lib/pipeline_workspace.py's workspace_process).
 
 Both jobs fan out one Dagster step per file (or per item folder). A large
-collection can hold tens of thousands of files, which is more steps than one
+item or folder can hold thousands of files, which is more steps than one
 run handles well, so each fan-out caps itself at `max_steps` (a launchpad
 setting): past that, several tasks share one step, run one after another inside
 it, and still report one result per task in the Events screen.

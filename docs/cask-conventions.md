@@ -132,7 +132,7 @@ directories.
 
 ### Scan Orientation
 
-`digtk showcase image derivatives` (the command `gold_dcs_derivatives` runs) decides an item's
+`digtk showcase image derivatives` (the command `gold_dcs_process_item` runs per image file) decides an item's
 scan orientation once, using a real OCR comparison rather than a fixed rule: it
 generates both a deskewed and non-deskewed OCR-prep candidate, runs Tesseract
 against each, and keeps whichever has both a higher word count and a higher (or

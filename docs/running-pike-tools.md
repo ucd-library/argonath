@@ -598,7 +598,7 @@ They were renamed from:
 | `tag_pdf_job`, `build_pdf_job` | `silver_tag_pdf`, `silver_build_pdf` |
 | `detect_spreads_job`, `apply_spreads_job` | `silver_detect_spreads`, `silver_apply_spreads` |
 | `process_collection_job`, `process_item_job`, `collection_rollup_job` | `gold_dcs_process_collection`, `gold_dcs_process_item`, `gold_dcs_collection_rollup` |
-| `reindex_collection_job`, `apply_cask_changes_job`, `derivatives_job` | `gold_dcs_reindex_collection`, `gold_dcs_apply_cask_changes`, `gold_dcs_derivatives` |
+| `reindex_collection_job`, `apply_cask_changes_job`, `derivatives_job` | `gold_dcs_reindex_collection`, `gold_dcs_apply_cask_changes`, `gold_dcs_derivatives` (since removed) |
 | `delete_collection_index_job`, `delete_item_index_job` | `gold_dcs_delete_collection_index`, `gold_dcs_delete_item_index` |
 
 Runs from before the rename stay under the old names in **Runs**. Filter by the old
@@ -786,36 +786,28 @@ How `argonath` reaches Dagster:
   `silver_tag_pdf`, `silver_build_pdf`, `silver_detect_spreads`, and `silver_apply_spreads`. Pick a (collection, item) partition and
   set the asset config. They only depend on the item being ingested, and each one
   records reporting under the Dagster run ID. `silver_correct_ocr` needs `silver_ocr`'s output.
-- **Webapp derivatives for a whole collection:** `gold_dcs_process_collection` (derivatives
-  only).
-  - **Steps:** one step per image and per PDF file (`process_derivative_batch[...]`),
-    each running `digtk showcase image|pdf derivatives <ark> --file <bronze path>`.
-    Video and audio stay one step per item.
-  - **Finalize:** after every derivative step, a `finalize_batch[...]` step per item
-    (`digtk showcase finalize <ark>`) writes what combines all of an item's files: an
-    image item's `ocr/manifest.json` and the item's `associatedMedia`.
+- **Webapp derivatives for a whole collection:** `gold_dcs_process_collection` queues one
+  `gold_dcs_process_item` run per item in the collection's bronze `tree/`, the same path
+  `bronze_collection_cask_audit` uses for changed items (see below). The launch run itself
+  only queues, so it finishes in seconds.
+  - **Item runs:** `item_queue` launches them, at most `ARGONATH_MAX_ITEM_RUNS_IN_FLIGHT`
+    (default 20) at a time. Each fans out its own files: one step per image and per PDF file
+    (`digtk showcase image|pdf derivatives <item> --file <bronze path>`, video and audio one
+    step per item), then finalize, `build-item`, and the ES upsert. They're tagged
+    `argonath/trigger=collection` and `argonath/batch=<launch run id>`, so one launch's runs
+    can be filtered in the Runs screen.
+  - **Rollup:** once the queue is empty and none of the collection's item runs are in flight,
+    `gold_dcs_collection_rollup` records the rollup and rebuilds the collection doc. It fails
+    if any item's latest run failed.
   - **Source files:** each item's files come only from its own bronze `tree/` folder
-    (there's no fallback to `by-ref/`). An item whose folder has no media is reported
-    as an error, `[latest/tree/<item>] MISSING MEDIA: no image/PDF/video/audio files in
-    bronze latest/tree/<item>/`, and that item isn't finalized. Every other item still
-    processes, and the run ends failed.
-  - **Naming:** steps and Events use the file's (or item's) bronze path relative to the
-    partition, e.g. `latest/tree/mv-rapleytrail-formatted/Preservation/page_003.tif`.
-    Step names show it with `_` in place of `/` and `.`.
-  - **Batching:** `max_steps` (on `fan_out_derivative_tasks`; `0` turns batching off)
-    caps both the derivative and finalize fan-outs, the same way as in the workspace job
-    above.
-  - **Failures:** an item with a failed file step isn't finalized. Every other item
-    still is, and `check_derivative_failures` marks the run failed. Re-run the
-    partition, or the failed file by hand, then finalize that item:
-
-    ```bash
-    digtk showcase image derivatives <ark> --file <bronze path>
-    ```
-
-    ```bash
-    digtk showcase finalize <ark>
-    ```
+    (there's no fallback to `by-ref/`). An item whose folder has no media fails its run with
+    `MISSING MEDIA: no image/PDF/video/audio files in bronze latest/tree/<item>/`.
+  - **Batching:** `max_steps` on each item run (default from `ItemRunConfig`; `0` turns
+    batching off) caps how many derivative steps one item fans out to.
+  - **Failures:** a failed item only fails its own run. Re-run it with
+    `gold_dcs_process_item` (set `ops.pdc_plan_item.config.item` to its bronze folder), or
+    launch `gold_dcs_process_collection` again. Re-launching replaces rows still waiting in the
+    queue, so queued items don't run twice.
 
 - **What the index reads:** an item's ES doc is built from its gold `item.jsonld.json`
   (descriptive metadata, media nodes, and the bronze folder named in the gold
@@ -835,7 +827,7 @@ How `argonath` reaches Dagster:
     delete more than half of the indexed items. Set `force_prune` to override.
   - **Collection doc:** `pdc_index_collection` then refreshes `itemCount` and the image,
     the same step `gold_dcs_collection_rollup` ends with.
-- **Automatic updates from the CaskFS audit log:** `bronze_cask_audit` (every
+- **Automatic updates from the CaskFS audit log:** `bronze_collection_cask_audit` (every
   5 minutes; turn it on in the UI) is the only sensor that reacts to bronze `tree/`
   changes. It reads `caskfs.audit_log` straight from Postgres for writes, deletes and
   moves under each active collection's bronze items root. Once an item has had no new
@@ -872,7 +864,7 @@ How `argonath` reaches Dagster:
     `gold_dcs_process_item` and `gold_dcs_collection_rollup` can also be launched by hand.
 - **Items removed by a Preservica sync:** when a synced folder (SO) no longer lists a
   child that Preservica knew about (it has a `by-ref/` entry), the tree rebuild deletes
-  that child's `tree/` entry. `by-ref/` is kept. `bronze_cask_audit` then sees the
+  that child's `tree/` entry. `by-ref/` is kept. `bronze_collection_cask_audit` then sees the
   delete and removes its ES docs.
   - To remove an item, remove it in Preservica and sync its parent folder. In the
     launchpad, `preservica_changed` names the parent with `type: SO`, not the item.

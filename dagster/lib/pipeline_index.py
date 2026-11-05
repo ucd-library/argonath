@@ -320,7 +320,7 @@ def clean_cask_removed(context: OpExecutionContext, summary: dict, settings: dic
     config=default_run_config({"plan_cask_changes": CaskChangesConfig}),
 )
 def gold_dcs_apply_cask_changes():
-    """Apply bronze_cask_audit's non-processing changes for one collection.
+    """Apply bronze_collection_cask_audit's non-processing changes for one collection.
     Reindexes metadata edits, deletes removed items from ES and silver/gold,
     then refreshes the collection doc. Touches silver and gold: removed items'
     silver and gold folders are deleted, edited items' gold records rebuilt.
