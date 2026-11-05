@@ -1,49 +1,19 @@
 """
 Dagster asset definitions for the Argonath pipeline.
 
-Each asset corresponds to one pipeline phase and calls the digtk CLI via exec().
-Per-item assets are partitioned by (collection, item) — see lib.configs.items_partitions.
+The bronze assets: importing a Preservica collection, reconciling a
+collection against its source, and rebuilding its tree/ layout. Each calls the
+digtk CLI via exec(). Per-item work (derivatives and the pike tools) runs as
+lib.pipeline_item.gold_dcs_process_item, not as assets.
 """
 import dagster as dg
 
 from lib.configs import (
-    items_partitions,
     PreservicaImportConfig,
     ReconcileCollectionConfig,
-    SplitSpreadsConfig,
     RebuildTreeConfig,
-    OcrConfig,
-    AltTextConfig,
-    FiguresConfig,
-    TagPdfConfig,
 )
 from lib.utils import exec
-
-
-def _log_failures(context, result):
-    """Surface the pages a digtk tool skipped (status "partial" — see e.g.
-    digtk.models.ocr.run_ocr()) as warnings, so a partial run is visible in the
-    event log instead of only in the raw stdout.
-
-    :param context: Dagster asset execution context.
-    :param dict result: The digtk command's parsed JSON result.
-    """
-    for failure in result.get("failed") or []:
-        page = f" page {failure['page']}" if failure.get("page") else ""
-        context.log.warning(f"{failure['file']}{page} {failure['stage']} failed -> {failure['error']}")
-
-
-def _reporting_args(context):
-    """--reporting-job-id/--reporting-collection flags for a per-item asset's
-    digtk call, so each run records a digtk.lib.reporting row the same way
-    lib.pipeline_fanout's ops do.
-
-    :param context: Dagster asset execution context, partitioned by items_partitions.
-    :returns: argv fragment.
-    :rtype: list[str]
-    """
-    collection_key = context.partition_key.keys_by_dimension["collection"]
-    return ["--reporting-job-id", context.run_id, "--reporting-collection", collection_key]
 
 
 @dg.asset(
@@ -94,15 +64,14 @@ def preservica_import_collection(context: dg.AssetExecutionContext, config: Pres
     group_name="ingest",
 )
 def reconcile_collection_items(context: dg.AssetExecutionContext, config: ReconcileCollectionConfig):
-    """Reconcile a collection's bronze item list and register/delete partitions to match.
+    """Reconcile a collection's bronze item list against its source.
 
     Calls the digtk CLI to (re)ingest from the collection's source, then diffs the
     returned item list + content hashes against the collection's previous
-    bronze state (its `latest`, or most recent dated/keyed, manifest). Newly
-    discovered items are registered as dynamic partitions in this same run;
-    for website/db-dump sources, items no longer present are pruned (partition
-    deleted). Digital-collection sources are additive-only — nothing is ever
-    auto-deleted for them.
+    bronze state (its `latest`, or most recent dated/keyed, manifest). When
+    items were added, the collection's 'collections' partition is registered
+    in this same run. Item changes reach the gold pipeline through
+    bronze_collection_cask_audit, not through partitions.
 
     Preservica sources are targeted, not a full re-ingest: `config.preservica_changed`
     (populated by bronze_preservica_auto_sync from
@@ -112,8 +81,7 @@ def reconcile_collection_items(context: dg.AssetExecutionContext, config: Reconc
     new collection's initial full import is out of scope here; that's still
     a manual `digtk preservica import` (see that command's own docs).
 
-    Not partitioned itself: this asset expands into partitions, it doesn't run
-    within one. Upstream of the per-item assets, which run per (collection, item).
+    Not partitioned itself: the collection is taken from config.
 
     :param context: Dagster asset execution context.
     :param config: ReconcileCollectionConfig with group, collection, source_type,
@@ -141,11 +109,6 @@ def reconcile_collection_items(context: dg.AssetExecutionContext, config: Reconc
 
     if added:
         context.instance.add_dynamic_partitions("collections", [collection_key])
-        context.instance.add_dynamic_partitions("items", added)
-
-    if removed and config.source_type != "digital-collection":
-        for ark in removed:
-            context.instance.delete_dynamic_partition("items", ark)
 
     context.log.info(
         f"Reconciled {collection_key}: +{len(added)} added, -{len(removed)} removed, ~{len(changed)} changed"
@@ -207,245 +170,4 @@ def rebuild_collection_tree(context: dg.AssetExecutionContext, config: RebuildTr
 
     result = exec(["digtk", "preservica", "tree", "--collection", config.collection, "--group", config.group])
     context.log.info(f"Rebuilt tree for {config.group}/{config.collection}: {result.get('items')} item(s)")
-    return dg.Output(result)
-
-
-@dg.asset(
-    partitions_def=items_partitions,
-    group_name="ingest",
-)
-def detect_spreads(context: dg.AssetExecutionContext, config: SplitSpreadsConfig):
-    """Detect the binding gutter in every not-yet-detected image binary of an item.
-
-    Reads the item's bronze image binaries directly, since it doesn't need
-    any display/OCR-prep derivative to already exist. Publishes review strips +
-    a contact sheet as silver derivatives of this item for a human to check
-    before apply_spreads runs.
-
-    :param context: Dagster asset execution context.
-    :param config: SplitSpreadsConfig with max_px.
-    """
-    ark = context.partition_key.keys_by_dimension["item"]
-    cmd = ["digtk", "split-spreads", "detect", ark, "--max-px", str(config.max_px)]
-    result = exec(cmd + _reporting_args(context))
-    context.log.info(f"Detected spreads for {ark}: {result}")
-    return dg.Output(result)
-
-
-@dg.asset(
-    partitions_def=items_partitions,
-    deps=[detect_spreads],
-    group_name="ingest",
-)
-def apply_spreads(context: dg.AssetExecutionContext):
-    """Cut every confirmed spread per this item's (human-reviewed) gutters.json.
-
-    The deps=[detect_spreads] declaration is for asset-graph accuracy only
-    (apply reads what detect produces) — nothing here auto-chains the two;
-    an operator triggers silver_apply_spreads manually after confirming a human
-    has reviewed/corrected gutters.json.
-
-    :param context: Dagster asset execution context.
-    """
-    ark = context.partition_key.keys_by_dimension["item"]
-    cmd = ["digtk", "split-spreads", "apply", ark]
-    result = exec(cmd + _reporting_args(context))
-    context.log.info(f"Applied spread splits for {ark}: {result}")
-    return dg.Output(result)
-
-
-@dg.asset(
-    partitions_def=items_partitions,
-    group_name="ocr",
-)
-def run_ocr(context: dg.AssetExecutionContext, config: OcrConfig):
-    """Run OCR on every image/PDF page of an item.
-
-    Both engines run unconditionally: Tesseract for word geometry, Qwen
-    vision for the authoritative transcript — not a confidence-gated
-    fallback, see digtk.models.ocr's module docstring. Needs no
-    upstream asset: `digtk ocr tesseract` prepares its
-    own inputs from the bronze binaries (see digtk.models.prep).
-
-    :param context: Dagster asset execution context.
-    :param config: OcrConfig with lang, psm, oem, vision, ocr_enhance,
-        ocr_text_pages.
-    """
-    ark = context.partition_key.keys_by_dimension["item"]
-    cmd = ["digtk", "ocr", "tesseract", ark,
-           "--lang", config.lang,
-           "--psm",  str(config.psm),
-           "--oem",  str(config.oem)]
-    if not config.vision:
-        cmd.append("--no-vision")
-    if config.ocr_enhance:
-        cmd += ["--ocr-enhance", config.ocr_enhance]
-    if config.ocr_text_pages:
-        cmd.append("--ocr-text-pages")
-    result = exec(cmd + _reporting_args(context))
-    _log_failures(context, result)
-    context.log.info(f"OCR result: {result}")
-    return dg.Output(result)
-
-
-@dg.asset(
-    partitions_def=items_partitions,
-    deps=[run_ocr],
-    group_name="ocr",
-)
-def correct_ocr(context: dg.AssetExecutionContext):
-    """Correct an item's OCR words from its vision transcript (`digtk ocr correct`).
-
-    Reads run_ocr's hOCR and transcripts; makes no OCR or vision calls.
-
-    :param context: Dagster asset execution context.
-    """
-    ark = context.partition_key.keys_by_dimension["item"]
-    result = exec(["digtk", "ocr", "correct", ark] + _reporting_args(context))
-    _log_failures(context, result)
-    context.log.info(f"OCR correction result: {result}")
-    return dg.Output(result)
-
-
-@dg.asset(
-    partitions_def=items_partitions,
-    group_name="accessibility",
-)
-def generate_alt_text(context: dg.AssetExecutionContext, config: AltTextConfig):
-    """Generate AI alt text for an item's image(s)/PDF page(s) using Samwise vision.
-
-    Needs no upstream asset: `digtk accessibility alt-text` builds its
-    own resized image per image/PDF page from the bronze binaries (see
-    digtk.models.prep) — it needs neither showcase derivatives, OCR text,
-    nor the (still-unimplemented, phase 0.6) AI metadata draft.
-
-    :param context: Dagster asset execution context.
-    :param config: AltTextConfig with collection_context, want_description,
-        want_long, max_alt_chars.
-    """
-    ark = context.partition_key.keys_by_dimension["item"]
-    cmd = ["digtk", "accessibility", "alt-text", ark, "--max-alt-chars", str(config.max_alt_chars)]
-    if config.collection_context:
-        cmd += ["--collection-context", config.collection_context]
-    if config.want_description:
-        cmd += ["--want-description"]
-    if config.want_long:
-        cmd += ["--long"]
-    result = exec(cmd + _reporting_args(context))
-    _log_failures(context, result)
-    context.log.info(f"Alt-text result: {result}")
-    return dg.Output(result)
-
-
-@dg.asset(
-    partitions_def=items_partitions,
-    group_name="accessibility",
-)
-def tag_accessible_pdf(context: dg.AssetExecutionContext, config: TagPdfConfig):
-    """Assemble a searchable, PDF/UA-1-tagged PDF for an item's PDF binary(ies).
-
-    Needs no upstream asset: `digtk accessibility tag-pdf` rasterizes
-    each page and builds its own OCR-prep images from the bronze PDF (see
-    digtk.models.prep). Optionally reads back generate_alt_text's output for
-    richer /Figure tagging, but doesn't require it — see
-    digtk.models.accessibility.tag_pdf's own docstring.
-
-    :param context: Dagster asset execution context.
-    :param config: TagPdfConfig with lang, strict, tables, validate,
-        lookahead, min_conf, ocr_enhance, paragraphs, reuse_ocr, correct,
-        skip_existing, mode, embed_fonts, figures, geometry.
-    """
-    ark = context.partition_key.keys_by_dimension["item"]
-    mode_args = ["--mode", config.mode, "--embed-fonts" if config.embed_fonts else "--no-embed-fonts"]
-    result = exec(["digtk", "accessibility", "tag-pdf", ark] + _tag_pdf_args(config) + mode_args
-                  + _reporting_args(context))
-    context.log.info(f"PDF tagging result: {result}")
-    return dg.Output(result)
-
-
-def _tag_pdf_args(config):
-    """`digtk accessibility tag-pdf|build-pdf` flags for a TagPdfConfig.
-
-    :param TagPdfConfig config: The asset's config.
-    :rtype: list[str]
-    """
-    args = ["--lang", config.lang, "--lookahead", str(config.lookahead), "--min-conf", str(config.min_conf)]
-    if config.strict:
-        args.append("--strict")
-    if config.tables:
-        args.append("--tables")
-    if config.paragraphs:
-        args.append("--paragraphs")
-    if not config.reuse_ocr:
-        args.append("--no-reuse-ocr")
-    if config.correct:
-        args.append("--correct")
-    if not config.validate:
-        args.append("--no-validate")
-    if config.ocr_enhance:
-        args += ["--ocr-enhance", config.ocr_enhance]
-    if config.skip_existing:
-        args.append("--skip-existing")
-    if config.figures:
-        args.append("--figures")
-    args += ["--geometry", config.geometry]
-    return args
-
-
-@dg.asset(
-    partitions_def=items_partitions,
-    group_name="accessibility",
-)
-def detect_figures(context: dg.AssetExecutionContext, config: FiguresConfig):
-    """Detect and describe the figures on an item's pages, for review.
-
-    Writes figures.json, crops and figure-review.csv; tag_accessible_pdf and
-    build_accessible_pdf use them with their figures option.
-
-    :param context: Dagster asset execution context.
-    :param config: FiguresConfig with collection_context, max_alt_chars.
-    """
-    ark = context.partition_key.keys_by_dimension["item"]
-    cmd = ["digtk", "accessibility", "figures", ark, "--max-alt-chars", str(config.max_alt_chars)]
-    if config.collection_context:
-        cmd += ["--collection-context", config.collection_context]
-    result = exec(cmd + _reporting_args(context))
-    _log_failures(context, result)
-    context.log.info(f"Figures result: {result}")
-    return dg.Output(result)
-
-
-@dg.asset(
-    partitions_def=items_partitions,
-    group_name="accessibility",
-)
-def build_accessible_pdf(context: dg.AssetExecutionContext, config: TagPdfConfig):
-    """Build an item's page images into one searchable, PDF/UA-1-tagged PDF.
-
-    Reuses run_ocr's word boxes when they match, but doesn't require them.
-
-    :param context: Dagster asset execution context.
-    :param config: TagPdfConfig, the same options as tag_accessible_pdf.
-    """
-    ark = context.partition_key.keys_by_dimension["item"]
-    result = exec(["digtk", "accessibility", "build-pdf", ark] + _tag_pdf_args(config) + _reporting_args(context))
-    context.log.info(f"PDF build result: {result}")
-    return dg.Output(result)
-
-
-@dg.asset(
-    partitions_def=items_partitions,
-    deps=[run_ocr],
-    group_name="metadata",
-)
-def generate_metadata(context: dg.AssetExecutionContext):
-    """Generate AI metadata draft for an item using Samwise (Qwen).
-
-    Writes ai-metadata.jsonld.json to the item's metadata/ process dir.
-
-    :param context: Dagster asset execution context.
-    """
-    ark = context.partition_key.keys_by_dimension["item"]
-    result = exec(["digtk", "metadata", "generate", ark])
-    context.log.info(f"Metadata result: {result}")
     return dg.Output(result)

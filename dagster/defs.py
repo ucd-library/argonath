@@ -4,17 +4,19 @@ Dagster definitions for the Argonath digital collections pipeline.
 Submodule layout (all files live alongside this one in dagster/):
   lib/configs.py         — Config schemas and partition definitions
   lib/utils.py           — DB connection, exec() helper, manifest writer
-  lib/assets.py          — All @dg.asset definitions
-  lib/jobs.py            — All dg.define_asset_job definitions
+  lib/assets.py          — The bronze @dg.asset definitions
+  lib/jobs.py            — The bronze dg.define_asset_job definitions
   lib/sensors.py         — All @dg.sensor definitions
-  lib/pipeline_fanout.py — per-item derivative ops/helpers shared by
+  lib/pipeline_fanout.py — per-item derivative helpers for
                             gold_dcs_process_item (see its own docstring)
+  lib/tool_steps.py      — the pike tool steps (OCR, alt text, PDF tagging...),
+                            shared by workspace_process and gold_dcs_process_item
   lib/pipeline_workspace.py — workspace_process, the same fan-out pattern
                             over a CaskFS workspace collection (scans staged
                             before they have an ARK; see its own docstring)
   lib/pipeline_item.py   — gold_dcs_process_item, an unpartitioned run of one item's
-                            derivatives (addressed by its bronze tree folder),
-                            finalize and Elasticsearch upsert, plus
+                            derivatives and ticked tool steps (addressed by its
+                            bronze tree folder), finalize and Elasticsearch upsert, plus
                             process_item_failure
                             (see its own docstring)
   lib/pipeline_collection.py — gold_dcs_process_collection (queues every item),
@@ -37,28 +39,10 @@ import dagster as dg
 from lib.assets import (
     preservica_import_collection,
     reconcile_collection_items,
-    detect_spreads,
-    apply_spreads,
     rebuild_collection_tree,
-    run_ocr,
-    correct_ocr,
-    generate_metadata,
-    generate_alt_text,
-    tag_accessible_pdf,
-    build_accessible_pdf,
-    detect_figures,
 )
 from lib.jobs import (
     bronze_reconcile_collection,
-    silver_detect_spreads,
-    silver_apply_spreads,
-    silver_ocr,
-    silver_correct_ocr,
-    silver_metadata,
-    silver_alt_text,
-    silver_tag_pdf,
-    silver_build_pdf,
-    silver_figures,
     bronze_preservica_import_collection,
 )
 from lib.sensors import (
@@ -87,28 +71,10 @@ defs = dg.Definitions(
     assets=[
         preservica_import_collection,
         reconcile_collection_items,
-        detect_spreads,
-        apply_spreads,
         rebuild_collection_tree,
-        run_ocr,
-        correct_ocr,
-        generate_metadata,
-        generate_alt_text,
-        tag_accessible_pdf,
-        build_accessible_pdf,
-        detect_figures,
     ],
     jobs=[
         bronze_reconcile_collection,
-        silver_detect_spreads,
-        silver_apply_spreads,
-        silver_ocr,
-        silver_correct_ocr,
-        silver_metadata,
-        silver_alt_text,
-        silver_tag_pdf,
-        silver_build_pdf,
-        silver_figures,
         gold_dcs_process_collection,
         workspace_process,
         gold_dcs_process_item,

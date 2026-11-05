@@ -22,13 +22,12 @@ Every task carries its own `collection_key` (used for --reporting-collection
 and the event partition).
 
 Pieces: item_tasks() / _error_task() build an item's tasks,
-process_derivative_batch runs them, finalize_one_item() finalizes the item,
-and build_item_record() writes its gold item.jsonld.json. Each shells out to
-a digtk command via lib.utils.exec().
+_run_derivative_task() runs one (gold_dcs_process_item's pdc_process_batch
+calls it), finalize_one_item() finalizes the item, and build_item_record()
+writes its gold item.jsonld.json. Each shells out to a digtk command via
+lib.utils.exec().
 """
-from dagster import In, Out, OpExecutionContext, op
-
-from lib.fanout_batching import emit, log_batch, relative_id
+from lib.fanout_batching import emit, relative_id
 from lib.utils import exec
 
 
@@ -145,25 +144,6 @@ def _run_derivative_task(context, task):
         return {**outcome, "error": str(e)}
     emit(context, "derivatives", task["id"], result, partition=collection_key, format=fmt)
     return {**outcome, "ok": True}
-
-
-@op(ins={"tasks": In(list)}, out=Out(list))
-def process_derivative_batch(context: OpExecutionContext, tasks: list) -> list:
-    """Run one step's derivative tasks — a single file, or a batch of them —
-    one `digtk showcase … --file` command per file, so each still gets its own
-    result event.
-
-    Reports failures (an AssetMaterialization with status "failed" and ok=False)
-    instead of raising, so one bad file doesn't stop the rest of its batch;
-    gold_dcs_process_item's pdc_finalize_item fails the run afterwards.
-
-    :param context: Dagster op execution context.
-    :param list[dict] tasks: item_tasks() tasks.
-    :returns: One outcome per task (see _run_derivative_task()).
-    :rtype: list[dict]
-    """
-    log_batch(context, [t["id"] for t in tasks])
-    return [_run_derivative_task(context, task) for task in tasks]
 
 
 def finalize_one_item(context, target, id, collection_key):

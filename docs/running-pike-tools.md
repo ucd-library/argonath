@@ -352,8 +352,8 @@ then on.
 digtk workspace run ./scans/report-7 --steps ocr,figures,tag-pdf --figures --tables
 ```
 
-In Dagster, the `figures` checkbox runs the step and tags the figures. The per-item job
-is `silver_figures`.
+In Dagster, the `figures` checkbox runs the step and tags the figures, on
+`workspace_process` (staged scans) or `gold_dcs_process_item` (a bronze item).
 
 ### Handwriting: `--geometry qwen`
 
@@ -586,7 +586,6 @@ The Dagster UI is at http://localhost:3000 in local dev.
 Job names start with a prefix so related jobs sort together:
 - `workspace_` for workspace folders
 - `bronze_` for keeping bronze in sync with a collection's source
-- `silver_` for the per-item tools on bronze ARK items
 - `gold_dcs_` for the showcase/`pdc_` pipeline
 
 They were renamed from:
@@ -594,9 +593,9 @@ They were renamed from:
 | Old | New |
 |---|---|
 | `process_workspace_job` | `workspace_process` |
-| `ocr_job`, `correct_ocr_job`, `alt_text_job`, `figures_job` | `silver_ocr`, `silver_correct_ocr`, `silver_alt_text`, `silver_figures` |
-| `tag_pdf_job`, `build_pdf_job` | `silver_tag_pdf`, `silver_build_pdf` |
-| `detect_spreads_job`, `apply_spreads_job` | `silver_detect_spreads`, `silver_apply_spreads` |
+| `ocr_job`, `correct_ocr_job`, `alt_text_job`, `figures_job` | `silver_ocr`, `silver_correct_ocr`, `silver_alt_text`, `silver_figures` (since removed) |
+| `tag_pdf_job`, `build_pdf_job` | `silver_tag_pdf`, `silver_build_pdf` (since removed) |
+| `detect_spreads_job`, `apply_spreads_job` | `silver_detect_spreads`, `silver_apply_spreads` (since removed) |
 | `process_collection_job`, `process_item_job`, `collection_rollup_job` | `gold_dcs_process_collection`, `gold_dcs_process_item`, `gold_dcs_collection_rollup` |
 | `reindex_collection_job`, `apply_cask_changes_job`, `derivatives_job` | `gold_dcs_reindex_collection`, `gold_dcs_apply_cask_changes`, `gold_dcs_derivatives` (since removed) |
 | `delete_collection_index_job`, `delete_item_index_job` | `gold_dcs_delete_collection_index`, `gold_dcs_delete_item_index` |
@@ -774,18 +773,24 @@ How `argonath` reaches Dagster:
   (`celery_job_executor()`), so launches from the CLI, sensors and the launchpad all
   reach the deployment's RabbitMQ. The launchpad no longer shows an `execution:` block.
 
-### Bronze items (with ARKs)
+### Bronze items
 
 - **Collection partitions** are keyed `bronze/<group>/<collection>` (e.g.
   `bronze/preservica/haeger`). `bronze_collection_partition_sync` registers them for
   anything added with `digtk collection add --root bronze` or `digtk preservica import`.
   Partitions under the older `<group>/<collection>` form aren't removed automatically;
   delete them in the UI once they're no longer needed.
-- **Item partitions** (ARKs) are registered by `bronze_reconcile_collection`.
-- **Per-item tool jobs:** `silver_ocr`, `silver_correct_ocr`, `silver_alt_text`, `silver_figures`,
-  `silver_tag_pdf`, `silver_build_pdf`, `silver_detect_spreads`, and `silver_apply_spreads`. Pick a (collection, item) partition and
-  set the asset config. They only depend on the item being ingested, and each one
-  records reporting under the Dagster run ID. `silver_correct_ocr` needs `silver_ocr`'s output.
+- **Tools on a bronze item:** `gold_dcs_process_item` has the same step checkboxes and
+  options as `workspace_process` (`split_detect`, `split_apply`, `ocr`, `ocr_correct`,
+  `alt_text`, `figures`, `tag_pdf`, `pdf_build`, all off by default). Set
+  `ops.pdc_plan_item.config.item` to the bronze folder and tick the steps you want. They
+  run next to the showcase derivatives, one step per file, and write to the item's silver
+  folder (`text/`, `accessibility/`, `split-spreads/`). Only Preservation masters are
+  processed when a page also has an Access copy. `pdf_build` runs after the file steps,
+  and alt text is picked up by `build-item`. A failed tool step doesn't stop the item
+  being published; the run fails at the end instead. `ocr_correct` needs `ocr` output,
+  and `split_detect` / `split_apply` are meant to be separate runs with `gutters.json`
+  reviewed in between.
 - **Webapp derivatives for a whole collection:** `gold_dcs_process_collection` queues one
   `gold_dcs_process_item` run per item in the collection's bronze `tree/`, the same path
   `bronze_collection_cask_audit` uses for changed items (see below). The launch run itself

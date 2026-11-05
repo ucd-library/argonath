@@ -50,14 +50,16 @@ from dagster import (
 
 from lib.configs import workspace_partitions, WorkspaceRunConfig
 from lib.fanout_batching import batches, log_batch, log_batching, relative_id, step_key
-from lib.tool_steps import FILE_STEP_FIELDS, file_steps, option_args, run_tool_task, ticked
+from lib.tool_steps import (
+    DOCUMENT_STEP_FIELDS,
+    FILE_STEP_FIELDS,
+    FOLDER_STEP_FIELDS,
+    any_ticked,
+    folder_tool_tasks,
+    run_tool_task,
+    ticked,
+)
 from lib.utils import celery_job_executor, default_run_config, exec
-
-# WorkspaceRunConfig checkbox -> `digtk workspace run --steps` name, for the
-# steps that run once per folder (file steps: lib.tool_steps).
-_FOLDER_STEP_FIELDS = {"split_detect": "split-detect", "split_apply": "split-apply"}
-# Folder steps run after file steps.
-_DOCUMENT_STEP_FIELDS = {"pdf_build": "pdf-build"}
 
 
 def _workspace_path(partition_key):
@@ -92,19 +94,19 @@ def fan_out_workspace(context: OpExecutionContext, config: WorkspaceRunConfig):
     of their own, so the launchpad has one place for options.
 
     :param context: Dagster op execution context; partitioned by workspace folder.
-    :param config: WorkspaceRunConfig — which steps, their options, and max_steps.
+    :param config: WorkspaceRunConfig — which steps, their options (see
+        lib.configs.ToolStepsConfig), and max_steps.
     :raises ValueError: If no step is ticked.
     """
-    folder_steps = ticked(config, _FOLDER_STEP_FIELDS)
-    any_file_steps = ticked(config, FILE_STEP_FIELDS)
-    document_steps = ticked(config, _DOCUMENT_STEP_FIELDS)
-    if not folder_steps and not any_file_steps and not document_steps:
-        all_fields = {**_FOLDER_STEP_FIELDS, **FILE_STEP_FIELDS, **_DOCUMENT_STEP_FIELDS}
+    if not any_ticked(config):
+        all_fields = {**FOLDER_STEP_FIELDS, **FILE_STEP_FIELDS, **DOCUMENT_STEP_FIELDS}
         raise ValueError(f"tick at least one step: {sorted(all_fields)}")
+    folder_steps = ticked(config, FOLDER_STEP_FIELDS)
+    any_file_steps = ticked(config, FILE_STEP_FIELDS)
+    document_steps = ticked(config, DOCUMENT_STEP_FIELDS)
 
     path = _workspace_path(context.partition_key)
     listing = exec(["digtk", "workspace", "items", path, "--files"])["items"]
-    args = option_args(config)
     context.log.info(
         f"{path}: {len(listing)} folder(s), {sum(len(e['files']) for e in listing)} file(s); "
         f"steps per folder: {folder_steps or 'none'}, per file: {any_file_steps or 'none'}, "
@@ -114,18 +116,12 @@ def fan_out_workspace(context: OpExecutionContext, config: WorkspaceRunConfig):
     folder_tasks, file_tasks, document_tasks = [], [], []
     for entry in listing:
         item_dir = entry["item"]
-        folder_id = relative_id(item_dir, context.partition_key)
-        if folder_steps:
-            folder_tasks.append({"target": item_dir, "file": None, "id": folder_id, "steps": folder_steps, "args": args})
-        if document_steps and any(not f.lower().endswith(".pdf") for f in entry["files"]):
-            document_tasks.append({"target": item_dir, "file": None, "id": folder_id, "steps": document_steps, "args": args})
-        for filename in entry["files"]:
-            steps = file_steps(config, filename)
-            if steps:
-                file_tasks.append({
-                    "target": item_dir, "file": filename, "id": f"{folder_id}/{filename}",
-                    "steps": steps, "args": args,
-                })
+        found = folder_tool_tasks(item_dir, relative_id(item_dir, context.partition_key), entry["files"], config)
+        if found["folder"]:
+            folder_tasks.append(found["folder"])
+        if found["document"]:
+            document_tasks.append(found["document"])
+        file_tasks.extend(found["files"])
 
     used = set()
     if document_tasks:
