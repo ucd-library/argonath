@@ -379,6 +379,115 @@ def test_get_children_uses_root_endpoint_when_ref_is_none():
     assert seen["path"] == "/api/entity/root/children"
 
 
+def test_looks_like_ref_true_for_uuid():
+    assert preservica.looks_like_ref("3fa85f64-5717-4562-b3fc-2c963f66afa6")
+
+
+def test_looks_like_ref_false_for_path_like_values():
+    assert not preservica.looks_like_ref("/")
+    assert not preservica.looks_like_ref("")
+    assert not preservica.looks_like_ref("haeger")
+
+
+def test_resolve_path_matches_single_segment():
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        if request.url.path == "/api/entity/root/children":
+            body = (
+                "<ChildrenResponse><Paging><TotalResults>1</TotalResults></Paging>"
+                '<Children><Child ref="haeger-ref" title="haeger" type="SO">u1</Child></Children></ChildrenResponse>'
+            )
+            return httpx.Response(200, text=body)
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    c = client(handler)
+    assert c.resolve_path("haeger") == "haeger-ref"
+
+
+def test_resolve_path_walks_nested_segments():
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        if request.url.path == "/api/entity/root/children":
+            body = (
+                "<ChildrenResponse><Paging><TotalResults>1</TotalResults></Paging>"
+                '<Children><Child ref="parent-ref" title="parent" type="SO">u1</Child></Children></ChildrenResponse>'
+            )
+            return httpx.Response(200, text=body)
+        if request.url.path == "/api/entity/structural-objects/parent-ref/children":
+            body = (
+                "<ChildrenResponse><Paging><TotalResults>1</TotalResults></Paging>"
+                '<Children><Child ref="child-ref" title="child" type="SO">u2</Child></Children></ChildrenResponse>'
+            )
+            return httpx.Response(200, text=body)
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    c = client(handler)
+    assert c.resolve_path("/parent/child") == "child-ref"
+
+
+def test_resolve_path_ignores_non_folder_children():
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        body = (
+            "<ChildrenResponse><Paging><TotalResults>2</TotalResults></Paging>"
+            '<Children>'
+            '<Child ref="io-ref" title="haeger" type="IO">u1</Child>'
+            '<Child ref="so-ref" title="haeger" type="SO">u2</Child>'
+            '</Children></ChildrenResponse>'
+        )
+        return httpx.Response(200, text=body)
+
+    c = client(handler)
+    assert c.resolve_path("haeger") == "so-ref"
+
+
+def test_resolve_path_raises_when_segment_not_found():
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        body = (
+            "<ChildrenResponse><Paging><TotalResults>1</TotalResults></Paging>"
+            '<Children><Child ref="other-ref" title="other" type="SO">u1</Child></Children></ChildrenResponse>'
+        )
+        return httpx.Response(200, text=body)
+
+    c = client(handler)
+    with pytest.raises(ValueError, match="other"):
+        c.resolve_path("haeger")
+
+
+def test_resolve_path_raises_on_ambiguous_title():
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        body = (
+            "<ChildrenResponse><Paging><TotalResults>2</TotalResults></Paging>"
+            '<Children>'
+            '<Child ref="ref-a" title="haeger" type="SO">u1</Child>'
+            '<Child ref="ref-b" title="haeger" type="SO">u2</Child>'
+            '</Children></ChildrenResponse>'
+        )
+        return httpx.Response(200, text=body)
+
+    c = client(handler)
+    with pytest.raises(ValueError, match="Ambiguous"):
+        c.resolve_path("haeger")
+
+
+def test_resolve_path_rejects_empty_path_without_any_request():
+    def handler(request):
+        raise AssertionError("no request should be made for an empty path")
+
+    c = client(handler)
+    with pytest.raises(ValueError, match="tenant root"):
+        c.resolve_path("/")
+    with pytest.raises(ValueError, match="tenant root"):
+        c.resolve_path("")
+
+
 def test_get_entity_expand_structure_query_param():
     seen = {}
 

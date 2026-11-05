@@ -36,6 +36,7 @@ the installed dagster package.
 import dagster as dg
 
 from lib.assets import (
+    preservica_import_collection,
     reconcile_collection_items,
     detect_spreads,
     apply_spreads,
@@ -66,6 +67,7 @@ from lib.jobs import (
     silver_figures,
     gold_dcs_search_index,
     silver_full_pipeline,
+    preservica_import_collection_job
 )
 from lib.sensors import (
     bronze_preservica_auto_sync,
@@ -91,6 +93,7 @@ from lib.pipeline_index import (
 
 defs = dg.Definitions(
     assets=[
+        preservica_import_collection,
         reconcile_collection_items,
         detect_spreads,
         apply_spreads,
@@ -130,6 +133,7 @@ defs = dg.Definitions(
         gold_dcs_unpublish_collection,
         gold_dcs_delete_item_index,
         gold_dcs_apply_cask_changes,
+        preservica_import_collection_job
     ],
     sensors=[
         bronze_preservica_auto_sync,

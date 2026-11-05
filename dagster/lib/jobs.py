@@ -6,6 +6,7 @@ Jobs group assets for per-phase and full-pipeline runs.
 import dagster as dg
 
 from lib.assets import (
+    preservica_import_collection,
     reconcile_collection_items,
     detect_spreads,
     apply_spreads,
@@ -20,6 +21,13 @@ from lib.assets import (
     build_accessible_pdf,
     detect_figures,
     index_for_showcase_search,
+)
+
+preservica_import_collection_job = dg.define_asset_job(
+    name="preservica_import_collection_job",
+    selection=[preservica_import_collection],
+    description="One-time full walk of a brand-new Preservica collection into bronze "
+    "(`digtk preservica import`) — collection is manual input, not yet a registered partition.",
 )
 
 bronze_reconcile_collection = dg.define_asset_job(
