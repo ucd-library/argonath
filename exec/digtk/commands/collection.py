@@ -11,7 +11,7 @@ Subcommands:
                digtk.models.collection.local_to_bronze_tree). Source-agnostic —
                unlike `digtk preservica import`/`tree`, --group has no default here.
   list       — list registered collections (see digtk.models.collection.register_collection) —
-               used by Dagster's collection_partition_sync_sensor to keep its
+               used by Dagster's bronze_collection_partition_sync to keep its
                'collections' dynamic partition in sync with the registry.
   items      — list a collection's current item folders (see
                digtk.models.collection.list_item_folders) — used by Dagster's

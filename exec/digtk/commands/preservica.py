@@ -30,7 +30,7 @@ Subcommands:
             (see digtk.models.collection.preservica_tree)
   changes — list registered Preservica collections with any change since a
             given timestamp (see digtk.models.collection.find_changed_preservica_collections)
-            — used by Dagster's preservica_auto_sync_sensor
+            — used by Dagster's bronze_preservica_auto_sync
 """
 from typing import Annotated
 
@@ -308,7 +308,7 @@ def changes(
     )],
 ):
     """List registered Preservica collections with any change since `since` —
-    the basis for Dagster's preservica_auto_sync_sensor. Also auto-registers a
+    the basis for Dagster's bronze_preservica_auto_sync. Also auto-registers a
     brand-new folder the first time its own 'argonath' identifier is seen."""
     try:
         result = collection_model.find_changed_preservica_collections(since)

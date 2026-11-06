@@ -53,7 +53,7 @@ def thumbnails(target, opts={}):
     """Generate small/medium/large JPEGs, for every source image in the item.
 
     Standalone, deterministic — no orientation comparison. For ad-hoc/manual
-    use; generate() is what Dagster's showcase_derivatives_job actually calls.
+    use; generate() is what Dagster's gold_dcs_derivatives actually calls.
 
     Each source publishes into its own nested directory, keyed by its own bronze
     filename (see PUBLIC_FRONTEND_DIR and docs/cask-conventions.md's Silver Layout

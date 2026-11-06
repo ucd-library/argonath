@@ -255,7 +255,7 @@ class _Entry:
 def outputs(monkeypatch):
     """Fake CaskFS holding one item's silver and gold directories."""
     tree = {
-        "cask:/gold": [_Entry("digital-dev", "/gold/digital-dev", "directory"), _Entry("arda", "/gold/arda", "directory")],
+        "cask:/gold": [_Entry("digital-dev", "/gold/digital-dev", "directory"), _Entry("digital-prod", "/gold/digital-prod", "directory")],
         "cask:/silver/g/c/latest/tree/gone": [
             _Entry("public-frontend-derivatives", "/silver/g/c/latest/tree/gone/public-frontend-derivatives", "directory"),
             _Entry("ocr.json", "/silver/g/c/latest/tree/gone/ocr.json", "file"),
@@ -278,8 +278,8 @@ def outputs(monkeypatch):
 def test_item_output_dirs_covers_silver_and_every_gold_project(outputs):
     assert collection_index.item_output_dirs("/bronze/g/c/latest/tree/gone") == [
         "cask:/silver/g/c/latest/tree/gone",
-        "cask:/gold/arda/c/tree/gone",
         "cask:/gold/digital-dev/c/tree/gone",
+        "cask:/gold/digital-prod/c/tree/gone",
     ]
 
 
@@ -339,13 +339,13 @@ def test_remove_collection_gold_deletes_the_project_folder(monkeypatch, outputs)
 
 
 def test_remove_collection_gold_uses_project_and_dry_run(monkeypatch, outputs):
-    outputs["exists"].add("cask:/gold/arda/c")
+    outputs["exists"].add("cask:/gold/digital-prod/c")
     monkeypatch.setattr(collection_index.fs, "ls", lambda path, opts={}: [])
 
-    result = collection_index.remove_collection_gold("bronze/g/c", {"project": "arda", "dry_run": True})
+    result = collection_index.remove_collection_gold("bronze/g/c", {"project": "digital-prod", "dry_run": True})
 
     assert outputs["deleted"] == []
-    assert result["path"] == "cask:/gold/arda/c"
+    assert result["path"] == "cask:/gold/digital-prod/c"
     assert result["removed"] is False and result["dryRun"] is True
 
 

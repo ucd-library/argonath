@@ -51,7 +51,7 @@ def enqueue_collection(
         help="Batch id recorded on every queued row (e.g. the launching Dagster run id).",
     )] = None,
 ):
-    """Queue a showcase_process_item_job run for every item in the collection's bronze
+    """Queue a gold_dcs_process_item run for every item in the collection's bronze
     tree/."""
     try:
         result = collection_state.enqueue_collection(collection_key, {"batch": batch} if batch else {})
@@ -70,7 +70,7 @@ def enqueue_items(
     trigger: Annotated[str, typer.Option(help="Recorded on each row and as a run tag.")] = "items",
     batch: Annotated[str | None, typer.Option(help="Batch id recorded on every queued row.")] = None,
 ):
-    """Queue a showcase_process_item_job run for each item folder."""
+    """Queue a gold_dcs_process_item run for each item folder."""
     try:
         opts = {"trigger": trigger, **({"batch": batch} if batch else {})}
         result = collection_state.enqueue_items(items, opts)
@@ -183,7 +183,7 @@ def rollup(
     )],
 ):
     """Recompute a collection's item count and failed items, and record them as
-    its showcase_collection_rollup_job result."""
+    its gold_dcs_collection_rollup result."""
     try:
         summary = collection_state.rollup(collection_key)
         utils.log(

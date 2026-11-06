@@ -293,7 +293,7 @@ def _resolve_identifier_key(identifiers, ref):
 # Tracks which collections argonath knows about (source, name, workflow tags)
 # so Dagster's sensors know what to watch and what to do when a source changes
 # — see docs/preservica-identifiers.md and dagster/lib/sensors.py's
-# collection_partition_sync_sensor / preservica_auto_sync_sensor. Built on
+# bronze_collection_partition_sync / bronze_preservica_auto_sync. Built on
 # digtk.lib.db (generic Postgres helper); tables live in the 'argonath' schema
 # (digtk.lib.db.SCHEMA) — see digtk/sql/collection_registry.sql for the schema
 # itself, and init_pg() below to apply it.
@@ -330,8 +330,8 @@ def _parse_workflow_tags(value):
 def register_collection(name, group, source_type, identifiers=(), opts={}):
     """Upsert a collection_registry row (+ its collection_identifiers) — argonath's
     durable record that a collection is tracked, for Dagster's sensors to read
-    (dagster/lib/sensors.py's collection_partition_sync_sensor and
-    preservica_auto_sync_sensor).
+    (dagster/lib/sensors.py's bronze_collection_partition_sync and
+    bronze_preservica_auto_sync).
 
     Called unconditionally by both preservica_import() and the CLI's
     `collection add` path — registration never depends on whether an 'argonath'
@@ -432,7 +432,7 @@ def register_collection(name, group, source_type, identifiers=(), opts={}):
 def get_registration(id_type, id_value, opts={}):
     """Look up a registered collection via any tracked identifier.
 
-    Used by preservica_auto_sync_sensor to resolve a changed Preservica entity
+    Used by bronze_preservica_auto_sync to resolve a changed Preservica entity
     ref to its owning registered collection.
 
     :param str id_type: Identifier type, e.g. 'preservica_ref'.
@@ -454,9 +454,9 @@ def get_registration(id_type, id_value, opts={}):
 def list_active_collections(source_type=None, opts={}):
     """List every active registered collection, optionally filtered by source type.
 
-    Used by both new Dagster sensors — collection_partition_sync_sensor (to
+    Used by both new Dagster sensors — bronze_collection_partition_sync (to
     ensure every active collection has a Dagster 'collections' partition) and
-    preservica_auto_sync_sensor (to scope which Preservica collections to watch).
+    bronze_preservica_auto_sync (to scope which Preservica collections to watch).
 
     :param str|None source_type: 'manual' or 'preservica', or None for all.
     :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
@@ -616,7 +616,7 @@ def _parent_ref_of(client, ref, data_type):
     NOTE: unlike client.py's other EntityResponse field reads (Title, etc.),
     this field name has not been confirmed against a live Preservica tenant —
     verify it before relying on this in production (see
-    find_changed_preservica_collections()'s caller, preservica_auto_sync_sensor).
+    find_changed_preservica_collections()'s caller, bronze_preservica_auto_sync).
 
     :param PreservicaClient client: Client instance.
     :param str ref: Entity ref.
@@ -667,7 +667,7 @@ def _find_owning_collection(client, ref, entity_type):
 def find_changed_preservica_collections(since, opts={}):
     """Find every registered Preservica collection with any change reported by
     Preservica since `since` — the basis for the auto-sync sensor (see
-    dagster/lib/sensors.py's preservica_auto_sync_sensor).
+    dagster/lib/sensors.py's bronze_preservica_auto_sync).
 
     Also auto-registers a brand-new folder the first time its own 'argonath'
     identifier is seen — a folder with no 'argonath' identifier is never
@@ -681,7 +681,7 @@ def find_changed_preservica_collections(since, opts={}):
     when the entity was resolved to its owning collection via
     _find_owning_collection()'s parent-walk-up, the entity's own ref/type is
     kept, never the walked-up parent. This is what lets
-    preservica_auto_sync_sensor drive a targeted sync of just what changed
+    bronze_preservica_auto_sync drive a targeted sync of just what changed
     (see preservica_sync_entities()) instead of a full collection re-walk.
 
     :param str since: ISO-8601 timestamp/date, passed straight to
@@ -1183,7 +1183,7 @@ def preservica_sync_entities(collection, group, entities, opts={}):
     already-registered collection — never a full recursive re-walk of the
     collection (see preservica_import() for that). This is the targeted
     counterpart driven by dagster/lib/assets.py's reconcile_collection_items
-    when triggered by preservica_auto_sync_sensor's per-collection 'changed'
+    when triggered by bronze_preservica_auto_sync's per-collection 'changed'
     list (see find_changed_preservica_collections()).
 
     An IO entity is leaf-fetched via _walk_preservica_item() (entity,
@@ -1674,7 +1674,7 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
     Preservica entities, instead of preservica_tree()'s full delete-and-rebuild
     — the steady-state path for ongoing syncs (see dagster/lib/assets.py's
     rebuild_collection_tree, wired to fire this whenever
-    preservica_auto_sync_sensor's per-collection 'changed' list is non-empty).
+    bronze_preservica_auto_sync's per-collection 'changed' list is non-empty).
 
     Each entity's current tree/ location, if it has one, is found via the
     ref-identity partition key tagged on its metadata.json (see

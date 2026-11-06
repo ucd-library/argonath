@@ -4,7 +4,7 @@ Entry point for the `digtk` media processing CLI.
 Subcommands mirror the pipeline phases:
   digtk auth          — manage the CaskFS connection (login/whoami/logout)
   digtk config        — manage persistent digtk settings (set/show)
-  digtk ai            — ad hoc Samwise AI queries, for testing (chat/embed)
+  digtk ai            — ad hoc Samwise AI queries, for testing (chat)
   digtk showcase      — commands specific to the public Digital Collections website:
                           image (thumbnails, conversion, deskew, OCR prep),
                           pdf (per-page thumbnails, conversion, deskew, OCR prep),
@@ -18,15 +18,14 @@ Subcommands mirror the pipeline phases:
                           showcase display asset — see digtk.models.split)
   digtk ingest        — ingest files into CaskFS
   digtk collection    — manage CaskFS collections (add/sync/add-tree)
-  digtk search        — LlamaIndex RAG indexing and querying
   digtk preservica  — pull a collection out of Preservica into bronze (import/tree)
   digtk reporting     — admin commands for the reporting Postgres schema
                           (see digtk.lib.reporting)
   digtk state         — collection_state queue and job results, used by Dagster
                           (see digtk.models.collection_state)
   digtk workspace     — stage local folders into CaskFS workspace, run ocr/
-                          accessibility/split-spreads on them, pull outputs,
-                          promote them to silver (see digtk.models.workspace)
+                          accessibility/split-spreads on them, pull outputs
+                          (see digtk.models.workspace)
 
 Every command finishes with a result — --output controls whether that also
 includes a structured JSON line (see digtk.lib.utils's module docstring):
@@ -39,7 +38,7 @@ from typing import Annotated
 import typer
 
 from digtk.commands import (
-    accessibility, ai, auth, collection, config, ocr, metadata, ingest, preservica, reporting, showcase, search, split,
+    accessibility, ai, auth, collection, config, ocr, metadata, ingest, preservica, reporting, showcase, split,
     state, workspace,
 )
 from digtk.lib import utils
@@ -63,7 +62,6 @@ app.add_typer(preservica.app, name="preservica")
 app.add_typer(split.app,         name="split-spreads")
 app.add_typer(ingest.app,        name="ingest")
 app.add_typer(collection.app,    name="collection")
-app.add_typer(search.app,        name="search")
 app.add_typer(reporting.app,     name="reporting")
 app.add_typer(state.app,         name="state")
 app.add_typer(workspace.app,     name="workspace")
