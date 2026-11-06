@@ -369,6 +369,7 @@ def gold_dcs_process_item():
     bronze_collection_cask_audit sensor or the gold_dcs_process_collection job.
     Pike tool outputs (OCR, alt text, figures, PDF tagging/building, split-spreads) are also
     built if set in the launchpad.
+    Collection item counts are updated in a separate cron job that runs every 5 minutes or so.
     """
     tasks, item = pdc_plan_item()
     results = tasks.map(pdc_process_batch).collect()
