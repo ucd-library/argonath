@@ -19,6 +19,7 @@ from digtk.lib.config import (
     CONFIG,
     CaptionsLanguageOption,
     CaptionsModelOption,
+    ForceOption,
     ReportingCollectionOption,
     ReportingJobIdOption,
     TargetArgument,
@@ -59,6 +60,7 @@ def derivatives(
     resolutions: VideoResolutionsOption = CONFIG["video"]["resolutions"],
     language: CaptionsLanguageOption = CONFIG["captions"]["language"],
     model: CaptionsModelOption = CONFIG["captions"]["model"],
+    force: ForceOption = False,
     reporting_job_id: ReportingJobIdOption = None,
     reporting_collection: ReportingCollectionOption = None,
 ):
@@ -71,10 +73,10 @@ def derivatives(
         utils.log(f"Generating derivatives for {target} at resolutions {resolutions}")
         with reporting.track(
             reporting_job_id, stage="derivatives", item_id=target, collection=reporting_collection,
-            options={"resolutions": resolutions, "language": language, "model": model},
+            options={"resolutions": resolutions, "language": language, "model": model, "force": force},
         ):
             result = video.derivatives(target, opts={
-                "resolutions": resolutions, "language": language, "model": model,
+                "resolutions": resolutions, "language": language, "model": model, "force": force,
             })
         utils.result(result)
     except _ERRORS as e:

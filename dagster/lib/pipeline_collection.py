@@ -25,7 +25,7 @@ import dagster as dg
 from dagster import AssetMaterialization, MetadataValue, OpExecutionContext, job, op
 
 from lib import collection_state
-from lib.configs import ItemRunConfig, collections_partitions
+from lib.configs import ItemRunConfig, ProcessCollectionConfig, collections_partitions
 from lib.pipeline_item import normalize_item, gold_dcs_process_item
 from lib.utils import default_run_config, exec
 
@@ -46,19 +46,21 @@ _IN_FLIGHT = [
 
 
 @op
-def enqueue_collection_items(context: OpExecutionContext):
+def enqueue_collection_items(context: OpExecutionContext, config: ProcessCollectionConfig):
     """Queue a gold_dcs_process_item run for every item in the partition's
     collection, tagged with this run's id as its batch. Items that have left
     its bronze tree/ are left alone; gold_dcs_reindex_collection prunes their ES docs.
 
     :param context: Dagster op execution context; partitioned by collection.
+    :param ProcessCollectionConfig config: 'force' regenerates existing derivatives.
     """
     key = context.partition_key
-    result = collection_state.enqueue_collection(key, {"batch": context.run_id})
+    result = collection_state.enqueue_collection(key, {"batch": context.run_id, "force": config.force})
     context.log.info(
         f"{key}: {result['items']} item(s) in bronze tree/ ({result['added']} new), "
-        f"{result['enqueued']} run(s) queued"
+        f"{result['enqueued']} run(s) queued{' (force)' if config.force else ''}"
     )
+    context.log.info("Items processing will be queued as new dagster runs per-item, followed by a collection rollup job to index the collection and update the item count.")
     context.log_event(AssetMaterialization(
         asset_key="argonath_process_collection",
         partition=key,
@@ -70,10 +72,15 @@ def enqueue_collection_items(context: OpExecutionContext):
     ))
 
 
-@job(partitions_def=collections_partitions, tags={"argonath/kind": "collection-launch"})
+@job(
+    partitions_def=collections_partitions,
+    tags={"argonath/kind": "collection-launch"},
+    config=default_run_config({"enqueue_collection_items": ProcessCollectionConfig}),
+)
 def gold_dcs_process_collection():
     """Manually rebuilds derivatives and indexes all items and the collection in elastic, 
     then updates the item count by triggering the `gold_dcs_collection_rollup` job.
+    Derivatives that already exist are skipped unless `force` is set on the launchpad.
     This is equivalent to what the `bronze_collection_cask_audit` sensor does automatically for changes in bronze cask.
     If you just need to reindex a collection, use `gold_dcs_reindex_collection` instead.
     """

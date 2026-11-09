@@ -4,6 +4,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from digtk.lib.fs.paths import DirEntry
 from digtk.lib.items import ItemLocation
 from digtk.models.digital_website import pipeline
 
@@ -315,6 +316,102 @@ def test_publish_records_manifest_and_source_files(fake_derivative, tmp_path):
     manifest = json.loads(manifest_call["data"])
     assert manifest["command"] == ["digtk", "image", "thumbnail", ARK]
     assert manifest["params"] == {"widths": [256]}
+
+
+def test_publish_lists_kept_outputs_without_rewriting_them(fake_derivative, tmp_path):
+    local_path = tmp_path / "tiled.tif"
+    local_path.write_bytes(b"data")
+    bronze = "cask:/bronze/g/c/latest/item/photo.tiff"
+
+    result = pipeline.publish(
+        ITEM, "derivatives", [("tiled.tif", str(local_path), bronze)],
+        command=["digtk", "image", "derivatives", ARK], params={},
+        opts={"kept_outputs": [("small.jpg", bronze)]},
+    )
+
+    assert [c["rel_path"] for c in fake_derivative] == ["item/derivatives/tiled.tif", "item/derivatives/manifest.json"]
+    assert result["outputs"] == ["tiled.tif", "small.jpg"]
+    assert json.loads(fake_derivative[1]["data"])["outputs"] == ["tiled.tif", "small.jpg"]
+
+
+# --- skipping already-published outputs -------------------------------------------
+
+DERIVATIVES_DIR = "cask:/silver/g/c/latest/item/derivatives"
+
+
+def _fake_listing(monkeypatch, files, manifest=None):
+    names = list(files) + (["manifest.json"] if manifest is not None else [])
+    monkeypatch.setattr(pipeline.fs, "ls", lambda path, opts={}: [
+        DirEntry(name=name, path=f"{path}/{name}", kind="file") for name in names
+    ])
+    monkeypatch.setattr(pipeline.fs, "read", lambda path: json.dumps(manifest))
+
+
+def test_existing_outputs_lists_files_and_manifest(monkeypatch):
+    _fake_listing(monkeypatch, ["small.jpg"], {"params": {"widths": [256, 512, 1024]}})
+    existing = pipeline.existing_outputs(ITEM, "derivatives", {"params": {"widths": [256, 512, 1024]}})
+    assert existing["dir"] == DERIVATIVES_DIR
+    assert existing["files"] == {"small.jpg"}
+    assert existing["manifest"]["params"]["widths"] == [256, 512, 1024]
+
+
+def test_existing_outputs_treats_changed_params_as_empty(monkeypatch):
+    _fake_listing(monkeypatch, ["small.jpg"], {"params": {"widths": [256, 512, 1024]}})
+    existing = pipeline.existing_outputs(ITEM, "derivatives", {"params": {"widths": [200, 400, 800]}})
+    assert existing == {"dir": DERIVATIVES_DIR, "files": set(), "manifest": None}
+
+
+def test_existing_outputs_missing_directory_is_empty(monkeypatch):
+    def missing(path, opts={}):
+        raise FileNotFoundError(path)
+    monkeypatch.setattr(pipeline.fs, "ls", missing)
+    assert pipeline.existing_outputs(ITEM, "derivatives")["files"] == set()
+
+
+def test_existing_outputs_force_never_lists(monkeypatch):
+    monkeypatch.setattr(pipeline.fs, "ls", lambda path, opts={}: pytest.fail("force should not list"))
+    assert pipeline.existing_outputs(ITEM, "derivatives", {"force": True})["files"] == set()
+
+
+def _status(files, manifest, ocr_files):
+    images = {"dir": DERIVATIVES_DIR, "files": set(files), "manifest": manifest}
+    return pipeline.derivative_set_status(images, set(ocr_files), {
+        "prep": ["prep.jpg", "prep-deskew.jpg"], "ocr_layer": ["ocr.djvu", "ocr-stats.json"],
+    })
+
+
+FULL_MANIFEST = {
+    "params": {"orientation": {"deskew_selected": True, "stats": {}}},
+    "small": {}, "medium": {}, "large": {}, "tiled": {}, "ocr": {},
+}
+
+
+def test_derivative_set_status_complete():
+    status = _status(["small.jpg", "medium.jpg", "large.jpg", "tiled.tif"], FULL_MANIFEST, ["prep-deskew.jpg", "ocr.djvu", "ocr-stats.json"])
+    assert status["complete"] is True
+    assert status["prep"] == "prep-deskew.jpg"
+
+
+def test_derivative_set_status_needs_manifest_entry_for_a_file():
+    manifest = {key: value for key, value in FULL_MANIFEST.items() if key != "tiled"}
+    status = _status(["small.jpg", "medium.jpg", "large.jpg", "tiled.tif"], manifest, ["prep.jpg", "ocr.djvu", "ocr-stats.json"])
+    assert status["tiled"] is False
+    assert status["thumbnails"] is True
+    assert status["complete"] is False
+
+
+def test_reused_orientation_needs_ocr_layer():
+    status = _status([], FULL_MANIFEST, ["prep-deskew.jpg"])
+    assert pipeline.reused_orientation(status) is None
+
+
+def test_reused_orientation_falls_back_to_prep_filename():
+    status = _status([], None, ["prep-deskew.jpg", "ocr.djvu", "ocr-stats.json"])
+    assert pipeline.reused_orientation(status) == {"deskew": True, "stats": None}
+
+
+def test_stored_size_converts_to_ints():
+    assert pipeline.stored_size({"size": {"width": "256", "height": "300"}}) == {"width": 256, "height": 300}
 
 
 # --- per-file helpers -------------------------------------------------------------

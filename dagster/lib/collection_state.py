@@ -88,13 +88,16 @@ def enqueue_collection(key, opts={}):
     """Queue item runs for a collection (`digtk state enqueue-collection`).
 
     :param str key: Collection key, e.g. "bronze/preservica/haeger".
-    :param dict opts: 'batch' (str, e.g. the launching run id).
+    :param dict opts: 'batch' (str, e.g. the launching run id), 'force'
+        (bool, queue rows that regenerate existing derivatives).
     :returns: {"collection", "items", "added", "removed", "enqueued"}.
     :rtype: dict
     """
     args = ["enqueue-collection", "--collection-key", key]
     if opts.get("batch"):
         args += ["--batch", opts["batch"]]
+    if opts.get("force"):
+        args.append("--force")
     return _state(args)
 
 

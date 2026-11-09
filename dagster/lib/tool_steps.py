@@ -1,9 +1,8 @@
 """
 The pike tool steps (split-spreads, OCR, alt text, figures, PDF tagging and
 building) as Dagster runs them: `digtk workspace run <target> --steps ...
-[--file <name>]` commands built from a lib.configs.ToolStepsConfig. Shared by
-lib.pipeline_workspace.workspace_process (workspace folders) and
-lib.pipeline_item.gold_dcs_process_item (bronze items, outputs to silver).
+[--file <name>]` commands built from a lib.configs.ToolStepsConfig. Used by
+lib.pipeline_workspace.workspace_process (workspace folders).
 """
 from lib.fanout_batching import emit, relative_id
 from lib.utils import exec

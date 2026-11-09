@@ -128,7 +128,8 @@ def derivatives(target, opts={}):
         or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'resolutions' (comma-separated str, default
         CONFIG["video"]["resolutions"]); 'language'/'model' for the caption step (see
-        captions.transcribe_sources()); forwarded to ffmpeg_utils.
+        captions.transcribe_sources()); 'force' (bool — regenerate outputs an
+        earlier run already published; skipped by default); forwarded to ffmpeg_utils.
     :returns: {"status": "success", "item": str (item path), "stream": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}, "captions": {...}}
     :rtype: dict
@@ -137,41 +138,63 @@ def derivatives(target, opts={}):
     item = items.resolve_target(target)
     video_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "video")
     start = time.monotonic()
+    command = ["digtk", "video", "derivatives", items.item_id(item), "--resolutions", ",".join(resolutions)]
+
+    # The HLS ladder is one unit: done when every file its manifest lists exists.
+    captioned = captions.caption_status(item, video_paths, opts)
+    streams = {}
+    for path in video_paths:
+        existing = pipeline.existing_outputs(
+            item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{os.path.basename(path)}/streaming",
+            {"force": opts.get("force"), "params": {"resolutions": resolutions}},
+        )
+        outputs = set((existing["manifest"] or {}).get("outputs", []))
+        streams[path] = existing if "playlist.m3u8" in outputs and outputs <= existing["files"] else None
+    pending = [path for path in video_paths if not (streams[path] and captioned[path])]
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": video_paths})
-        total = len(sources)
+        staged = {}
+        if pending:
+            staged = {src["bronze_path"]: src for src in pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pending})}
+        total = len(video_paths)
         stream_results = {}
 
-        for i, src in enumerate(sources, start=1):
-            stem = src["stem"]
-            filename = os.path.basename(src["bronze_path"])
-            utils.log(f"[{i}/{total}] {stem}: transcoding HLS ladder ({', '.join(resolutions)})...")
+        for i, bronze_path in enumerate(video_paths, start=1):
+            filename = os.path.basename(bronze_path)
+            stem = os.path.splitext(filename)[0]
+            prefix = f"[{i}/{total}] {stem}"
+            if streams[bronze_path]:
+                pipeline.log_skip(prefix, "HLS ladder")
+                existing = streams[bronze_path]
+                stream_results[filename] = {"dir": existing["dir"], "outputs": existing["manifest"]["outputs"], "manifest": existing["manifest"], "skipped": True}
+                continue
+
+            utils.log(f"{prefix}: transcoding HLS ladder ({', '.join(resolutions)})...")
             stage_dir = os.path.join(tmp_dir, f"{stem}-stream")
             os.makedirs(stage_dir, exist_ok=True)
-            ladder = ffmpeg_utils.hls_ladder(src["local_path"], stage_dir, resolutions, opts)
+            ladder = ffmpeg_utils.hls_ladder(staged[bronze_path]["local_path"], stage_dir, resolutions, opts)
             stream_outputs = []
             for rung in ladder["rungs"]:
-                for path in (rung["playlist_path"], rung["segment_path"]):
-                    stream_outputs.append((os.path.basename(path), path, src["bronze_path"]))
-            stream_outputs.append(("playlist.m3u8", ladder["master_playlist_path"], src["bronze_path"]))
+                for rung_path in (rung["playlist_path"], rung["segment_path"]):
+                    stream_outputs.append((os.path.basename(rung_path), rung_path, bronze_path))
+            stream_outputs.append(("playlist.m3u8", ladder["master_playlist_path"], bronze_path))
 
             stream_results[filename] = pipeline.publish(
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}/streaming", stream_outputs,
-                command=["digtk", "video", "derivatives", items.item_id(item), "--resolutions", ",".join(resolutions)],
+                command=command,
                 params={"resolutions": resolutions},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
                     "link_relation": _LINK_RELATION,
                 },
             )
-            utils.log(f"[{i}/{total}] {stem}: done")
+            utils.log(f"{prefix}: done")
 
         utils.log("Transcribing captions...")
         captions_result = captions.transcribe_sources(
-            item, sources, tmp_dir,
-            command=["digtk", "video", "derivatives", items.item_id(item), "--resolutions", ",".join(resolutions)],
-            opts=opts,
+            item, [staged[path] for path in video_paths if path in staged], tmp_dir,
+            command=command,
+            opts={**opts, "captioned": captioned},
         )
 
     return {"status": "success", "item": items.item_id(item), "stream": stream_results, "captions": captions_result}

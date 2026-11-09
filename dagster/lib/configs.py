@@ -177,8 +177,7 @@ class RebuildTreeConfig(Config):
 
 class ToolStepsConfig(Config):
     """Which `digtk workspace run` tool steps to run, plus each step's options.
-    Shared by WorkspaceRunConfig (outputs to the workspace folder's
-    derivatives/) and ItemRunConfig (outputs to the bronze item's silver folder).
+    Base of WorkspaceRunConfig (outputs to the workspace folder's derivatives/).
 
     Every step is off by default. Steps always run in
     digtk.models.workspace.STEP_ORDER regardless of which are ticked;
@@ -288,27 +287,37 @@ class CollectionDerivativesConfig(DerivativesConfig):
     )
 
 
-class ItemRunConfig(CollectionDerivativesConfig, ToolStepsConfig):
+class ItemRunConfig(CollectionDerivativesConfig):
     """Config for lib.pipeline_item.gold_dcs_process_item — one item, addressed by
-    its bronze tree folder, plus CollectionDerivativesConfig's widths/max_steps
-    and ToolStepsConfig's optional tool steps (outputs go to the item's silver folder).
+    its bronze tree folder, plus CollectionDerivativesConfig's widths/max_steps.
 
     `item` defaults to "" only because lib.utils.default_run_config() builds
     the launchpad defaults with `cls()`; pdc_plan_item rejects an empty value.
 
     :param str widths: Comma-separated thumbnail widths.
-    :param int max_steps: Most derivative and tool steps the item's files may
+    :param int max_steps: Most derivative steps the item's files may
         produce; past that, several files share a step (see lib.fanout_batching). 0 = never batch.
     :param str item: The item's bronze folder, e.g.
         "bronze/preservica/haeger/latest/tree/quarter-mile" ('cask:/' and a
         leading '/' are accepted too).
     :param bool index_es: Index the item into the showcase Elasticsearch index
         (`digtk showcase es upsert`) once it's finalized.
+    :param bool force: Regenerate derivatives that already exist.
     """
     item: str = Field(
         "", description="Bronze folder of the item, e.g. bronze/preservica/haeger/latest/tree/quarter-mile.",
     )
     index_es: bool = Field(True, description="Index the item into the showcase Elasticsearch index afterwards.")
+    force: bool = Field(False, description="Regenerate derivatives that already exist (default: skip them).")
+
+
+class ProcessCollectionConfig(Config):
+    """Config for lib.pipeline_collection.gold_dcs_process_collection.
+
+    :param bool force: Queue every item with force set, so existing
+        derivatives are regenerated instead of skipped.
+    """
+    force: bool = Field(False, description="Regenerate derivatives that already exist (default: skip them).")
 
 
 class ReindexCollectionConfig(Config):

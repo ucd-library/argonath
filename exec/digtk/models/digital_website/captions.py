@@ -70,6 +70,28 @@ def attach_captions(item, entries):
     return attached
 
 
+def caption_status(item, bronze_paths, opts={}):
+    """Which sources already have a published caption, so a derivatives run
+    can skip transcribing them (and staging them, if nothing else is missing).
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param list[str] bronze_paths: Every video/audio source in the run, in order.
+    :param dict opts: 'language' (str, default CONFIG["captions"]["language"]),
+        'force' (bool — report nothing as published).
+    :returns: {bronze_path: published caption filename, or None}, in order.
+    :rtype: dict
+    """
+    language = opts.get("language", CONFIG["captions"]["language"])
+    multi = len(bronze_paths) > 1
+    published = pipeline.existing_outputs(item, "captions", {"force": opts.get("force")})["files"]
+    status = {}
+    for path in bronze_paths:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        filename = pipeline.output_name(stem, f"output-{language}.vtt", multi)
+        status[path] = filename if filename in published else None
+    return status
+
+
 def transcribe_sources(item, sources, tmp_dir, command, opts={}):
     """Transcribe an already-staged set of source video/audio files to WebVTT
     caption files (see attach_captions() for how they reach the search index).
@@ -77,11 +99,11 @@ def transcribe_sources(item, sources, tmp_dir, command, opts={}):
     Called directly by video.derivatives()/audio.derivatives() using the sources
     they've already staged into their own tmp_dir — never re-stages, so captions
     generate as part of that same derivative run rather than a separate pass.
+    Sources already captioned (opts['captioned']) are skipped and kept.
 
     :param digtk.lib.items.ItemLocation item: Resolved item location.
     :param list[dict] sources: Already-staged sources (see pipeline.stage_sources()) —
-        every source video.derivatives()/audio.derivatives() is generating other
-        derivatives for in this same run.
+        every source still needing a caption.
     :param str tmp_dir: Local directory to write caption files into (the caller's own
         tmp_dir — shared, not a new one).
     :param list[str] command: Full argv of the umbrella command driving this call
@@ -89,24 +111,32 @@ def transcribe_sources(item, sources, tmp_dir, command, opts={}):
         manifest/lineage the same way every other publish() call in that run is.
     :param dict opts: 'language' (str, default CONFIG["captions"]["language"]), 'model'
         (str, default CONFIG["captions"]["model"], must be one of
-        digtk.lib.whisper_utils.MODEL_CHOICES).
+        digtk.lib.whisper_utils.MODEL_CHOICES), 'captioned' (caption_status()'s
+        return covering every source in the run; default: none captioned).
     :returns: {"dir": str, "outputs": [...], "manifest": {...}}
     :rtype: dict
     """
     language = opts.get("language", CONFIG["captions"]["language"])
     model = opts.get("model", CONFIG["captions"]["model"])
     start = time.monotonic()
-    total = len(sources)
+    captioned = opts.get("captioned") or {src["bronze_path"]: None for src in sources}
+    staged = {src["bronze_path"]: src for src in sources}
+    total = len(captioned)
     multi = total > 1
-    local_outputs = []
+    local_outputs, kept_outputs = [], []
 
-    for i, src in enumerate(sources, start=1):
-        stem = src["stem"]
+    for i, bronze_path in enumerate(captioned, start=1):
+        stem = os.path.splitext(os.path.basename(bronze_path))[0]
+        if captioned[bronze_path]:
+            pipeline.log_skip(f"[{i}/{total}] {stem}", "caption")
+            kept_outputs.append((captioned[bronze_path], bronze_path))
+            continue
+        src = staged[bronze_path]
         utils.log(f"[{i}/{total}] {stem}: transcribing (model={model})...")
         filename = pipeline.output_name(stem, f"output-{language}.vtt", multi)
         local_dest = os.path.join(tmp_dir, filename)
         whisper_utils.transcribe(src["local_path"], local_dest, opts=opts)
-        local_outputs.append((filename, local_dest, src["bronze_path"]))
+        local_outputs.append((filename, local_dest, bronze_path))
 
     result = pipeline.publish(
         item, "captions", local_outputs,
@@ -115,6 +145,7 @@ def transcribe_sources(item, sources, tmp_dir, command, opts={}):
         opts={
             "manifest_opts": {"duration_s": time.monotonic() - start},
             "link_relation": _LINK_RELATION,
+            "kept_outputs": kept_outputs,
         },
     )
 

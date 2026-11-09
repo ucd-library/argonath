@@ -4,6 +4,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from digtk.lib.fs.paths import DirEntry
 from digtk.lib.items import ItemLocation
 from digtk.models.digital_website import pipeline
 from digtk.models.digital_website import pdf as pd
@@ -68,9 +69,22 @@ def fake_fs(monkeypatch):
         yield iter([PDF_BYTES_BY_PATH[path]])
 
     monkeypatch.setattr(pipeline.fs, "read_stream", fake_read_stream)
+    # Already-published files, {dir: {filename: bytes}}.
+    published = {}
+
+    def fake_ls(path, opts={}):
+        if path not in published:
+            raise FileNotFoundError(path)
+        return [DirEntry(name=name, path=f"{path}/{name}", kind="file") for name in published[path]]
+
+    def fake_read(path, opts={}):
+        folder, name = path.rsplit("/", 1)
+        return published.get(folder, {}).get(name, b"{}")
+
     monkeypatch.setattr(pipeline.fs, "exists", lambda path: False)
-    monkeypatch.setattr(pipeline.fs, "read", lambda path: b"{}")
-    return {"read_stream_calls": read_stream_calls}
+    monkeypatch.setattr(pipeline.fs, "ls", fake_ls)
+    monkeypatch.setattr(pipeline.fs, "read", fake_read)
+    return {"read_stream_calls": read_stream_calls, "published": published}
 
 
 @pytest.fixture
@@ -470,3 +484,135 @@ def test_derivatives_mixed_item_namespaces_pdf_ocr_dir(
     rel_paths = {c["rel_path"] for c in fake_derivative}
     assert "item/document/ocr/manifest.json" in rel_paths
     assert not any(p.startswith("item/ocr/") for p in rel_paths)
+
+
+# --- skipping already-published outputs ----------------------------------------
+
+def _publish_writes(fake_fs, calls):
+    """Move recorded writes into fake_fs's published listing, as a real run would."""
+    for c in calls:
+        dest = "cask:" + pipeline.derivative.dest_path(
+            type=c["type"], collection=c["collection"], rel_path=c["rel_path"], opts=c.get("opts", {}),
+        )
+        folder, name = dest.rsplit("/", 1)
+        fake_fs["published"].setdefault(folder, {})[name] = c["data"]
+    calls.clear()
+
+
+def _no_ocr(candidates, opts={}):
+    raise AssertionError("orientation OCR should have been skipped")
+
+
+def _reset(calls):
+    for kind in calls:
+        calls[kind].clear()
+
+
+def test_derivatives_skips_fully_published_pdf_without_downloading(
+    fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch,
+):
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("deskewed"))
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
+    _publish_writes(fake_fs, fake_derivative)
+    fake_fs["read_stream_calls"].clear()
+    fake_pdf_render["rasterize"].clear()
+    _reset(fake_image_magick)
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", _no_ocr)
+
+    result = pd.derivatives(ARK, opts={"widths": WIDTHS})
+
+    assert fake_fs["read_stream_calls"] == []
+    assert fake_pdf_render["rasterize"] == []
+    assert all(not calls for calls in fake_image_magick.values())
+    # Only the two aggregate manifests are rewritten.
+    assert sorted(c["rel_path"] for c in fake_derivative) == [
+        "item/ocr/manifest.json",
+        "item/public-frontend-derivatives/document.pdf/images/manifest.json",
+    ]
+    doc = result["pdfs"]["document.pdf"]
+    assert doc["pages"] == 2
+    assert doc["orientation"]["1"]["deskew"] is True
+    aggregate = json.loads(next(c["data"] for c in fake_derivative if c["rel_path"].endswith("images/manifest.json")))
+    assert [p["page"] for p in aggregate["pages"]] == [1, 2]
+
+
+def test_derivatives_regenerates_only_missing_tiled_tiff(
+    fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch,
+):
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
+    _publish_writes(fake_fs, fake_derivative)
+    page_2 = "cask:/silver/g/c/latest/item/public-frontend-derivatives/document.pdf/images/2"
+    del fake_fs["published"][page_2]["tiled.tif"]
+    fake_pdf_render["rasterize"].clear()
+    _reset(fake_image_magick)
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", _no_ocr)
+
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
+
+    assert [c["page_index"] for c in fake_pdf_render["rasterize"]] == [1]
+    assert len(fake_image_magick["tile"]) == 1
+    assert fake_image_magick["thumbnail"] == []
+    assert fake_image_magick["prep_ocr"] == []
+    written = sorted(c["rel_path"] for c in fake_derivative)
+    assert "item/public-frontend-derivatives/document.pdf/images/2/tiled.tif" in written
+    assert not any(path.endswith(".jpg") for path in written)
+    manifest = json.loads(next(
+        c["data"] for c in fake_derivative
+        if c["rel_path"] == "item/public-frontend-derivatives/document.pdf/images/2/manifest.json"
+    ))
+    assert sorted(manifest["outputs"]) == ["large.jpg", "medium.jpg", "small.jpg", "tiled.tif"]
+    assert manifest["small"]["url"].endswith("/images/2/small.jpg")
+
+
+def test_derivatives_regenerates_missing_prep_without_ocr(
+    fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch,
+):
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("deskewed"))
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
+    _publish_writes(fake_fs, fake_derivative)
+    del fake_fs["published"]["cask:/silver/g/c/latest/item/ocr/page-000"]["document-page-000-prep-deskew.jpg"]
+    _reset(fake_image_magick)
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", _no_ocr)
+
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
+
+    # Stored decision reused: one deskewed prep, no candidates.
+    assert len(fake_image_magick["prep_ocr"]) == 1
+    assert fake_image_magick["prep_ocr"][0]["opts"]["deskew"] is True
+    assert fake_image_magick["tile"] == []
+    ocr_manifest = json.loads(next(
+        c["data"] for c in fake_derivative if c["rel_path"] == "item/ocr/page-000/manifest.json"
+    ))
+    assert sorted(ocr_manifest["outputs"]) == ["document-page-000-prep-deskew.jpg", "ocr-stats.json", "ocr.djvu"]
+
+
+def test_derivatives_force_regenerates_everything(
+    fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch,
+):
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
+    _publish_writes(fake_fs, fake_derivative)
+    fake_pdf_render["rasterize"].clear()
+    _reset(fake_image_magick)
+
+    pd.derivatives(ARK, opts={"widths": WIDTHS, "force": True})
+
+    assert len(fake_pdf_render["rasterize"]) == 2
+    assert len(fake_image_magick["tile"]) == 2
+    assert len(fake_image_magick["thumbnail"]) == 6
+
+
+def test_derivatives_new_widths_regenerate_thumbnails(
+    fake_fs, fake_pdf_render, fake_derivative, fake_image_magick, fake_djvu, monkeypatch,
+):
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
+    pd.derivatives(ARK, opts={"widths": WIDTHS})
+    _publish_writes(fake_fs, fake_derivative)
+    _reset(fake_image_magick)
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", _no_ocr)
+
+    pd.derivatives(ARK, opts={"widths": "200,400,800"})
+
+    assert [c["width"] for c in fake_image_magick["thumbnail"]] == [200, 400, 800, 200, 400, 800]
+    assert fake_image_magick["prep_ocr"] == []

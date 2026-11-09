@@ -257,8 +257,9 @@ def enqueue_collection(key, opts={}):
 
     :param str key: Collection key, e.g. "bronze/preservica/haeger".
     :param dict opts: 'batch' (str — recorded on each row, e.g. the launching
-        Dagster run id), 'trigger' (str, default "collection"), 'conn'
-        (injectable psycopg2 connection).
+        Dagster run id), 'trigger' (str, default "collection"), 'force' (bool —
+        recorded on each row so its run regenerates existing derivatives),
+        'conn' (injectable psycopg2 connection).
     :returns: {"collection", "items": int, "added": int, "enqueued": int}.
     :rtype: dict
     """
@@ -278,6 +279,8 @@ def enqueue_collection(key, opts={}):
     extra = {"trigger": opts.get("trigger", "collection")}
     if opts.get("batch"):
         extra["batch"] = opts["batch"]
+    if opts.get("force"):
+        extra["force"] = True
 
     with _transaction(opts) as cur:
         coll = _upsert_collection(cur, key, info)

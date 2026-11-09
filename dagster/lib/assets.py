@@ -3,7 +3,7 @@ Dagster asset definitions for the Argonath pipeline.
 
 The bronze assets: importing a Preservica collection, reconciling a
 collection against its source, and rebuilding its tree/ layout. Each calls the
-digtk CLI via exec(). Per-item work (derivatives and the pike tools) runs as
+digtk CLI via exec(). Per-item derivative work runs as
 lib.pipeline_item.gold_dcs_process_item, not as assets.
 """
 import dagster as dg

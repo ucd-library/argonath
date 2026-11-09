@@ -10,12 +10,12 @@ Submodule layout (all files live alongside this one in dagster/):
   lib/pipeline_fanout.py — per-item derivative helpers for
                             gold_dcs_process_item (see its own docstring)
   lib/tool_steps.py      — the pike tool steps (OCR, alt text, PDF tagging...),
-                            shared by workspace_process and gold_dcs_process_item
+                            used by workspace_process
   lib/pipeline_workspace.py — workspace_process, the same fan-out pattern
                             over a CaskFS workspace collection (scans staged
                             before they have an ARK; see its own docstring)
   lib/pipeline_item.py   — gold_dcs_process_item, an unpartitioned run of one item's
-                            derivatives and ticked tool steps (addressed by its
+                            showcase derivatives (addressed by its
                             bronze tree folder), finalize and Elasticsearch upsert, plus
                             process_item_failure
                             (see its own docstring)

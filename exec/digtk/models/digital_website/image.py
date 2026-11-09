@@ -241,6 +241,10 @@ def generate(target, opts={}):
     this. All local generation happens before anything is published to CaskFS, so
     a failure at any step leaves no partial derivative set behind.
 
+    Outputs an earlier run already published are skipped step by step (see
+    _source_status()); an image whose outputs are all done isn't even
+    downloaded. opts['force'] regenerates everything.
+
     That per-source images/ manifest also carries an "extra" block — "original"/
     "small"/"medium"/"large"/"tiled"/"ocr" keys, each a {"size", "url"} pair (size
     is a {"width", "height"} dict of strings, or a list of them for "tiled"'s
@@ -267,7 +271,7 @@ def generate(target, opts={}):
         CONFIG["image"]["thumbnail_widths"]) — must resolve to exactly 3 widths
         (small/medium/large); 'files' (iterable of bronze paths or filenames,
         optional — per-file mode, see above; see pipeline.select_binaries());
-        forwarded to image_magick/ocr_utils: 'quality', 'dpi', 'fuzz', 'threshold', etc.
+        'force' (bool — regenerate existing outputs); forwarded to image_magick/ocr_utils: 'quality', 'dpi', 'fuzz', 'threshold', etc.
     :returns: {"status": "success", "item": str (item path), "derivatives": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}, "ocr": {...} ("manifest" None in
         per-file mode), "orientation": {stem: {"deskew": bool, "stats": {...}}, ...},
@@ -282,95 +286,47 @@ def generate(target, opts={}):
     selected = pipeline.select_binaries(image_paths, files) if files else image_paths
     start = time.monotonic()
     multi = len(image_paths) > 1
+    total = len(selected)
+
+    # Look up what earlier runs published, so finished images aren't downloaded.
+    ocr_existing = pipeline.existing_outputs(item, "ocr", {"force": opts.get("force")})
+    statuses = {path: _source_status(item, path, multi, widths, ocr_existing["files"], opts) for path in selected}
+    pending = [path for path in selected if not statuses[path]["complete"]]
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": selected})
-        total = len(sources)
+        staged = {}
+        if pending:
+            staged = {src["bronze_path"]: src for src in pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pending})}
 
         derivatives_results = {}
-        ocr_outputs = []
+        ocr_outputs, kept_ocr = [], []
         orientations = {}
         command = ["digtk", "image", "derivatives", items.item_id(item), "--widths", ",".join(map(str, widths))]
         for path in (selected if files else []):
             command += ["--file", path]
 
-        for i, src in enumerate(sources, start=1):
-            stem = src["stem"]
-            filename = os.path.basename(src["bronze_path"])
-            utils.log(f"[{i}/{total}] {stem}: deciding orientation (running OCR twice)...")
-            orientation = pipeline.select_orientation(src["local_path"], tmp_dir, opts)
-            apply_deskew = orientation["deskew"]
-            orientations[stem] = orientation
-            utils.log(f"[{i}/{total}] {stem}: orientation={'deskewed' if apply_deskew else 'original'}")
+        for i, bronze_path in enumerate(selected, start=1):
+            filename = os.path.basename(bronze_path)
+            stem = os.path.splitext(filename)[0]
+            prefix = f"[{i}/{total}] {stem}"
+            status = statuses[bronze_path]
+            if status["complete"]:
+                pipeline.log_skip(prefix, "all derivatives")
+                stored = status["orientation"]
+                orientations[stem] = {"deskew": stored["deskew_selected"], "stats": stored.get("stats"), "skipped": True}
+                kept_ocr += [(fn, bronze_path) for fn in (status["prep"], *status["ocr_layer_names"])]
+                images = status["images"]
+                derivatives_results[filename] = {"dir": images["dir"], "outputs": sorted(images["files"]), "manifest": images["manifest"], "skipped": True}
+                continue
 
-            utils.log(f"[{i}/{total}] {stem}: generating {len(widths)} thumbnail(s)...")
-            thumb_set = pipeline.generate_thumbnail_set(
-                src["local_path"], tmp_dir, widths, stem, {**opts, "deskew": apply_deskew}
-            )
-            thumb_outputs = [(fn, local_path, src["bronze_path"]) for fn, local_path in thumb_set]
-
-            utils.log(f"[{i}/{total}] {stem}: generating tiled pyramid TIFF...")
-            tile_dest = os.path.join(tmp_dir, f"{stem}-tiled.tif")
-            image_magick.tile(src["local_path"], tile_dest, opts)
-            thumb_outputs.append(("tiled.tif", tile_dest, src["bronze_path"]))
-
-            utils.log(f"[{i}/{total}] {stem}: generating OCR-prep image...")
-            base_prep_name = "prep-deskew.jpg" if apply_deskew else "prep.jpg"
-            prep_filename = pipeline.output_name(stem, base_prep_name, multi)
-            prep_path = os.path.join(tmp_dir, prep_filename)
-            image_magick.prep_ocr(src["local_path"], prep_path, opts={**opts, "deskew": apply_deskew})
-            ocr_outputs.append((prep_filename, prep_path, src["bronze_path"]))
-
-            utils.log(f"[{i}/{total}] {stem}: probing derivative dimensions...")
-            size_by_label = {label: image_magick.probe_dimensions(local_path) for label, (fn, local_path) in zip(pipeline.THUMBNAIL_SIZE_LABELS, thumb_set)}
-            images_dir = pipeline.derivative_dir(item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images")
-            ocr_dir = pipeline.derivative_dir(item, "ocr")
-
-            utils.log(f"[{i}/{total}] {stem}: building OCR text layer...")
-            ocr_products = pipeline.build_ocr_products(orientation, tmp_dir, stem, multi, size_by_label["large"], opts)
-            for ocr_filename, ocr_local_path in ocr_products:
-                ocr_outputs.append((ocr_filename, ocr_local_path, src["bronze_path"]))
-            djvu_filename = ocr_products[0][0]
-
-            manifest_extra = {
-                "original": {
-                    "size": pipeline.size_as_strings(image_magick.probe_dimensions(src["local_path"])),
-                    "url": pipeline.cask_public_ref(src["bronze_path"]),
-                },
-                **{
-                    label: {
-                        "size": pipeline.size_as_strings(size_by_label[label]),
-                        "url": pipeline.cask_public_ref(f"{images_dir}/{label}.jpg"),
-                    }
-                    for label in pipeline.THUMBNAIL_SIZE_LABELS
-                },
-                "tiled": {
-                    "size": [pipeline.size_as_strings(d) for d in image_magick.probe_all_frame_dimensions(tile_dest)],
-                    "url": pipeline.cask_public_ref(f"{images_dir}/tiled.tif"),
-                },
-                "ocr": {
-                    "size": pipeline.size_as_strings(size_by_label["large"]),
-                    "imageSize": "large",
-                    "url": pipeline.cask_public_ref(f"{ocr_dir}/{djvu_filename}"),
-                },
-            }
-
-            utils.log(f"[{i}/{total}] {stem}: publishing derivative set...")
-            derivatives_result = pipeline.publish(
-                item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images", thumb_outputs,
-                command=command,
-                params={
-                    "widths": widths,
-                    "orientation": {"deskew_selected": apply_deskew, "stats": orientation["stats"]},
-                },
-                opts={
-                    "manifest_opts": {"extra": manifest_extra},
-                    "link_relation": _LINK_RELATION_BY_SUBDIR["derivatives"],
-                },
-            )
-            derivatives_results[filename] = derivatives_result
-
-            utils.log(f"[{i}/{total}] {stem}: done")
+            result = _generate_source(item, staged[bronze_path], tmp_dir, {
+                "prefix": prefix, "status": status, "widths": widths, "multi": multi, "command": command,
+            }, opts)
+            orientations[stem] = result["orientation"]
+            ocr_outputs += result["ocr_outputs"]
+            kept_ocr += result["kept_ocr"]
+            derivatives_results[filename] = result["images"]
+            utils.log(f"{prefix}: done")
 
         duration_s = time.monotonic() - start
         utils.log(f"Publishing {len(ocr_outputs)} OCR-prep file(s)...")
@@ -389,6 +345,7 @@ def generate(target, opts={}):
                 # Per-file runs share ocr/ with the item's other images; its
                 # manifest is written once, by finalize().
                 "manifest": not files,
+                "kept_outputs": kept_ocr,
             },
         )
 
@@ -400,6 +357,158 @@ def generate(target, opts={}):
         "orientation": orientations,
         "finalized": not files,
     }
+
+
+def _source_status(item, bronze_path, multi, widths, ocr_files, opts):
+    """Which of one source image's outputs an earlier run already published.
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param str bronze_path: The source image's bronze path.
+    :param bool multi: True if the item has more than one image.
+    :param list[int] widths: Current thumbnail widths.
+    :param set[str] ocr_files: Filenames already published in the item's ocr/.
+    :param dict opts: 'force' (bool) — report nothing as published.
+    :returns: pipeline.derivative_set_status()'s return, plus
+        "ocr_layer_names" (this source's djvu and stats filenames).
+    :rtype: dict
+    """
+    filename = os.path.basename(bronze_path)
+    stem = os.path.splitext(filename)[0]
+    images = pipeline.existing_outputs(
+        item, f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images",
+        {"force": opts.get("force"), "params": {"widths": widths}},
+    )
+    ocr_layer_names = [pipeline.output_name(stem, "ocr.djvu", multi), pipeline.output_name(stem, "ocr-stats.json", multi)]
+    status = pipeline.derivative_set_status(images, ocr_files, {
+        "prep": [pipeline.output_name(stem, "prep.jpg", multi), pipeline.output_name(stem, "prep-deskew.jpg", multi)],
+        "ocr_layer": ocr_layer_names,
+    }, {"required_keys": ["original"]})
+    return {**status, "ocr_layer_names": ocr_layer_names}
+
+
+def _generate_source(item, src, tmp_dir, source, opts):
+    """Generate and publish one source image's missing outputs, skipping any
+    an earlier run already published (see _source_status()). Its ocr/ files
+    are returned for generate()'s one combined ocr/ publish.
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param dict src: The staged source (pipeline.stage_sources() entry).
+    :param str tmp_dir: Local scratch directory.
+    :param dict source: 'prefix' (log prefix), 'status' (_source_status()),
+        'widths', 'multi', 'command'.
+    :param dict opts: generate()'s opts.
+    :returns: {"orientation", "images" (publish result), "ocr_outputs"
+        (new (filename, local_path, bronze_path) triples), "kept_ocr"
+        ((filename, bronze_path) pairs already published)}
+    :rtype: dict
+    """
+    status, prefix, widths, multi = source["status"], source["prefix"], source["widths"], source["multi"]
+    stem, bronze_path = src["stem"], src["bronze_path"]
+    filename = os.path.basename(bronze_path)
+    stored_manifest = status["images"]["manifest"] or {}
+
+    orientation = pipeline.reused_orientation(status)
+    if orientation:
+        pipeline.log_skip(prefix, "orientation decision")
+    else:
+        utils.log(f"{prefix}: deciding orientation (running OCR twice)...")
+        orientation = pipeline.select_orientation(src["local_path"], tmp_dir, opts)
+    apply_deskew = orientation["deskew"]
+    utils.log(f"{prefix}: orientation={'deskewed' if apply_deskew else 'original'}")
+
+    image_outputs, kept_images = [], []
+    if status["thumbnails"]:
+        pipeline.log_skip(prefix, f"{len(widths)} thumbnail(s)")
+        kept_images += [(f"{label}.jpg", bronze_path) for label in pipeline.THUMBNAIL_SIZE_LABELS]
+        size_by_label = {label: pipeline.stored_size(stored_manifest[label]) for label in pipeline.THUMBNAIL_SIZE_LABELS}
+    else:
+        utils.log(f"{prefix}: generating {len(widths)} thumbnail(s)...")
+        thumb_set = pipeline.generate_thumbnail_set(
+            src["local_path"], tmp_dir, widths, stem, {**opts, "deskew": apply_deskew}
+        )
+        image_outputs += [(fn, local_path, bronze_path) for fn, local_path in thumb_set]
+
+    tile_dest = None
+    if status["tiled"]:
+        pipeline.log_skip(prefix, "tiled pyramid TIFF")
+        kept_images.append(("tiled.tif", bronze_path))
+    else:
+        utils.log(f"{prefix}: generating tiled pyramid TIFF...")
+        tile_dest = os.path.join(tmp_dir, f"{stem}-tiled.tif")
+        image_magick.tile(src["local_path"], tile_dest, opts)
+        image_outputs.append(("tiled.tif", tile_dest, bronze_path))
+
+    ocr_outputs, kept_ocr = [], []
+    if status["prep"]:
+        pipeline.log_skip(prefix, "OCR-prep image")
+        kept_ocr.append((status["prep"], bronze_path))
+    else:
+        utils.log(f"{prefix}: generating OCR-prep image...")
+        base_prep_name = "prep-deskew.jpg" if apply_deskew else "prep.jpg"
+        prep_filename = pipeline.output_name(stem, base_prep_name, multi)
+        prep_path = os.path.join(tmp_dir, prep_filename)
+        image_magick.prep_ocr(src["local_path"], prep_path, opts={**opts, "deskew": apply_deskew})
+        ocr_outputs.append((prep_filename, prep_path, bronze_path))
+
+    utils.log(f"{prefix}: probing derivative dimensions...")
+    if not status["thumbnails"]:
+        size_by_label = {label: image_magick.probe_dimensions(local_path) for label, (fn, local_path, _) in zip(pipeline.THUMBNAIL_SIZE_LABELS, image_outputs)}
+    tiled_size = (
+        [pipeline.size_as_strings(d) for d in image_magick.probe_all_frame_dimensions(tile_dest)]
+        if tile_dest else stored_manifest["tiled"]["size"]
+    )
+    images_subdir = f"{pipeline.PUBLIC_FRONTEND_DIR}/images/{filename}/images"
+    images_dir = pipeline.derivative_dir(item, images_subdir)
+    ocr_dir = pipeline.derivative_dir(item, "ocr")
+
+    if status["ocr_layer"]:
+        pipeline.log_skip(prefix, "OCR text layer")
+        kept_ocr += [(fn, bronze_path) for fn in status["ocr_layer_names"]]
+        djvu_filename = status["ocr_layer_names"][0]
+    else:
+        utils.log(f"{prefix}: building OCR text layer...")
+        ocr_products = pipeline.build_ocr_products(orientation, tmp_dir, stem, multi, size_by_label["large"], opts)
+        ocr_outputs += [(fn, local_path, bronze_path) for fn, local_path in ocr_products]
+        djvu_filename = ocr_products[0][0]
+
+    manifest_extra = {
+        "original": {
+            "size": pipeline.size_as_strings(image_magick.probe_dimensions(src["local_path"])),
+            "url": pipeline.cask_public_ref(bronze_path),
+        },
+        **{
+            label: {
+                "size": pipeline.size_as_strings(size_by_label[label]),
+                "url": pipeline.cask_public_ref(f"{images_dir}/{label}.jpg"),
+            }
+            for label in pipeline.THUMBNAIL_SIZE_LABELS
+        },
+        "tiled": {
+            "size": tiled_size,
+            "url": pipeline.cask_public_ref(f"{images_dir}/tiled.tif"),
+        },
+        "ocr": {
+            "size": pipeline.size_as_strings(size_by_label["large"]),
+            "imageSize": "large",
+            "url": pipeline.cask_public_ref(f"{ocr_dir}/{djvu_filename}"),
+        },
+    }
+
+    utils.log(f"{prefix}: publishing derivative set...")
+    images_result = pipeline.publish(
+        item, images_subdir, image_outputs,
+        command=source["command"],
+        params={
+            "widths": widths,
+            "orientation": {"deskew_selected": apply_deskew, "stats": orientation["stats"]},
+        },
+        opts={
+            "manifest_opts": {"extra": manifest_extra},
+            "link_relation": _LINK_RELATION_BY_SUBDIR["derivatives"],
+            "kept_outputs": kept_images,
+        },
+    )
+    return {"orientation": orientation, "images": images_result, "ocr_outputs": ocr_outputs, "kept_ocr": kept_ocr}
 
 
 def _read_manifests(item, image_paths):

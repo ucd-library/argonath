@@ -1,9 +1,8 @@
 """
-gold_dcs_process_item: run one item's showcase derivatives, plus any ticked
-tool steps, on demand. The job is unpartitioned, and the item is addressed by
-its bronze tree folder (ItemRunConfig.item, e.g.
-"bronze/preservica/haeger/latest/tree/quarter-mile") throughout the
-derivative, tool and finalize steps, which never need an ARK.
+gold_dcs_process_item: run one item's showcase derivatives on demand. The job
+is unpartitioned, and the item is addressed by its bronze tree folder
+(ItemRunConfig.item, e.g. "bronze/preservica/haeger/latest/tree/quarter-mile")
+throughout the derivative and finalize steps, which never need an ARK.
 pdc_generate_item_record is the first step to use one (read from the folder's
 identifiers.json when it builds the gold item.jsonld.json), and
 pdc_index_item's Elasticsearch upsert uses that ARK.
@@ -12,28 +11,19 @@ lib/pipeline_collection.py's gold_dcs_process_collection queues one run of
 this job per item. The graph:
 
   pdc_plan_item -> pdc_process_batch (mapped) -> collect -> pdc_finalize_item
-      -> pdc_build_item_pdf -> pdc_generate_item_record -> pdc_index_item
-      -> pdc_check_tool_failures
+      -> pdc_generate_item_record -> pdc_index_item
 
 pdc_plan_item lists the item's files (`digtk showcase formats --files`, which
-keeps Preservation masters over their Access copies) and fans out:
-  - showcase derivative tasks, always: one per image/PDF file, one per
-    video/audio item (lib/pipeline_fanout.py's item_tasks());
-  - tool tasks, only for the ToolStepsConfig steps ticked in the launchpad
-    (lib/tool_steps.py): one per file for OCR / alt text / figures / tag-pdf,
-    and one for split-spreads. They run `digtk workspace run <item>`, which
-    writes a bronze item's outputs to its silver folder (text/,
-    accessibility/, split-spreads/). split_detect and split_apply are meant to
-    be separate runs, with gutters.json reviewed in between.
+keeps Preservation masters over their Access copies) and fans out one
+showcase derivative task per image/PDF file, and one per video/audio item
+(lib/pipeline_fanout.py's item_tasks()). The pike tool steps (`digtk
+workspace run`) aren't part of this job; see lib.pipeline_workspace.
 
 pdc_finalize_item fails the run if any derivative failed, and only finalizes
-items with image or PDF outputs. pdc_build_item_pdf then runs pdf-build, if
-ticked, now that the file steps are done. pdc_generate_item_record runs
-`digtk showcase build-item <item>` (it reads any alt text the tool steps
-wrote) and needs an ark, so an ark-less item fails here. pdc_index_item runs
-`digtk showcase es upsert <ark>` (ItemRunConfig.index_es). A failed tool step
-doesn't stop the item being published: pdc_check_tool_failures fails the run
-afterwards instead.
+items with image or PDF outputs. pdc_generate_item_record runs `digtk
+showcase build-item <item>` and needs an ark, so an ark-less item fails
+here. pdc_index_item runs `digtk showcase es upsert <ark>`
+(ItemRunConfig.index_es).
 
 Task ids, events and digtk reporting rows use the item's collection key (the
 first three path segments, "bronze/[group]/[collection]"). Runs are tagged
@@ -44,7 +34,7 @@ argonath/item and argonath/collection at launch.
 
 Each run's outcome is recorded as the item's gold_dcs_process_item result in
 collection_state (see lib.collection_state): "success" once the item is
-indexed with no tool failures, and "failed" from the op that fails. A recorded
+indexed, and "failed" from the op that fails. A recorded
 result also tags the run argonath/result=<status>. process_item_failure
 records "failed" for failed runs without that tag, e.g. a crashed worker or an
 unexpected error, using the run's step errors. In-flight state isn't recorded:
@@ -73,7 +63,6 @@ from lib.pipeline_fanout import (
     finalize_one_item,
     item_tasks,
 )
-from lib.tool_steps import folder_tool_tasks, run_tool_task
 from lib.utils import celery_job_executor, default_run_config, exec
 
 
@@ -101,9 +90,8 @@ def normalize_item(path):
 
 @op(out={"tasks": DynamicOut(list), "item": Out(dict)})
 def pdc_plan_item(context: OpExecutionContext, config: ItemRunConfig):
-    """List the item's files and fan out its derivative tasks, plus a tool
-    task per file (and one for split-spreads) when tool steps are ticked,
-    batched so there are at most config.max_steps steps (see lib.fanout_batching).
+    """List the item's files and fan out its derivative tasks, batched so
+    there are at most config.max_steps steps (see lib.fanout_batching).
 
     An item that can't be listed at all (e.g. its bronze folder has no media)
     becomes a single error task, so the run reports it and fails. The item is
@@ -111,8 +99,7 @@ def pdc_plan_item(context: OpExecutionContext, config: ItemRunConfig):
     pdc_generate_item_record (see module docstring).
 
     :param context: Dagster op execution context (unpartitioned).
-    :param config: ItemRunConfig: the item folder, widths, max_steps, index_es
-        and the ToolStepsConfig steps and options.
+    :param config: ItemRunConfig: the item folder, widths, max_steps and index_es.
     :raises ValueError: If config.item is empty or isn't a bronze item folder.
     """
     if not config.item.strip():
@@ -122,7 +109,6 @@ def pdc_plan_item(context: OpExecutionContext, config: ItemRunConfig):
 
     context.instance.add_run_tags(context.run_id, {"argonath/item": item, "argonath/collection": collection_key})
 
-    tools = {"folder": None, "files": [], "document": None}
     listing = exec(["digtk", "showcase", "formats", item, "--files"], {"check": False})
     if listing.get("status") == "error" or listing.get("error"):
         error = listing.get("error") or f"listing formats failed: {listing}"
@@ -133,24 +119,11 @@ def pdc_plan_item(context: OpExecutionContext, config: ItemRunConfig):
         for task in tasks:
             if task["error"]:
                 context.log.error(f"[{task['item_id']}] {task['error']}")
-        files = listing.get("files") or {}
-        tools = folder_tool_tasks(
-            f"cask:/{item}", item_id, (files.get("image") or []) + (files.get("pdf") or []), config,
-            {"suffix": " (tools)", "extra": {"kind": "tool", "collection_key": collection_key}},
-        )
-
-    for task in tasks:
-        task["kind"] = "derivative"
-    tool_tasks = ([tools["folder"]] if tools["folder"] else []) + tools["files"]
 
     per_file = sum(1 for t in tasks if t["file"])
-    context.log.info(
-        f"{item}: {per_file} image/PDF task(s), {len(tasks) - per_file} item-level task(s), "
-        f"{len(tool_tasks)} tool task(s){', then pdf-build' if tools['document'] else ''}"
-    )
-    all_tasks = tasks + tool_tasks
-    grouped = batches(all_tasks, config.max_steps)
-    log_batching(context, "derivatives and tools", len(all_tasks), grouped, config.max_steps)
+    context.log.info(f"{item}: {per_file} image/PDF task(s), {len(tasks) - per_file} item-level task(s)")
+    grouped = batches(tasks, config.max_steps)
+    log_batching(context, "derivatives", len(tasks), grouped, config.max_steps)
     used = set()
     for group in grouped:
         yield DynamicOutput(group, output_name="tasks", mapping_key=step_key([t["id"] for t in group], used))
@@ -160,69 +133,38 @@ def pdc_plan_item(context: OpExecutionContext, config: ItemRunConfig):
         "collection_key": collection_key,
         "id": item_id,
         "index_es": config.index_es,
-        "document": tools["document"],
     }, output_name="item")
-
-
-def _run_task(context, task):
-    """Run one derivative or tool task. Never raises.
-
-    :param context: Dagster op execution context.
-    :param dict task: A pdc_plan_item task ("kind" is "derivative" or "tool").
-    :returns: The task's outcome: a derivative outcome (see
-        lib.pipeline_fanout._run_derivative_task()) or {"id", "ok", "errors"},
-        plus "kind".
-    :rtype: dict
-    """
-    if task["kind"] == "tool":
-        result = run_tool_task(context, task, {"collection": task["collection_key"]})
-        return {"kind": "tool", "id": task["id"], "ok": result["ok"] and not result["errors"], "errors": result["errors"]}
-    return {**_run_derivative_task(context, task), "kind": "derivative"}
 
 
 @op(ins={"tasks": In(list)}, out=Out(list))
 def pdc_process_batch(context: OpExecutionContext, tasks: list) -> list:
-    """Run one step's tasks — a single file's derivatives or tool steps, or a
-    batch of them. Failures are returned, not raised, so one bad file doesn't
-    stop the rest; pdc_finalize_item and pdc_check_tool_failures act on them.
+    """Run one step's tasks — a single file's derivatives, or a batch of them.
+    Failures are returned, not raised, so one bad file doesn't stop the rest;
+    pdc_finalize_item acts on them.
 
     :param context: Dagster op execution context.
     :param list[dict] tasks: pdc_plan_item tasks.
-    :returns: One outcome per task (see _run_task()).
+    :returns: One outcome per task (see lib.pipeline_fanout._run_derivative_task()).
     :rtype: list[dict]
     """
     log_batch(context, [t["id"] for t in tasks])
-    return [_run_task(context, task) for task in tasks]
-
-
-def _tool_errors(outcomes):
-    """
-    :param list[dict] outcomes: Tool task outcomes.
-    :returns: "id: error" for each failed tool step.
-    :rtype: list[str]
-    """
-    return [f"{o['id']}: {e}" for o in outcomes if not o["ok"] for e in (o["errors"] or ["failed"])]
+    return [_run_derivative_task(context, task) for task in tasks]
 
 
 @op
 def pdc_finalize_item(context: OpExecutionContext, results: list, item: dict) -> dict:
     """Fail the run if any derivative task failed; otherwise write the item's
     item-level outputs (`digtk showcase finalize`) if it has image or PDF
-    outputs. A video/audio-only item has nothing to finalize. Failed tool
-    tasks don't block: they're passed on as "tool_errors".
+    outputs. A video/audio-only item has nothing to finalize.
 
     :param context: Dagster op execution context.
     :param list[list[dict]] results: Every pdc_process_batch's outcomes.
     :param dict item: pdc_plan_item's item output.
-    :returns: The item dict plus "tool_errors" (list[str]).
+    :returns: The same item dict.
     :rtype: dict
     :raises RuntimeError: If any derivative task failed, or finalize failed.
     """
-    all_outcomes = [o for batch in results for o in batch]
-    outcomes = [o for o in all_outcomes if o["kind"] == "derivative"]
-    item = {**item, "tool_errors": _tool_errors([o for o in all_outcomes if o["kind"] == "tool"])}
-    for error in item["tool_errors"]:
-        context.log.error(f"[{item['id']}] tool step failed: {error}")
+    outcomes = [o for batch in results for o in batch]
 
     failed = [o for o in outcomes if not o["ok"]]
     if failed:
@@ -246,31 +188,10 @@ def pdc_finalize_item(context: OpExecutionContext, results: list, item: dict) ->
 
 
 @op
-def pdc_build_item_pdf(context: OpExecutionContext, item: dict) -> dict:
-    """Build the item's images into one tagged PDF (pdf-build), if ticked, now
-    that every file step (e.g. OCR it can reuse) has finished. A failure is
-    added to "tool_errors" rather than raised.
-
-    :param context: Dagster op execution context.
-    :param dict item: pdc_finalize_item's item dict.
-    :returns: The same item dict, with any pdf-build error added.
-    :rtype: dict
-    """
-    task = item["document"]
-    if not task:
-        return item
-    log_batch(context, [task["id"]])
-    result = run_tool_task(context, task, {"collection": item["collection_key"]})
-    if result["ok"] and not result["errors"]:
-        return item
-    return {**item, "tool_errors": item["tool_errors"] + _tool_errors([{**result, "id": task["id"], "ok": False}])}
-
-
-@op
 def pdc_generate_item_record(context: OpExecutionContext, item: dict) -> dict:
     """Assemble and write the item's complete, canonical gold item.jsonld.json
     (`digtk showcase build-item`) from its now-finalized derivatives, any alt
-    text the tool steps wrote, and bronze identifiers/metadata.
+    text already in its silver accessibility/ folder, and bronze identifiers/metadata.
 
     Unlike the steps before it, this one requires an ark and fails outright
     without one — the canonical public record needs a stable identifier (see
@@ -279,7 +200,7 @@ def pdc_generate_item_record(context: OpExecutionContext, item: dict) -> dict:
     tagged on the run (argonath/ark) and passed on to pdc_index_item.
 
     :param context: Dagster op execution context.
-    :param dict item: pdc_build_item_pdf's item dict.
+    :param dict item: pdc_finalize_item's item dict.
     :returns: The item dict plus its "ark", passed on to pdc_index_item.
     :rtype: dict
     :raises RuntimeError: If building the item record failed (including: no ark).
@@ -296,8 +217,7 @@ def pdc_generate_item_record(context: OpExecutionContext, item: dict) -> dict:
 @op
 def pdc_index_item(context: OpExecutionContext, item: dict) -> dict:
     """Index the item into the showcase Elasticsearch index (`digtk showcase es
-    upsert`) if ItemRunConfig.index_es is set, then record the job as a
-    success unless a tool step failed (see pdc_check_tool_failures).
+    upsert`) if ItemRunConfig.index_es is set, then record the job as a success.
 
     :param context: Dagster op execution context.
     :param dict item: pdc_generate_item_record's item dict (with "ark").
@@ -319,26 +239,8 @@ def pdc_index_item(context: OpExecutionContext, item: dict) -> dict:
         context.log.info(f"[{item['id']}] indexed {item['ark']} -> {result}")
     else:
         context.log.info(f"[{item['id']}] index_es off, not indexing")
-    if not item["tool_errors"]:
-        _record(context, item, "success")
+    _record(context, item, "success")
     return item
-
-
-@op
-def pdc_check_tool_failures(context: OpExecutionContext, item: dict):
-    """Fail the run if any tool step failed, after the item was published,
-    and record "failed" with those errors.
-
-    :param context: Dagster op execution context.
-    :param dict item: pdc_index_item's item dict.
-    :raises RuntimeError: If any tool step failed.
-    """
-    errors = item["tool_errors"]
-    if not errors:
-        return
-    error = f"{len(errors)} tool step(s) failed for {item['id']}: {'; '.join(errors)}"
-    _record(context, item, "failed", {"error": error})
-    raise RuntimeError(error)
 
 
 def _record(context, item, status, opts={}):
@@ -367,14 +269,11 @@ def gold_dcs_process_item():
     download files to gold, and updates elastic with the item record.
     Usually this is triggered from the item_queue sensor, by the
     bronze_collection_cask_audit sensor or the gold_dcs_process_collection job.
-    Pike tool outputs (OCR, alt text, figures, PDF tagging/building, split-spreads) are also
-    built if set in the launchpad.
     Collection item counts are updated in a separate cron job that runs every 5 minutes or so.
     """
     tasks, item = pdc_plan_item()
     results = tasks.map(pdc_process_batch).collect()
-    item = pdc_build_item_pdf(pdc_finalize_item(results, item))
-    pdc_check_tool_failures(pdc_index_item(pdc_generate_item_record(item)))
+    pdc_index_item(pdc_generate_item_record(pdc_finalize_item(results, item)))
 
 
 @dg.run_failure_sensor(

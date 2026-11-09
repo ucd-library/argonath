@@ -3,6 +3,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from digtk.lib.fs.paths import DirEntry
 from digtk.lib.items import ItemLocation
 from digtk.models.digital_website import audio as aw
 from digtk.models.digital_website import pipeline
@@ -42,9 +43,22 @@ def fake_fs(monkeypatch):
         yield iter([b"fake-audio-bytes"])
 
     monkeypatch.setattr(pipeline.fs, "read_stream", fake_read_stream)
+    # Already-published files, {dir: {filename: bytes}}.
+    published = {}
+
+    def fake_ls(path, opts={}):
+        if path not in published:
+            raise FileNotFoundError(path)
+        return [DirEntry(name=name, path=f"{path}/{name}", kind="file") for name in published[path]]
+
+    def fake_read(path, opts={}):
+        folder, name = path.rsplit("/", 1)
+        return published.get(folder, {}).get(name, b"{}")
+
     monkeypatch.setattr(pipeline.fs, "exists", lambda path: False)
-    monkeypatch.setattr(pipeline.fs, "read", lambda path: b"{}")
-    return {"read_stream_calls": read_stream_calls}
+    monkeypatch.setattr(pipeline.fs, "ls", fake_ls)
+    monkeypatch.setattr(pipeline.fs, "read", fake_read)
+    return {"read_stream_calls": read_stream_calls, "published": published}
 
 
 @pytest.fixture
@@ -183,3 +197,58 @@ def test_derivatives_transcribes_every_source_for_multi_audio_item(fake_fs, fake
     use_multi_item(monkeypatch)
     result = aw.derivatives(ARK, opts={})
     assert sorted(result["captions"]["outputs"]) == ["side-a-output-en.vtt", "side-b-output-en.vtt"]
+
+
+# --- skipping already-published outputs ----------------------------------------
+
+def _publish_writes(fake_fs, calls):
+    """Move recorded writes into fake_fs's published listing, as a real run would."""
+    for c in calls:
+        dest = "cask:" + pipeline.derivative.dest_path(
+            type=c["type"], collection=c["collection"], rel_path=c["rel_path"], opts=c.get("opts", {}),
+        )
+        folder, name = dest.rsplit("/", 1)
+        fake_fs["published"].setdefault(folder, {})[name] = c["data"]
+    calls.clear()
+
+
+def test_derivatives_skips_fully_published_audio_without_downloading(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
+    aw.derivatives(ARK, opts={"format": "mp3"})
+    _publish_writes(fake_fs, fake_derivative)
+    fake_fs["read_stream_calls"].clear()
+    fake_whisper.clear()
+
+    aw.derivatives(ARK, opts={"format": "mp3"})
+
+    assert fake_fs["read_stream_calls"] == []
+    assert len(fake_ffmpeg["transcode_audio"]) == 1
+    assert len(fake_ffmpeg["waveform"]) == 1
+    assert fake_whisper == []
+    assert sorted(c["rel_path"] for c in fake_derivative) == [
+        "item/captions/manifest.json",
+        "item/public-frontend-derivatives/interview.wav/manifest.json",
+    ]
+
+
+def test_derivatives_regenerates_only_missing_waveform(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
+    aw.derivatives(ARK, opts={"format": "mp3", "width": 200, "height": 80})
+    _publish_writes(fake_fs, fake_derivative)
+    del fake_fs["published"]["cask:/silver/g/c/latest/item/public-frontend-derivatives/interview.wav"]["waveform-200x80.png"]
+    fake_whisper.clear()
+
+    result = aw.derivatives(ARK, opts={"format": "mp3", "width": 200, "height": 80})
+
+    assert len(fake_ffmpeg["transcode_audio"]) == 1
+    assert len(fake_ffmpeg["waveform"]) == 2
+    assert fake_whisper == []
+    assert sorted(result["derivatives"]["interview.wav"]["outputs"]) == ["converted.mp3", "waveform-200x80.png"]
+
+
+def test_derivatives_force_regenerates_audio(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
+    aw.derivatives(ARK, opts={"format": "mp3"})
+    _publish_writes(fake_fs, fake_derivative)
+
+    aw.derivatives(ARK, opts={"format": "mp3", "force": True})
+
+    assert len(fake_ffmpeg["transcode_audio"]) == 2
+    assert len(fake_whisper) == 2

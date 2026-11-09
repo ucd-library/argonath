@@ -4,6 +4,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from digtk.lib.fs.paths import DirEntry
 from digtk.lib.items import ItemLocation
 from digtk.models.digital_website import pipeline
 from digtk.models.digital_website import image as dw
@@ -59,9 +60,22 @@ def fake_fs(monkeypatch):
         yield iter([b"fake-source-bytes"])
 
     monkeypatch.setattr(pipeline.fs, "read_stream", fake_read_stream)
+    # Already-published files, {dir: {filename: bytes}}.
+    published = {}
+
+    def fake_ls(path, opts={}):
+        if path not in published:
+            raise FileNotFoundError(path)
+        return [DirEntry(name=name, path=f"{path}/{name}", kind="file") for name in published[path]]
+
+    def fake_read(path, opts={}):
+        folder, name = path.rsplit("/", 1)
+        return published.get(folder, {}).get(name, b"{}")
+
     monkeypatch.setattr(pipeline.fs, "exists", lambda path: False)
-    monkeypatch.setattr(pipeline.fs, "read", lambda path: b"{}")
-    return {"read_stream_calls": read_stream_calls}
+    monkeypatch.setattr(pipeline.fs, "ls", fake_ls)
+    monkeypatch.setattr(pipeline.fs, "read", fake_read)
+    return {"read_stream_calls": read_stream_calls, "published": published}
 
 
 @pytest.fixture
@@ -581,3 +595,74 @@ def test_finalize_writes_nothing_if_an_images_derivatives_are_missing(fake_fs, f
     with pytest.raises(FileNotFoundError, match=r"1 image\(s\) of .*\['photo-b.tiff'\]"):
         dw.finalize(ARK)
     assert fake_derivative == []
+
+
+# --- skipping already-published outputs ----------------------------------------
+
+def _publish_writes(fake_fs, calls):
+    """Move recorded writes into fake_fs's published listing, as a real run would."""
+    for c in calls:
+        dest = "cask:" + pipeline.derivative.dest_path(
+            type=c["type"], collection=c["collection"], rel_path=c["rel_path"], opts=c.get("opts", {}),
+        )
+        folder, name = dest.rsplit("/", 1)
+        fake_fs["published"].setdefault(folder, {})[name] = c["data"]
+    calls.clear()
+
+
+def _no_ocr(candidates, opts={}):
+    raise AssertionError("orientation OCR should have been skipped")
+
+
+def _reset(calls):
+    for kind in calls:
+        calls[kind].clear()
+
+
+def test_generate_skips_fully_published_image_without_downloading(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("deskewed"))
+    dw.generate(ARK, opts={"widths": WIDTHS})
+    _publish_writes(fake_fs, fake_derivative)
+    fake_fs["read_stream_calls"].clear()
+    _reset(fake_image_magick)
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", _no_ocr)
+
+    result = dw.generate(ARK, opts={"widths": WIDTHS})
+
+    assert fake_fs["read_stream_calls"] == []
+    assert all(not calls for calls in fake_image_magick.values())
+    assert [c["rel_path"] for c in fake_derivative] == ["item/ocr/manifest.json"]
+    ocr_manifest = json.loads(fake_derivative[0]["data"])
+    assert sorted(ocr_manifest["outputs"]) == ["ocr-stats.json", "ocr.djvu", "prep-deskew.jpg"]
+    assert result["orientation"]["photo"]["deskew"] is True
+
+
+def test_generate_rebuilds_missing_ocr_layer_only(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
+    dw.generate(ARK, opts={"widths": WIDTHS})
+    _publish_writes(fake_fs, fake_derivative)
+    del fake_fs["published"]["cask:/silver/g/c/latest/item/ocr"]["ocr-stats.json"]
+    _reset(fake_image_magick)
+
+    dw.generate(ARK, opts={"widths": WIDTHS})
+
+    written = sorted(c["rel_path"] for c in fake_derivative)
+    assert "item/ocr/ocr.djvu" in written
+    assert "item/ocr/ocr-stats.json" in written
+    assert not any(path.endswith((".jpg", ".tif")) for path in written)
+    assert fake_image_magick["thumbnail"] == []
+    assert fake_image_magick["tile"] == []
+
+
+def test_generate_force_regenerates_everything(fake_fs, fake_derivative, fake_image_magick, fake_djvu, monkeypatch):
+    monkeypatch.setattr(pipeline.ocr_utils, "compare_orientations", fake_compare_orientations("original"))
+    dw.generate(ARK, opts={"widths": WIDTHS})
+    _publish_writes(fake_fs, fake_derivative)
+    fake_fs["read_stream_calls"].clear()
+    _reset(fake_image_magick)
+
+    dw.generate(ARK, opts={"widths": WIDTHS, "force": True})
+
+    assert len(fake_fs["read_stream_calls"]) == 1
+    assert len(fake_image_magick["thumbnail"]) == 3
+    assert len(fake_image_magick["tile"]) == 1
