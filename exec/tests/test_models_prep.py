@@ -163,3 +163,43 @@ def test_vision_image_honors_vision_width(tmp_path, fake_magick):
 def test_natural_key_orders_numbers_by_value():
     names = ["page_10.tif", "page_2.tif", "Page_1.tif", "cover.tif"]
     assert sorted(names, key=prep.natural_key) == ["cover.tif", "Page_1.tif", "page_2.tif", "page_10.tif"]
+
+
+TREE_ITEM = ItemLocation(
+    ark=ARK, group="g", collection="c", time="latest", item_path="tree/item",
+    bronze_binary_paths=[
+        "cask:/bronze/g/c/latest/tree/item/Access/page_001.jpg",
+        "cask:/bronze/g/c/latest/tree/item/Access/page_002.jpg",
+        "cask:/bronze/g/c/latest/tree/item/Access/compiled.pdf",
+        "cask:/bronze/g/c/latest/tree/item/Preservation/page_001.tif",
+        "cask:/bronze/g/c/latest/tree/item/Preservation/page_002.tif",
+    ],
+)
+
+
+def test_drop_access_duplicates_keeps_masters_and_access_only_files():
+    kept = prep.drop_access_duplicates(TREE_ITEM.bronze_binary_paths)
+    assert kept == [
+        "cask:/bronze/g/c/latest/tree/item/Access/compiled.pdf",
+        "cask:/bronze/g/c/latest/tree/item/Preservation/page_001.tif",
+        "cask:/bronze/g/c/latest/tree/item/Preservation/page_002.tif",
+    ]
+
+
+def test_drop_access_duplicates_leaves_flat_items_alone():
+    assert prep.drop_access_duplicates(MIXED_ITEM.bronze_binary_paths) == MIXED_ITEM.bronze_binary_paths
+
+
+def test_partition_by_format_skips_access_copies_with_a_master():
+    image_paths, pdf_paths = prep.partition_by_format(TREE_ITEM.bronze_binary_paths)
+    assert image_paths == [
+        "cask:/bronze/g/c/latest/tree/item/Preservation/page_001.tif",
+        "cask:/bronze/g/c/latest/tree/item/Preservation/page_002.tif",
+    ]
+    assert pdf_paths == ["cask:/bronze/g/c/latest/tree/item/Access/compiled.pdf"]
+
+
+def test_stage_pages_stages_each_tree_page_once(tmp_path, fake_staging):
+    pages = prep.stage_pages(TREE_ITEM, str(tmp_path), opts={"formats": {"image"}})
+    assert [p["filename"] for p in pages] == ["page_001.tif", "page_002.tif"]
+    assert all("/Access/" not in path for path in fake_staging["read_stream"])

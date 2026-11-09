@@ -74,7 +74,6 @@ OCR_ORIENTATION_ANGLE_THRESHOLD_ENV = "DIGTK_OCR_ORIENTATION_ANGLE_THRESHOLD"
 SAMWISE_API_URL_ENV = "SAMWISE_API_URL"
 SAMWISE_API_KEY_ENV = "SAMWISE_API_KEY"
 SAMWISE_LLM_MODEL_ENV = "DIGTK_SAMWISE_LLM_MODEL"
-SAMWISE_EMBED_MODEL_ENV = "DIGTK_SAMWISE_EMBED_MODEL"
 
 # Transport hardening, tuned values ported from the standalone digitization
 # toolkit's vllm_client.py — proven against real samwise flakiness (backend
@@ -125,12 +124,6 @@ PRESERVICA_MAX_RETRIES_ENV = "DIGTK_PRESERVICA_MAX_RETRIES"
 PRESERVICA_RETRY_BACKOFF_S_ENV = "DIGTK_PRESERVICA_RETRY_BACKOFF_S"
 
 FS_CHUNK_SIZE_ENV = "DIGTK_FS_CHUNK_SIZE"
-
-SEARCH_SPACE_ENV = "DIGTK_SEARCH_SPACE"
-SEARCH_TOP_K_ENV = "DIGTK_SEARCH_TOP_K"
-SEARCH_CHUNK_SIZE_ENV = "DIGTK_SEARCH_CHUNK_SIZE"
-SEARCH_CHUNK_BUFFER_ENV = "DIGTK_SEARCH_CHUNK_BUFFER"
-SEARCH_EMBED_MODEL_ENV = "DIGTK_SEARCH_EMBED_MODEL"
 
 PDF_TARGET_PIXEL_WIDTH_ENV = "DIGTK_PDF_TARGET_PIXEL_WIDTH"
 PDF_DEFAULT_DENSITY_ENV = "DIGTK_PDF_DEFAULT_DENSITY"
@@ -248,7 +241,6 @@ SETTINGS = [
     {"dotpath": "samwise.api_url", "env": SAMWISE_API_URL_ENV, "cast": str, "secret": False},
     {"dotpath": "samwise.api_key", "env": SAMWISE_API_KEY_ENV, "cast": str, "secret": True},
     {"dotpath": "samwise.llm_model", "env": SAMWISE_LLM_MODEL_ENV, "cast": str, "secret": False},
-    {"dotpath": "samwise.embed_model", "env": SAMWISE_EMBED_MODEL_ENV, "cast": str, "secret": False},
     {"dotpath": "samwise.connect_timeout_s", "env": SAMWISE_CONNECT_TIMEOUT_S_ENV, "cast": float, "secret": False},
     {"dotpath": "samwise.read_timeout_s", "env": SAMWISE_READ_TIMEOUT_S_ENV, "cast": float, "secret": False},
     {"dotpath": "samwise.retries", "env": SAMWISE_RETRIES_ENV, "cast": int, "secret": False},
@@ -263,11 +255,6 @@ SETTINGS = [
     {"dotpath": "gateway.url", "env": GATEWAY_URL_ENV, "cast": str, "secret": False},
     {"dotpath": "auth.login_timeout_s", "env": AUTH_LOGIN_TIMEOUT_ENV, "cast": float, "secret": False},
     {"dotpath": "fs.chunk_size", "env": FS_CHUNK_SIZE_ENV, "cast": int, "secret": False},
-    {"dotpath": "search.space", "env": SEARCH_SPACE_ENV, "cast": str, "secret": False},
-    {"dotpath": "search.top_k", "env": SEARCH_TOP_K_ENV, "cast": int, "secret": False},
-    {"dotpath": "search.chunk_size", "env": SEARCH_CHUNK_SIZE_ENV, "cast": int, "secret": False},
-    {"dotpath": "search.chunk_buffer", "env": SEARCH_CHUNK_BUFFER_ENV, "cast": int, "secret": False},
-    {"dotpath": "search.embed_model", "env": SEARCH_EMBED_MODEL_ENV, "cast": str, "secret": False},
     {"dotpath": "pdf.target_pixel_width", "env": PDF_TARGET_PIXEL_WIDTH_ENV, "cast": int, "secret": False},
     {"dotpath": "pdf.default_density", "env": PDF_DEFAULT_DENSITY_ENV, "cast": int, "secret": False},
     {"dotpath": "pdf.raster_format", "env": PDF_RASTER_FORMAT_ENV, "cast": str, "secret": False},
@@ -484,7 +471,6 @@ CONFIG = {
         "api_url": _env(SAMWISE_API_URL_ENV, "http://samwise.library.ucdavis.edu/api"),
         "api_key_env": SAMWISE_API_KEY_ENV,
         "llm_model": _env(SAMWISE_LLM_MODEL_ENV, "qwen3.8-fp8-fast:27b"),
-        "embed_model": _env(SAMWISE_EMBED_MODEL_ENV, "qwen3-embed:4b"),
         # Proven values from the standalone digitization toolkit's vllm_client.py.
         "connect_timeout_s": _env(SAMWISE_CONNECT_TIMEOUT_S_ENV, 15.0, float),
         "read_timeout_s": _env(SAMWISE_READ_TIMEOUT_S_ENV, 180.0, float),
@@ -520,17 +506,6 @@ CONFIG = {
     },
     "fs": {
         "chunk_size": _env(FS_CHUNK_SIZE_ENV, 65536, int),
-    },
-    "search": {
-        "space": _env(SEARCH_SPACE_ENV, "arda"),
-        "top_k": _env(SEARCH_TOP_K_ENV, 10, int),
-        # Chunk size/buffer are in characters. 1000/200 (20% buffer) are common RAG
-        # chunking defaults (e.g. LangChain's RecursiveCharacterTextSplitter default).
-        "chunk_size": _env(SEARCH_CHUNK_SIZE_ENV, 1000, int),
-        "chunk_buffer": _env(SEARCH_CHUNK_BUFFER_ENV, 200, int),
-        # Distinct from samwise.embed_model (ad hoc `digtk ai embed` default) — RAG
-        # chunking favors the larger/more accurate embedding model.
-        "embed_model": _env(SEARCH_EMBED_MODEL_ENV, _env(SAMWISE_EMBED_MODEL_ENV, "qwen3-embed:4b")),
     },
     "pdf": {
         # target_pixel_width/default_density/raster_format match the reference
@@ -872,30 +847,6 @@ ShowcaseGoldProjectOption = Annotated[str, typer.Option(
     "--project", envvar=SHOWCASE_GOLD_PROJECT_ENV,
     help=f"Gold 'app' segment to promote this item's record under (e.g. digital-dev, "
          f"digital-prod). Env: {SHOWCASE_GOLD_PROJECT_ENV}.",
-)]
-
-SearchSpaceOption = Annotated[str, typer.Option(
-    "--space", envvar=SEARCH_SPACE_ENV, help=f"App space to search. Env: {SEARCH_SPACE_ENV}.",
-)]
-
-SearchTopKOption = Annotated[int, typer.Option(
-    "--top-k", envvar=SEARCH_TOP_K_ENV,
-    help=f"Number of results to return. Env: {SEARCH_TOP_K_ENV}.",
-)]
-
-SearchChunkSizeOption = Annotated[int, typer.Option(
-    "--chunk-size", envvar=SEARCH_CHUNK_SIZE_ENV,
-    help=f"Characters per chunk. Env: {SEARCH_CHUNK_SIZE_ENV}.",
-)]
-
-SearchChunkBufferOption = Annotated[int, typer.Option(
-    "--chunk-buffer", envvar=SEARCH_CHUNK_BUFFER_ENV,
-    help=f"Context characters added before/after each chunk. Env: {SEARCH_CHUNK_BUFFER_ENV}.",
-)]
-
-SearchEmbedModelOption = Annotated[str | None, typer.Option(
-    "--model", envvar=SEARCH_EMBED_MODEL_ENV,
-    help=f"Embedding model to chunk with. Env: {SEARCH_EMBED_MODEL_ENV}.",
 )]
 
 # Positional target for every root-level tool command (see

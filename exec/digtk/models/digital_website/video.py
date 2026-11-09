@@ -67,7 +67,7 @@ def hls(target, opts={}):
     """Generate the HLS adaptive-bitrate stream for every source video in the item.
 
     Ad hoc/manual use, mirroring digtk.models.digital_website.image.thumbnails(); derivatives()
-    is what Dagster's showcase_derivatives_job actually calls. Publishes into the same location
+    is what Dagster's gold_dcs_derivatives actually calls. Publishes into the same location
     derivatives() would: `public-frontend-derivatives/<video-filename>/streaming/`.
 
     :param str|digtk.lib.items.ItemLocation target: Item ARK, bronze item folder,

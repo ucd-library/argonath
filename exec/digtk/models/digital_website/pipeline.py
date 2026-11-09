@@ -28,7 +28,10 @@ from digtk.lib.config import CONFIG
 # their original names so every showcase orchestrator (and test) that already
 # reaches them as pipeline.X keeps working unchanged.
 from digtk.models.prep import (  # noqa: F401
+    ACCESS_DIR,
     FORMAT_BY_EXTENSION,
+    PRESERVATION_DIR,
+    drop_access_duplicates,
     output_name,
     page_tag,
     parse_widths,
@@ -82,41 +85,6 @@ def parse_sequence_number(filename):
     stem = os.path.splitext(filename)[0]
     match = _TRAILING_SEQUENCE_RE.search(stem)
     return int(match.group(1)) if match else None
-
-
-# Preservica tree/ items can hold the same page twice: an access copy (e.g.
-# Access/page_001.jpg) and its preservation master (Preservation/page_001.tif).
-# The showcase uses the master — see drop_access_duplicates().
-ACCESS_DIR = "Access"
-PRESERVATION_DIR = "Preservation"
-
-
-def drop_access_duplicates(bronze_binary_paths):
-    """Drop access copies that have a preservation master: a file in an item's
-    Access/ folder is left out when the same item's Preservation/ folder has a
-    file with the same name stem (page_001.jpg vs page_001.tif). Access files
-    without a master (e.g. a compiled PDF only supplied as an access copy) are
-    kept, as is everything outside those two folders.
-
-    :param list[str] bronze_binary_paths: CaskFS paths ('cask:/'-prefixed).
-    :returns: The paths to use, in original order.
-    :rtype: list[str]
-    """
-    masters = set()
-    for path in bronze_binary_paths:
-        parent, _, filename = path.rpartition("/")
-        item_dir, _, folder = parent.rpartition("/")
-        if folder == PRESERVATION_DIR:
-            masters.add((item_dir, os.path.splitext(filename)[0]))
-
-    kept = []
-    for path in bronze_binary_paths:
-        parent, _, filename = path.rpartition("/")
-        item_dir, _, folder = parent.rpartition("/")
-        if folder == ACCESS_DIR and (item_dir, os.path.splitext(filename)[0]) in masters:
-            continue
-        kept.append(path)
-    return kept
 
 
 def filter_binaries_by_format(bronze_binary_paths, media_types):

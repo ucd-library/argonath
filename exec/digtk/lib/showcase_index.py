@@ -12,12 +12,6 @@ Item and collection documents keep their gold record's full URI @ids
 root-level "clientMedia" map keyed by node @id, not on @graph nodes.
 "displayImage" holds the main image, so search can skip clientMedia.
 
-Deliberately unrelated to digtk.commands.search (LlamaIndex/pgvector RAG
-search) - different index, different consumer, different purpose. Kept as
-its own module/command group rather than folded into `search` so the two
-don't get conflated - see dagster/lib/assets.py's index_for_showcase_search
-docstring for the same reasoning on the Dagster side.
-
 ES connection settings come from CONFIG["showcase"] (es_host, es_index,
 es_page_search_index) - see digtk.lib.config.
 """

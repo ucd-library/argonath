@@ -46,7 +46,7 @@ def test_set_setting_rejects_unknown_dotpath(home_config_path):
 
 def test_set_setting_rejects_value_failing_cast(home_config_path):
     with pytest.raises(ValueError, match="Invalid value"):
-        config.set_setting("search.top_k", "not-an-int", path=home_config_path)
+        config.set_setting("fs.chunk_size", "not-an-int", path=home_config_path)
 
 
 def test_set_setting_persists_value(home_config_path):
@@ -56,10 +56,10 @@ def test_set_setting_persists_value(home_config_path):
 
 def test_set_setting_preserves_other_keys(home_config_path):
     config.set_setting("samwise.api_url", "https://samwise.example", path=home_config_path)
-    config.set_setting("search.top_k", "20", path=home_config_path)
+    config.set_setting("fs.chunk_size", "20", path=home_config_path)
     assert config.read_home_config(home_config_path) == {
         "samwise.api_url": "https://samwise.example",
-        "search.top_k": "20",
+        "fs.chunk_size": "20",
     }
 
 
@@ -130,7 +130,6 @@ def test_resolved_settings_reports_secret_set(monkeypatch):
 def test_resolved_settings_reports_non_secret_config_values():
     resolved = config.resolved_settings()
     assert resolved["fs.chunk_size"] == config.CONFIG["fs"]["chunk_size"]
-    assert resolved["search.top_k"] == config.CONFIG["search"]["top_k"]
 
 
 def test_resolved_settings_reports_showcase_es_settings():
@@ -183,12 +182,3 @@ def test_gateway_and_login_timeout_defaults():
     assert config.CONFIG["gateway"]["url"] == "https://argonath.library.ucdavis.edu"
     assert config.CONFIG["auth"]["login_timeout_s"] == 300.0
 
-
-def test_rag_chunking_defaults():
-    """Pins the common RAG chunking defaults (1000/200 chars) and the RAG-specific
-    embedding model (distinct from samwise.embed_model) — regression test for the
-    drift previously found between digtk.lib.ai's docstring and its actual default."""
-    assert config.CONFIG["search"]["chunk_size"] == 1000
-    assert config.CONFIG["search"]["chunk_buffer"] == 200
-    assert config.CONFIG["search"]["embed_model"] == "qwen3-embed:4b"
-    assert config.CONFIG["samwise"]["embed_model"] == "qwen3-embed:4b"

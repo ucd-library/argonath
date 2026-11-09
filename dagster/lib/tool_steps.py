@@ -1,23 +1,29 @@
 """
-The per-file pike tool steps (OCR, alt text, figures, PDF tagging) as
-workspace_process_job runs them: one `digtk workspace run <target> --steps ...
---file <name>` command per file, built from a WorkspaceRunConfig.
+The pike tool steps (split-spreads, OCR, alt text, figures, PDF tagging and
+building) as Dagster runs them: `digtk workspace run <target> --steps ...
+[--file <name>]` commands built from a lib.configs.ToolStepsConfig. Shared by
+lib.pipeline_workspace.workspace_process (workspace folders) and
+lib.pipeline_item.gold_dcs_process_item (bronze items, outputs to silver).
 """
-from lib.fanout_batching import emit
+from lib.fanout_batching import emit, relative_id
 from lib.utils import exec
 
-# WorkspaceRunConfig checkbox -> `digtk workspace run` step, run once per file.
+# ToolStepsConfig checkbox -> `digtk workspace run` step, run once per file.
 FILE_STEP_FIELDS = {"ocr": "ocr", "ocr_correct": "ocr-correct", "alt_text": "alt-text",
                     "figures": "figures", "tag_pdf": "tag-pdf"}
+# Steps run once per folder, alongside the file steps.
+FOLDER_STEP_FIELDS = {"split_detect": "split-detect", "split_apply": "split-apply"}
+# Steps run once per folder, after every file step.
+DOCUMENT_STEP_FIELDS = {"pdf_build": "pdf-build"}
 # Steps that only apply to PDFs (everything else applies to images and PDFs alike).
 PDF_ONLY_STEPS = {"tag-pdf"}
 
 
 def option_args(config):
-    """`digtk workspace run` tool-option flags for a WorkspaceRunConfig (everything
+    """`digtk workspace run` tool-option flags for a ToolStepsConfig (everything
     but --steps, which differs per fanned-out task).
 
-    :param WorkspaceRunConfig config: The run's config.
+    :param ToolStepsConfig config: The run's config.
     :rtype: list[str]
     """
     args = [
@@ -56,7 +62,7 @@ def option_args(config):
 
 def ticked(config, fields):
     """
-    :param WorkspaceRunConfig config: The run's config.
+    :param ToolStepsConfig config: The run's config.
     :param dict fields: {config field: step name}.
     :returns: Step names whose checkbox is on, in field order.
     :rtype: list[str]
@@ -67,13 +73,63 @@ def ticked(config, fields):
 def file_steps(config, filename):
     """The ticked per-file steps that apply to one file.
 
-    :param WorkspaceRunConfig config: The run's config.
+    :param ToolStepsConfig config: The run's config.
     :param str filename: The file's name or path.
     :returns: Step names; tag-pdf only for a PDF.
     :rtype: list[str]
     """
     is_pdf = filename.lower().endswith(".pdf")
     return [s for s in ticked(config, FILE_STEP_FIELDS) if is_pdf or s not in PDF_ONLY_STEPS]
+
+
+def any_ticked(config):
+    """Whether any tool step is ticked.
+
+    :param ToolStepsConfig config: The run's config.
+    :rtype: bool
+    """
+    fields = {**FOLDER_STEP_FIELDS, **FILE_STEP_FIELDS, **DOCUMENT_STEP_FIELDS}
+    return bool(ticked(config, fields))
+
+
+def folder_tool_tasks(target, folder_id, files, config, opts={}):
+    """One folder's tool tasks: a split-spreads task, one task per file with
+    ticked file steps, and a pdf-build task. Every task gets the same option args.
+
+    :param str target: Item folder for `digtk workspace run`, e.g. 'cask:/bronze/...'.
+    :param str folder_id: The folder's id, relative to the run's partition or collection.
+    :param list[str] files: The folder's image/PDF files: bare names or full paths.
+    :param ToolStepsConfig config: The run's config.
+    :param dict opts: 'suffix' (str) appended to every task id, 'extra' (dict)
+        merged into every task.
+    :returns: {"folder": task|None, "files": [task], "document": task|None}. Each
+        task is {"target", "file", "id", "steps", "args", ...extra}; a file task's
+        "file" is its bare name and its id is folder_id plus the file's path
+        relative to target.
+    :rtype: dict
+    """
+    suffix = opts.get("suffix", "")
+    extra = opts.get("extra") or {}
+    args = option_args(config)
+    root = target[len("cask:"):] if target.startswith("cask:") else target
+
+    def task(file, id, steps):
+        return {"target": target, "file": file, "id": id, "steps": steps, "args": args, **extra}
+
+    folder_steps = ticked(config, FOLDER_STEP_FIELDS)
+    document_steps = ticked(config, DOCUMENT_STEP_FIELDS)
+    found = {"folder": None, "files": [], "document": None}
+    if folder_steps:
+        found["folder"] = task(None, f"{folder_id}{suffix}", folder_steps)
+    # pdf-build only applies to folders of images.
+    if document_steps and any(not f.lower().endswith(".pdf") for f in files):
+        found["document"] = task(None, f"{folder_id}{suffix}", document_steps)
+    for path in files:
+        steps = file_steps(config, path)
+        if steps:
+            rel = relative_id(path, root)
+            found["files"].append(task(path.rsplit("/", 1)[-1], f"{folder_id}/{rel}{suffix}", steps))
+    return found
 
 
 def report_run_result(context, label, result, opts={}):

@@ -20,7 +20,7 @@ around it by calling a lower-level API directly.
 
 - **`digtk.lib.derivative`** (`exec/digtk/lib/derivative.py`) — built on `fs`, for
   writing any silver/gold/workspace derivative artifact (thumbnails, OCR output, AI
-  metadata, RAG chunks, etc.) and recording its CaskFS lineage back to source files.
+  metadata, etc.) and recording its CaskFS lineage back to source files.
   `write()` is the single entry point: it builds the destination path from
   `type`/`collection`/`rel_path`/`opts` and dispatches to `write_cask()` (real CaskFS
   write + lineage, requires non-empty `source_files`) or, with `path`+`local=True`,
@@ -29,8 +29,7 @@ around it by calling a lower-level API directly.
   `fs.write`/`fs.add_derivative_link` directly for pipeline outputs.
 
 - **`digtk.lib.ai`** (`exec/digtk/lib/ai.py`) — the Samwise (Qwen, OpenAI-compatible)
-  client. `chat_completion()` (text + optional vision input) for metadata generation,
-  `embed()` for embeddings, `chunk_text()`/`chunk_and_embed()` for RAG chunking. Use
+  client. `chat_completion()` (text + optional vision input) for metadata generation. Use
   this instead of calling the `openai` SDK or Samwise's API directly.
 
 ## Library vs. Model Code

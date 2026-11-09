@@ -74,7 +74,7 @@ def thumbnail(target, opts={}):
     """Generate a small/medium/large set for one page of every source PDF in the item.
 
     Ad hoc/manual use, mirroring digtk.models.digital_website.image.thumbnails();
-    derivatives() is what Dagster's showcase_derivatives_job actually calls. Publishes into the
+    derivatives() is what Dagster's gold_dcs_derivatives actually calls. Publishes into the
     same location derivatives() would for this one page:
     `public-frontend-derivatives/<pdf-filename>/images/<page-number>/` (1-indexed).
 

@@ -31,7 +31,7 @@ depend on this identifier at all: `digtk collection add` (disk) and `digtk
 preservica import` (Preservica) always register a collection, labeled or not.
 The `argonath` identifier only governs two things:
 
-1. **Auto-discovery** — Dagster's `preservica_auto_sync_sensor` (polling
+1. **Auto-discovery** — Dagster's `bronze_preservica_auto_sync` (polling
    Preservica's `/entities/updated-since`) will only auto-register a
    brand-new, never-before-seen folder if it carries this identifier. Once a
    Preservica collection is registered — whether by a human running `digtk
@@ -65,8 +65,8 @@ any of them.
 
 Two Dagster sensors (`dagster/lib/sensors.py`) consume the registry:
 
-- `preservica_auto_sync_sensor` — polls `/entities/updated-since` and
+- `bronze_preservica_auto_sync` — polls `/entities/updated-since` and
   reconciles only the registered collections that actually changed.
-- `collection_partition_sync_sensor` — keeps Dagster's `collections` dynamic
+- `bronze_collection_partition_sync` — keeps Dagster's `collections` dynamic
   partition in sync with the registry, so a collection registered via CLI is
   immediately visible even before its first successful reconcile run.

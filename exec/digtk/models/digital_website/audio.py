@@ -51,7 +51,7 @@ def transcode(target, opts={}):
     """Transcode every source audio file to another format.
 
     Ad hoc/manual use, mirroring digtk.models.digital_website.image.convert(); derivatives()
-    is what Dagster's showcase_derivatives_job actually calls. Publishes into the same location
+    is what Dagster's gold_dcs_derivatives actually calls. Publishes into the same location
     derivatives() would: `public-frontend-derivatives/<filename>/`. Note this overwrites
     that directory's manifest with one describing only the converted file — run
     derivatives() afterward to restore a manifest covering the full set if that matters.

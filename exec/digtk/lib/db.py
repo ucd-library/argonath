@@ -11,8 +11,7 @@ provisions (see README), but as distinct databases/credentials.
 
 Everything argonath owns in that shared instance lives under its own 'argonath'
 Postgres schema (SCHEMA below), namespaced apart from anything else there (e.g.
-project-anduin's own tables, or the pgvector store digtk.lib.ai's RAG indexing
-uses) — every connection's search_path is set to it, and callers should still
+project-anduin's own tables) — every connection's search_path is set to it, and callers should still
 schema-qualify table names in their own SQL (see digtk.models.collection) rather
 than rely on search_path alone.
 

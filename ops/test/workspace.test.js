@@ -104,9 +104,9 @@ describe('buildFanOutConfig', () => {
 });
 
 describe('workspaceLaunch', () => {
-  it('targets workspace_process_job on the folder partition', () => {
+  it('targets workspace_process on the folder partition', () => {
     expect(workspaceLaunch('cask:/workspace/jdoe/box-12', { set: ['ocr=true'] })).toEqual({
-      jobName: 'workspace_process_job',
+      jobName: 'workspace_process',
       partitionKey: 'workspace/jdoe/box-12',
       runConfig: { ops: { fan_out_workspace: { config: { ocr: true } } } },
     });

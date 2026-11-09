@@ -172,8 +172,8 @@ def _website_dirs(path):
 
 def remove_collection_silver(key, opts={}):
     """Deletes the website derivatives (SILVER_WEBSITE_DIRS) of every item in
-    a collection's bronze. Other silver work (text, accessibility, AI metadata,
-    RAG) is kept. Skipped while another gold project still has the collection,
+    a collection's bronze. Other silver work (text, accessibility, AI metadata)
+    is kept. Skipped while another gold project still has the collection,
     since every project reads the same silver.
 
     :param str key: Collection key, [bronze/]<group>/<collection>.
