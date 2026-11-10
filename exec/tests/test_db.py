@@ -68,11 +68,11 @@ def test_connect_passes_resolved_config_and_password(monkeypatch):
     assert seen == {
         "host": "dbhost", "port": 5433, "dbname": "argonath_test",
         "user": "tester", "password": "secret",
-        "options": "-c search_path=argonath,public",
+        "options": "-c search_path=collection_registry,public",
     }
 
 
-def test_connect_scopes_search_path_to_the_argonath_schema(monkeypatch):
+def test_connect_scopes_search_path_to_the_collection_registry_schema(monkeypatch):
     monkeypatch.setenv(CONFIG["postgres"]["password_env"], "secret")
     seen = {}
     monkeypatch.setattr(db.psycopg2, "connect", lambda **kwargs: seen.update(kwargs))

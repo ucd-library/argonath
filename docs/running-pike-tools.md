@@ -601,7 +601,7 @@ They were renamed from:
 | `delete_collection_index_job`, `delete_item_index_job` | `gold_dcs_delete_collection_index`, `gold_dcs_delete_item_index` |
 
 Runs from before the rename stay under the old names in **Runs**. Filter by the old
-name to find them, but their re-execute buttons no longer work. The `collection_state`
+name to find them, but their re-execute buttons no longer work. The `collection_registry`
 queue still uses the original keys (`process_item_job`, `collection_rollup_job`).
 
 ### Workspace folders (no ARK)
@@ -840,7 +840,7 @@ How `argonath` reaches Dagster:
   moves under each active collection's bronze items root. Once an item has had no new
   events for 5 minutes, the sensor handles it:
   - **New item, or binaries changed (`process`):** the item is queued in
-    `collection_state.job_queue` (trigger `cask-audit`). `item_queue` launches one
+    `collection_registry.job_queue` (trigger `cask-audit`). `item_queue` launches one
     `gold_dcs_process_item` run per item, at most `ARGONATH_MAX_ITEM_RUNS_IN_FLIGHT` (default
     20) at a time. Each run fans out its own files: derivatives, finalize, `build-item`,
     then the ES upsert. Once a collection's queue is empty and none of its item runs are
