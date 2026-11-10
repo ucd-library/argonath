@@ -48,6 +48,33 @@ like `ModuleNotFoundError: No module named 'bs4'` from a stale copy missing a de
 this project added later. `which digtk` should point inside `exec/.venv/bin/` — if it
 points anywhere else, that's the shadowing.
 
+### Standalone Install
+
+To run `digtk` as a global command — no `uv run` prefix, no project `.venv` — install
+it with [`uv tool install`](https://docs.astral.sh/uv/concepts/tools/) (uv's
+pipx-equivalent). This is the sanctioned way to get a bare `digtk` on PATH; it's
+different from the ad-hoc pip/pipx install the warning below cautions against,
+since it's a deliberate, uv-managed install rather than a stray leftover.
+
+For a released version, install straight from a git tag — no PyPI account or private
+package index needed, a pushed tag *is* the release:
+
+```sh
+pip install uv   # one-time per machine, if not already present
+
+uv tool install "git+https://github.com/ucd-library/argonath@v0.2.0#subdirectory=exec"
+
+digtk --help   # now available globally
+```
+
+For local dev, `uv tool install --editable ./exec` (run from the repo root) does the
+same but tracks your local checkout — changes under `exec/digtk/` take effect
+immediately, no reinstall.
+
+Either way: `uv tool uninstall digtk` / `uv tool upgrade digtk` / `uv tool list` manage
+the install afterward. If `digtk` isn't found on PATH right after installing, run
+`uv tool update-shell` once.
+
 Most subcommands talk to an external service and need credentials, set as environment
 variables (never as CLI flags — see `digtk.lib.auth`/`digtk.lib.config`):
 
