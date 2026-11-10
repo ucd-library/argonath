@@ -48,6 +48,15 @@ like `ModuleNotFoundError: No module named 'bs4'` from a stale copy missing a de
 this project added later. `which digtk` should point inside `exec/.venv/bin/` — if it
 points anywhere else, that's the shadowing.
 
+To run `digtk` from any directory without that risk, define a shell function that pins
+`uv run` to this checkout (adjust the path; `uv run --project` uses this venv but keeps
+your current directory, so relative paths still work):
+
+```sh
+# ~/.zshrc or ~/.bashrc
+digtk() { uv run --project "$HOME/code/argonath/exec" digtk "$@"; }
+```
+
 Most subcommands talk to an external service and need credentials, set as environment
 variables (never as CLI flags — see `digtk.lib.auth`/`digtk.lib.config`):
 
