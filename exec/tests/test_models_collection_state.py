@@ -151,6 +151,16 @@ def test_enqueue_collection_tracks_links_and_queues_every_item(pg, folders):
 
 
 @needs_pg
+def test_enqueue_collection_force_is_recorded_on_every_row(pg, folders):
+    folders.update({ITEM_A: "ark:/1/a", ITEM_B: "ark:/1/b"})
+
+    collection_state.enqueue_collection(KEY, {"batch": "run-1", "force": True})
+
+    rows = collection_state.pending("process_item_job", 10)
+    assert [r["config"]["force"] for r in rows] == [True, True]
+
+
+@needs_pg
 def test_enqueue_collection_still_queues_items_with_no_ark(pg, folders):
     # Not every collection's items carry an ark -- a missing one shouldn't
     # drop the item from the queue, just leave item_ark() with nothing to report.

@@ -808,6 +808,11 @@ SkipExistingOption = Annotated[bool, typer.Option(
     help="Skip work whose outputs already exist (resume an interrupted run).",
 )]
 
+ForceOption = Annotated[bool, typer.Option(
+    "--force",
+    help="Regenerate derivatives that already exist (default: skip them).",
+)]
+
 VideoResolutionsOption = Annotated[str, typer.Option(
     "--resolutions", envvar=VIDEO_RESOLUTIONS_ENV,
     help=f"Comma-separated HLS resolution rungs (e.g. 360p,720p). Env: {VIDEO_RESOLUTIONS_ENV}.",

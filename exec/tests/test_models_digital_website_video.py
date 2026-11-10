@@ -4,6 +4,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from digtk.lib.fs.paths import DirEntry
 from digtk.lib.items import ItemLocation
 from digtk.models.digital_website import pipeline
 from digtk.models.digital_website import video as vw
@@ -43,9 +44,22 @@ def fake_fs(monkeypatch):
         yield iter([b"fake-video-bytes"])
 
     monkeypatch.setattr(pipeline.fs, "read_stream", fake_read_stream)
+    # Already-published files, {dir: {filename: bytes}}.
+    published = {}
+
+    def fake_ls(path, opts={}):
+        if path not in published:
+            raise FileNotFoundError(path)
+        return [DirEntry(name=name, path=f"{path}/{name}", kind="file") for name in published[path]]
+
+    def fake_read(path, opts={}):
+        folder, name = path.rsplit("/", 1)
+        return published.get(folder, {}).get(name, b"{}")
+
     monkeypatch.setattr(pipeline.fs, "exists", lambda path: False)
-    monkeypatch.setattr(pipeline.fs, "read", lambda path: b"{}")
-    return {"read_stream_calls": read_stream_calls}
+    monkeypatch.setattr(pipeline.fs, "ls", fake_ls)
+    monkeypatch.setattr(pipeline.fs, "read", fake_read)
+    return {"read_stream_calls": read_stream_calls, "published": published}
 
 
 @pytest.fixture
@@ -195,3 +209,49 @@ def test_derivatives_transcribes_every_source_for_multi_video_item(fake_fs, fake
     use_multi_item(monkeypatch)
     result = vw.derivatives(ARK, opts={"resolutions": "360p"})
     assert sorted(result["captions"]["outputs"]) == ["clip-a-output-en.vtt", "clip-b-output-en.vtt"]
+
+
+# --- skipping already-published outputs ----------------------------------------
+
+def _publish_writes(fake_fs, calls):
+    """Move recorded writes into fake_fs's published listing, as a real run would."""
+    for c in calls:
+        dest = "cask:" + pipeline.derivative.dest_path(
+            type=c["type"], collection=c["collection"], rel_path=c["rel_path"], opts=c.get("opts", {}),
+        )
+        folder, name = dest.rsplit("/", 1)
+        fake_fs["published"].setdefault(folder, {})[name] = c["data"]
+    calls.clear()
+
+
+def test_derivatives_skips_published_hls_ladder(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
+    vw.derivatives(ARK, opts={"resolutions": "360p,720p"})
+    _publish_writes(fake_fs, fake_derivative)
+    fake_fs["read_stream_calls"].clear()
+
+    result = vw.derivatives(ARK, opts={"resolutions": "360p,720p"})
+
+    assert fake_fs["read_stream_calls"] == []
+    assert len(fake_ffmpeg["hls_ladder"]) == 1
+    assert result["stream"]["video.mp4"]["skipped"] is True
+
+
+def test_derivatives_reruns_hls_ladder_for_new_resolutions(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
+    vw.derivatives(ARK, opts={"resolutions": "360p,720p"})
+    _publish_writes(fake_fs, fake_derivative)
+    fake_whisper.clear()
+
+    vw.derivatives(ARK, opts={"resolutions": "360p,1080p"})
+
+    assert len(fake_ffmpeg["hls_ladder"]) == 2
+    assert fake_whisper == []
+
+
+def test_derivatives_reruns_hls_ladder_when_a_rung_is_missing(fake_fs, fake_derivative, fake_ffmpeg, fake_whisper):
+    vw.derivatives(ARK, opts={"resolutions": "360p,720p"})
+    _publish_writes(fake_fs, fake_derivative)
+    del fake_fs["published"]["cask:/silver/g/c/latest/item/public-frontend-derivatives/video.mp4/streaming"]["720p.mp4"]
+
+    vw.derivatives(ARK, opts={"resolutions": "360p,720p"})
+
+    assert len(fake_ffmpeg["hls_ladder"]) == 2

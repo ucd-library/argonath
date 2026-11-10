@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from digtk.lib.fs.paths import DirEntry
 from digtk.lib.items import ItemLocation
 from digtk.models.digital_website import captions
 from digtk.models.digital_website import pipeline
@@ -130,3 +131,35 @@ def test_attach_captions_without_a_captions_manifest_attaches_nothing(fake_fs):
 
     assert captions.attach_captions(ITEM, entries) is False
     assert "caption" not in entries[0]
+
+
+# --- skipping already-published captions ---------------------------------------
+
+def test_caption_status_reports_published_captions(monkeypatch):
+    captions_dir = "cask:/silver/g/c/latest/box-1/folder-3/captions"
+    monkeypatch.setattr(pipeline.fs, "ls", lambda path, opts={}: [
+        DirEntry(name="clip-a-output-en.vtt", path=f"{captions_dir}/clip-a-output-en.vtt", kind="file"),
+    ])
+    status = captions.caption_status(MULTI_ITEM, MULTI_ITEM.bronze_binary_paths, {"language": "en"})
+    assert status == {
+        "cask:/bronze/g/c/latest/box-1/folder-3/clip-a.mp4": "clip-a-output-en.vtt",
+        "cask:/bronze/g/c/latest/box-1/folder-3/clip-b.mp4": None,
+    }
+
+
+def test_caption_status_force_reports_nothing(monkeypatch):
+    monkeypatch.setattr(pipeline.fs, "ls", lambda path, opts={}: pytest.fail("force should not list"))
+    status = captions.caption_status(ITEM, ITEM.bronze_binary_paths, {"force": True})
+    assert status == {"cask:/bronze/g/c/latest/item/video.mp4": None}
+
+
+def test_transcribe_sources_skips_captioned_sources(fake_fs, fake_derivative, fake_whisper, tmp_path):
+    sources = _sources(MULTI_ITEM)
+    captioned = {sources[0]["bronze_path"]: "clip-a-output-en.vtt", sources[1]["bronze_path"]: None}
+
+    result = captions.transcribe_sources(
+        MULTI_ITEM, sources[1:], str(tmp_path), COMMAND, opts={"language": "en", "captioned": captioned},
+    )
+
+    assert [c["src_path"] for c in fake_whisper] == [sources[1]["local_path"]]
+    assert result["outputs"] == ["clip-b-output-en.vtt", "clip-a-output-en.vtt"]

@@ -68,7 +68,8 @@ def item_tasks(item_path, listing, collection_key, config):
         if the listing somehow had no "dir").
     :param dict listing: `digtk showcase formats --files` result ({"files", "dir", ...}).
     :param str collection_key: "bronze/[group]/[collection]" — task ids are relative to it.
-    :param config: CollectionDerivativesConfig (or a subclass) — widths and max_steps.
+    :param config: CollectionDerivativesConfig (or a subclass) — widths,
+        max_steps and (ItemRunConfig) force.
     :returns: Derivative tasks, in format order. Each
         task's "target" (its bronze path) is what subsequent digtk commands
         address it by.
@@ -85,6 +86,8 @@ def item_tasks(item_path, listing, collection_key, config):
         error = f"MISSING MEDIA: no image/PDF/video/audio files in bronze {item_id}/"
         return [_error_task(target, item_id, item_id, error, collection_key, config)]
 
+    # Without --force, digtk skips outputs that already exist.
+    force_args = ["--force"] if getattr(config, "force", False) else []
     tasks = []
     for fmt in _DERIVATIVE_FORMAT_ORDER:
         if not files.get(fmt):
@@ -93,13 +96,13 @@ def item_tasks(item_path, listing, collection_key, config):
             for path in files[fmt]:
                 tasks.append({
                     "target": target, "format": fmt, "file": path, "id": relative_id(path, collection_key),
-                    "item_id": item_id, "args": ["--widths", config.widths], "error": None,
+                    "item_id": item_id, "args": ["--widths", config.widths] + force_args, "error": None,
                     "max_steps": config.max_steps, "collection_key": collection_key,
                 })
         else:
             tasks.append({
                 "target": target, "format": fmt, "file": None, "id": f"{item_id} ({fmt})",
-                "item_id": item_id, "args": [], "error": None, "max_steps": config.max_steps,
+                "item_id": item_id, "args": list(force_args), "error": None, "max_steps": config.max_steps,
                 "collection_key": collection_key,
             })
     return tasks

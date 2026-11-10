@@ -20,6 +20,7 @@ import typer
 from digtk.lib import reporting, utils
 from digtk.lib.config import (
     CONFIG,
+    ForceOption,
     ImageConvertFormatOption,
     ImageDeskewThresholdOption,
     ImageDpiOption,
@@ -119,6 +120,7 @@ def derivatives(
                        "one Dagster step per file. Skips the item-level outputs; run "
                        "`digtk showcase finalize` once every file is done.",
     )] = None,
+    force: ForceOption = False,
     reporting_job_id: ReportingJobIdOption = None,
     reporting_collection: ReportingCollectionOption = None,
 ):
@@ -137,13 +139,14 @@ def derivatives(
         item_label = f"{target}#{','.join(file)}" if file else target
         with reporting.track(
             reporting_job_id, stage="derivatives", item_id=item_label, collection=reporting_collection,
-            options={"widths": widths, "deskew_threshold": deskew_threshold, "fuzz_threshold": fuzz_threshold},
+            options={"widths": widths, "deskew_threshold": deskew_threshold, "fuzz_threshold": fuzz_threshold, "force": force},
         ):
             result = pdf.derivatives(target, opts={
                 "widths": widths,
                 "threshold": deskew_threshold,
                 "fuzz": fuzz_threshold,
                 "files": file or None,
+                "force": force,
             })
         for stem, doc in result["pdfs"].items():
             for page_tag, orientation in doc["orientation"].items():

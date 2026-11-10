@@ -151,54 +151,84 @@ def derivatives(target, opts={}):
         or an already-resolved location — see digtk.lib.items.resolve_target().
     :param dict opts: 'format' (str, default CONFIG["audio"]["transcode_format"]),
         'width'/'height' (waveform dimensions); 'language'/'model' for the caption
-        step (see captions.transcribe_sources()); forwarded to ffmpeg_utils.
+        step (see captions.transcribe_sources()); 'force' (bool — regenerate
+        outputs an earlier run already published; skipped by default);
+        forwarded to ffmpeg_utils.
     :returns: {"status": "success", "item": str (item path), "derivatives": {filename: {"dir": str,
         "outputs": [...], "manifest": {...}}}, "captions": {...}}
     :rtype: dict
     """
     fmt = opts.get("format", CONFIG["audio"]["transcode_format"])
+    width = opts.get("width", CONFIG["audio"]["waveform_width"])
+    height = opts.get("height", CONFIG["audio"]["waveform_height"])
+    converted_filename = f"converted.{fmt}"
+    waveform_filename = f"waveform-{width}x{height}.png"
     item = items.resolve_target(target)
     audio_paths = pipeline.filter_binaries_by_format(item.bronze_binary_paths, "audio")
     start = time.monotonic()
+    command = ["digtk", "audio", "derivatives", items.item_id(item)]
+
+    # Look up what earlier runs published, so finished sources aren't downloaded.
+    captioned = captions.caption_status(item, audio_paths, opts)
+    existing = {
+        path: pipeline.existing_outputs(
+            item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{os.path.basename(path)}", {"force": opts.get("force"), "params": {"format": fmt}},
+        )["files"]
+        for path in audio_paths
+    }
+    pending = [
+        path for path in audio_paths
+        if not ({converted_filename, waveform_filename} <= existing[path] and captioned[path])
+    ]
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": audio_paths})
-        total = len(sources)
+        staged = {}
+        if pending:
+            staged = {src["bronze_path"]: src for src in pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pending})}
+        total = len(audio_paths)
         derivatives_results = {}
 
-        for i, src in enumerate(sources, start=1):
-            stem = src["stem"]
-            filename = os.path.basename(src["bronze_path"])
-            utils.log(f"[{i}/{total}] {stem}: transcoding to {fmt}...")
-            converted_filename = f"converted.{fmt}"
-            converted_path = os.path.join(tmp_dir, f"{stem}-{converted_filename}")
-            ffmpeg_utils.transcode_audio(src["local_path"], converted_path, opts)
-            local_outputs = [(converted_filename, converted_path, src["bronze_path"])]
+        for i, bronze_path in enumerate(audio_paths, start=1):
+            filename = os.path.basename(bronze_path)
+            stem = os.path.splitext(filename)[0]
+            prefix = f"[{i}/{total}] {stem}"
+            local_outputs, kept_outputs = [], []
 
-            utils.log(f"[{i}/{total}] {stem}: generating waveform...")
-            width = opts.get("width", CONFIG["audio"]["waveform_width"])
-            height = opts.get("height", CONFIG["audio"]["waveform_height"])
-            waveform_filename = f"waveform-{width}x{height}.png"
-            waveform_path = os.path.join(tmp_dir, f"{stem}-{waveform_filename}")
-            ffmpeg_utils.waveform(src["local_path"], waveform_path, opts)
-            local_outputs.append((waveform_filename, waveform_path, src["bronze_path"]))
+            if converted_filename in existing[bronze_path]:
+                pipeline.log_skip(prefix, f"{fmt} transcode")
+                kept_outputs.append((converted_filename, bronze_path))
+            else:
+                utils.log(f"{prefix}: transcoding to {fmt}...")
+                converted_path = os.path.join(tmp_dir, f"{stem}-{converted_filename}")
+                ffmpeg_utils.transcode_audio(staged[bronze_path]["local_path"], converted_path, opts)
+                local_outputs.append((converted_filename, converted_path, bronze_path))
+
+            if waveform_filename in existing[bronze_path]:
+                pipeline.log_skip(prefix, "waveform")
+                kept_outputs.append((waveform_filename, bronze_path))
+            else:
+                utils.log(f"{prefix}: generating waveform...")
+                waveform_path = os.path.join(tmp_dir, f"{stem}-{waveform_filename}")
+                ffmpeg_utils.waveform(staged[bronze_path]["local_path"], waveform_path, opts)
+                local_outputs.append((waveform_filename, waveform_path, bronze_path))
 
             derivatives_results[filename] = pipeline.publish(
                 item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{filename}", local_outputs,
-                command=["digtk", "audio", "derivatives", items.item_id(item)],
+                command=command,
                 params={"format": fmt},
                 opts={
                     "manifest_opts": {"duration_s": time.monotonic() - start},
                     "link_relation": _LINK_RELATION,
+                    "kept_outputs": kept_outputs,
                 },
             )
-            utils.log(f"[{i}/{total}] {stem}: done")
+            utils.log(f"{prefix}: done")
 
         utils.log("Transcribing captions...")
         captions_result = captions.transcribe_sources(
-            item, sources, tmp_dir,
-            command=["digtk", "audio", "derivatives", items.item_id(item)],
-            opts=opts,
+            item, [staged[path] for path in audio_paths if path in staged], tmp_dir,
+            command=command,
+            opts={**opts, "captioned": captioned},
         )
 
     return {"status": "success", "item": items.item_id(item), "derivatives": derivatives_results, "captions": captions_result}

@@ -50,11 +50,19 @@ def enqueue_collection(
     batch: Annotated[str | None, typer.Option(
         help="Batch id recorded on every queued row (e.g. the launching Dagster run id).",
     )] = None,
+    force: Annotated[bool, typer.Option(
+        "--force", help="Queued runs regenerate derivatives that already exist.",
+    )] = False,
 ):
     """Queue a gold_dcs_process_item run for every item in the collection's bronze
     tree/."""
     try:
-        result = collection_state.enqueue_collection(collection_key, {"batch": batch} if batch else {})
+        opts = {}
+        if batch:
+            opts["batch"] = batch
+        if force:
+            opts["force"] = True
+        result = collection_state.enqueue_collection(collection_key, opts)
         utils.log(
             f"{result['collection']}: {result['items']} item(s) ({result['added']} new), "
             f"{result['enqueued']} queued"

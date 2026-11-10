@@ -276,6 +276,10 @@ def derivatives(target, opts={}):
     manifest additionally carries a "pages" array composing every page's own extra
     block, mirroring the legacy pipeline's per-PDF composite manifest.
 
+    Outputs an earlier run already published are skipped step by step (see
+    _page_status()); a PDF whose pages are all done isn't even downloaded.
+    opts['force'] regenerates everything.
+
     Per-file mode (opts['files']) — one Dagster step per PDF, see
     dagster/lib/pipeline_fanout.py — processes only the named PDF(s). Everything
     above is already written per PDF, so a per-file run writes exactly the
@@ -287,7 +291,8 @@ def derivatives(target, opts={}):
     :param dict opts: 'widths' (comma-separated str, default
         CONFIG["image"]["thumbnail_widths"]); 'files' (iterable of bronze paths or
         filenames, optional — per-file mode, see above; see
-        pipeline.select_binaries()); forwarded to pdf_render/image_magick/ocr_utils:
+        pipeline.select_binaries()); 'force' (bool — regenerate existing
+        outputs); forwarded to pdf_render/image_magick/ocr_utils:
         'target_pixel_width', 'default_density', 'quality', 'dpi', 'fuzz', 'threshold', etc.
     :returns: {"status": "success", "item": str (item path), "pdfs": {filename: {"pages": int,
         "derivatives": {"pages": {page_number: {...}}, "manifest": {...}}, "ocr": {...},
@@ -302,120 +307,72 @@ def derivatives(target, opts={}):
     files = opts.get("files")
     selected = pipeline.select_binaries(pdf_paths, files) if files else pdf_paths
     start = time.monotonic()
+    total_pdfs = len(selected)
+
+    # Look up what earlier runs published, so finished PDFs aren't downloaded.
+    published = {}
+    for bronze_path in selected:
+        pdf_filename = os.path.basename(bronze_path)
+        published[bronze_path] = _published_pages(
+            item, f"{pipeline.PUBLIC_FRONTEND_DIR}/{pdf_filename}/images",
+            pipeline.pdf_ocr_prefix(item.bronze_binary_paths, bronze_path),
+            os.path.splitext(pdf_filename)[0], widths, opts,
+        )
+    pending = [path for path in selected if not _all_complete(published[path])]
 
     pdfs_result = {}
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        sources = pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": selected})
-        total_pdfs = len(sources)
+        staged = {}
+        if pending:
+            staged = {src["bronze_path"]: src for src in pipeline.stage_sources(item, tmp_dir, opts={"bronze_binary_paths": pending})}
 
-        for pdf_i, src in enumerate(sources, start=1):
-            stem = src["stem"]
-            pdf_path = src["local_path"]
-            pdf_filename = os.path.basename(src["bronze_path"])
+        for pdf_i, bronze_path in enumerate(selected, start=1):
+            pdf_filename = os.path.basename(bronze_path)
+            stem = os.path.splitext(pdf_filename)[0]
+            src = staged.get(bronze_path)
             # Namespaced by the PDF's own stem whenever anything else in the
             # item could also write to the bare ocr/ — see pipeline.pdf_ocr_prefix().
-            ocr_prefix = pipeline.pdf_ocr_prefix(item.bronze_binary_paths, src["bronze_path"])
+            ocr_prefix = pipeline.pdf_ocr_prefix(item.bronze_binary_paths, bronze_path)
             images_base = f"{pipeline.PUBLIC_FRONTEND_DIR}/{pdf_filename}/images"
-            count = pdf_render.page_count(pdf_path, opts)
-            utils.log(f"[{pdf_i}/{total_pdfs}] {stem}: {count} page(s)")
+            if src:
+                count = pdf_render.page_count(src["local_path"], opts)
+                statuses = published[bronze_path]["pages"] if published[bronze_path] and published[bronze_path]["count"] == count else {}
+                utils.log(f"[{pdf_i}/{total_pdfs}] {stem}: {count} page(s)")
+            else:
+                count = published[bronze_path]["count"]
+                statuses = published[bronze_path]["pages"]
+                utils.log(f"[{pdf_i}/{total_pdfs}] {stem}: all {count} page(s) already generated, skipping")
 
             orientations = {}
             derivatives_pages = {}
             ocr_pages = []
             ocr_page_dirs = []
             page_manifest_entries = []
+            command = ["digtk", "pdf", "derivatives", items.item_id(item), "--widths", ",".join(map(str, widths))]
 
             for page_index in range(count):
                 page_no = page_index + 1
                 page_tag = pipeline.page_tag(page_index, count)  # still used for the (unchanged) ocr/ path
-                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: rasterizing...")
-                raster = _rasterize(pdf_path, page_index, tmp_dir, stem, page_tag, opts)
-                raster_path = raster["dest_path"]
-                density = raster["dpi"]
+                prefix = f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}"
+                status = statuses.get(page_no) or _page_status(item, images_base, ocr_prefix, stem, page_no, page_tag, widths, opts)
 
-                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: deciding orientation (running OCR twice)...")
-                orientation = pipeline.select_orientation(raster_path, tmp_dir, opts)
-                apply_deskew = orientation["deskew"]
-                orientations[str(page_no)] = orientation
+                if status["complete"]:
+                    if src:
+                        pipeline.log_skip(prefix, "all derivatives")
+                    page_result = _skipped_page(status, bronze_path)
+                else:
+                    page_result = _generate_page(item, src, tmp_dir, {
+                        "page_index": page_index, "page_tag": page_tag, "prefix": prefix, "status": status,
+                        "widths": widths, "images_base": images_base, "ocr_prefix": ocr_prefix, "command": command,
+                    }, opts)
 
-                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: generating {len(widths)} thumbnail(s)...")
-                thumb_set = pipeline.generate_thumbnail_set(
-                    raster_path, tmp_dir, widths, f"{stem}-{page_no}", {**opts, "deskew": apply_deskew}
-                )
-                thumb_outputs = [(fn, local_path, src["bronze_path"]) for fn, local_path in thumb_set]
-
-                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: generating tiled pyramid TIFF...")
-                tile_dest = os.path.join(tmp_dir, f"{stem}-{page_no}-tiled.tif")
-                image_magick.tile(raster_path, tile_dest, opts)
-                thumb_outputs.append(("tiled.tif", tile_dest, src["bronze_path"]))
-
-                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: generating OCR-prep image...")
-                base_prep_name = "prep-deskew.jpg" if apply_deskew else "prep.jpg"
-                prep_path = os.path.join(tmp_dir, f"{stem}-{page_tag}-{base_prep_name}")
-                image_magick.prep_ocr(raster_path, prep_path, opts={**opts, "deskew": apply_deskew})
-
-                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: probing derivative dimensions...")
-                size_by_label = {label: image_magick.probe_dimensions(local_path) for label, (fn, local_path) in zip(pipeline.THUMBNAIL_SIZE_LABELS, thumb_set)}
-                images_dir = pipeline.derivative_dir(item, f"{images_base}/{page_no}")
-                ocr_dir = pipeline.derivative_dir(item, f"{ocr_prefix}ocr/{page_tag}")
-                ocr_filename = os.path.basename(prep_path)
-
-                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: building OCR text layer...")
-                # Each page already publishes into its own page_tag-unique ocr/
-                # subdir, so djvu/stats never need output_name()'s multi-source
-                # filename prefix -- multi=False always here.
-                ocr_products = pipeline.build_ocr_products(
-                    orientation, tmp_dir, f"{stem}-{page_tag}", False, size_by_label["large"], opts
-                )
-                djvu_filename = ocr_products[0][0]
-
-                page_manifest_extra = {
-                    "page": page_no,
-                    "extractDensity": density,
-                    **{
-                        label: {
-                            "size": pipeline.size_as_strings(size_by_label[label]),
-                            "url": pipeline.cask_public_ref(f"{images_dir}/{label}.jpg"),
-                        }
-                        for label in pipeline.THUMBNAIL_SIZE_LABELS
-                    },
-                    "tiled": {
-                        "size": [pipeline.size_as_strings(d) for d in image_magick.probe_all_frame_dimensions(tile_dest)],
-                        "url": pipeline.cask_public_ref(f"{images_dir}/tiled.tif"),
-                    },
-                    "ocr": {
-                        "size": pipeline.size_as_strings(size_by_label["large"]),
-                        "imageSize": "large",
-                        "url": pipeline.cask_public_ref(f"{ocr_dir}/{djvu_filename}"),
-                    },
-                }
-                page_manifest_entries.append(page_manifest_extra)
-
-                command = ["digtk", "pdf", "derivatives", items.item_id(item), "--widths", ",".join(map(str, widths))]
-                page_result = pipeline.publish(
-                    item, f"{images_base}/{page_no}", thumb_outputs,
-                    command=command,
-                    params={"widths": widths, "page": page_index, "orientation": {"deskew_selected": apply_deskew, "stats": orientation["stats"]}},
-                    opts={
-                        "manifest_opts": {"extra": page_manifest_extra},
-                        "link_relation": _LINK_RELATION["derivatives"],
-                    },
-                )
-                ocr_outputs = [(ocr_filename, prep_path, src["bronze_path"])] + [
-                    (fn, local_path, src["bronze_path"]) for fn, local_path in ocr_products
-                ]
-                ocr_result = pipeline.publish(
-                    item, f"{ocr_prefix}ocr/{page_tag}", ocr_outputs,
-                    command=command,
-                    params={"page": page_index, "orientation": {"deskew_selected": apply_deskew}},
-                    opts={"link_relation": _LINK_RELATION["ocr"]},
-                )
-
-                derivatives_pages[str(page_no)] = page_result
-                ocr_pages.append(ocr_result)
+                orientations[str(page_no)] = page_result["orientation"]
+                page_manifest_entries.append(page_result["manifest_extra"])
+                derivatives_pages[str(page_no)] = page_result["images"]
+                ocr_pages.append(page_result["ocr"])
                 ocr_page_dirs.append(f"{page_tag}/")
-                utils.log(f"[{pdf_i}/{total_pdfs}] {stem} page {page_no}: done")
+                utils.log(f"{prefix}: done")
 
             duration_s = time.monotonic() - start
             agg_images_rel_path = f"{item.item_path}/{images_base}" if item.item_path else images_base
@@ -424,12 +381,12 @@ def derivatives(target, opts={}):
 
             derivatives_manifest = utils.write_manifest(
                 item.collection, agg_images_rel_path,
-                command=["digtk", "pdf", "derivatives", items.item_id(item), "--widths", ",".join(map(str, widths))],
+                command=command,
                 params={"pages": count, "widths": widths, "orientation": {
-                    tag: {"deskew_selected": o["deskew"], "stats": o["stats"]} for tag, o in orientations.items()
+                    tag: {"deskew_selected": o["deskew"], "stats": o.get("stats")} for tag, o in orientations.items()
                 }},
                 outputs=[f"{tag}/" for tag in orientations],
-                source_files=[src["bronze_path"]],
+                source_files=[bronze_path],
                 type="silver",
                 opts={**manifest_opts, "extra": {"pages": page_manifest_entries}},
             )
@@ -440,7 +397,7 @@ def derivatives(target, opts={}):
                 # The real per-page subdirectories under ocr/ (page-NNN/), not
                 # the 1-indexed page numbers the images/ side uses.
                 outputs=ocr_page_dirs,
-                source_files=[src["bronze_path"]],
+                source_files=[bronze_path],
                 opts=manifest_opts,
             )
 
@@ -452,6 +409,213 @@ def derivatives(target, opts={}):
             }
 
     return {"status": "success", "item": items.item_id(item), "pdfs": pdfs_result, "finalized": not files}
+
+
+def _published_pages(item, images_base, ocr_prefix, stem, widths, opts):
+    """Every page's status for one PDF from an earlier run, read from its
+    aggregate images/manifest.json, before the PDF is downloaded.
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param str images_base: The PDF's images/ subdir.
+    :param str ocr_prefix: See pipeline.pdf_ocr_prefix().
+    :param str stem: The PDF's filename stem.
+    :param list[int] widths: Current thumbnail widths.
+    :param dict opts: 'force' (bool).
+    :returns: {"count": int, "pages": {page_no: _page_status()}}, or None
+        when there's no usable aggregate manifest.
+    :rtype: dict|None
+    """
+    aggregate = pipeline.existing_outputs(item, images_base, {"force": opts.get("force"), "params": {"widths": widths}})
+    count = ((aggregate["manifest"] or {}).get("params") or {}).get("pages")
+    if not count:
+        return None
+    pages = {}
+    for page_index in range(count):
+        page_no = page_index + 1
+        pages[page_no] = _page_status(item, images_base, ocr_prefix, stem, page_no, pipeline.page_tag(page_index, count), widths, opts)
+    return {"count": count, "pages": pages}
+
+
+def _all_complete(published):
+    """Whether every page of a PDF was already generated.
+
+    :param dict|None published: _published_pages()'s return.
+    :rtype: bool
+    """
+    return bool(published) and all(status["complete"] for status in published["pages"].values())
+
+
+def _page_status(item, images_base, ocr_prefix, stem, page_no, page_tag, widths, opts):
+    """Which of one PDF page's outputs an earlier run already published.
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param str images_base: The PDF's images/ subdir.
+    :param str ocr_prefix: See pipeline.pdf_ocr_prefix().
+    :param str stem: The PDF's filename stem.
+    :param int page_no: 1-indexed page number.
+    :param str page_tag: The page's ocr/ subdir name (pipeline.page_tag()).
+    :param list[int] widths: Current thumbnail widths.
+    :param dict opts: 'force' (bool) — report nothing as published.
+    :returns: pipeline.derivative_set_status()'s return, plus "ocr"
+        (pipeline.existing_outputs() for the page's ocr/ dir).
+    :rtype: dict
+    """
+    images = pipeline.existing_outputs(item, f"{images_base}/{page_no}", {"force": opts.get("force"), "params": {"widths": widths}})
+    ocr = pipeline.existing_outputs(item, f"{ocr_prefix}ocr/{page_tag}", {"force": opts.get("force")})
+    status = pipeline.derivative_set_status(images, ocr["files"], {
+        "prep": [f"{stem}-{page_tag}-prep.jpg", f"{stem}-{page_tag}-prep-deskew.jpg"],
+        "ocr_layer": ["ocr.djvu", "ocr-stats.json"],
+    }, {"required_keys": ["extractDensity"]})
+    return {**status, "ocr": ocr}
+
+
+def _skipped_page(status, bronze_path):
+    """A fully generated page's results, rebuilt from its stored manifest.
+
+    :param dict status: _page_status()'s return, with "complete" True.
+    :param str bronze_path: The PDF's bronze path.
+    :returns: Same shape as _generate_page().
+    :rtype: dict
+    """
+    manifest = status["images"]["manifest"]
+    stored = status["orientation"]
+    keys = ["page", "extractDensity", *pipeline.THUMBNAIL_SIZE_LABELS, "tiled", "ocr"]
+    return {
+        "orientation": {"deskew": stored["deskew_selected"], "stats": stored.get("stats"), "skipped": True},
+        "manifest_extra": {key: manifest[key] for key in keys if key in manifest},
+        "images": {"dir": status["images"]["dir"], "outputs": sorted(status["images"]["files"]), "manifest": manifest, "skipped": True},
+        "ocr": {"dir": status["ocr"]["dir"], "outputs": sorted(status["ocr"]["files"]), "manifest": status["ocr"]["manifest"], "skipped": True},
+    }
+
+
+def _generate_page(item, src, tmp_dir, page, opts):
+    """Generate and publish one PDF page's missing outputs, skipping any an
+    earlier run already published (see _page_status()).
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param dict src: The staged PDF (pipeline.stage_sources() entry).
+    :param str tmp_dir: Local scratch directory.
+    :param dict page: 'page_index', 'page_tag', 'prefix' (log prefix), 'status'
+        (_page_status()), 'widths', 'images_base', 'ocr_prefix', 'command'.
+    :param dict opts: derivatives()'s opts.
+    :returns: {"orientation", "manifest_extra", "images" (publish result), "ocr" (publish result)}
+    :rtype: dict
+    """
+    status, prefix, widths = page["status"], page["prefix"], page["widths"]
+    page_index, page_tag, stem = page["page_index"], page["page_tag"], src["stem"]
+    page_no = page_index + 1
+    bronze_path = src["bronze_path"]
+    stored_manifest = status["images"]["manifest"] or {}
+
+    utils.log(f"{prefix}: rasterizing...")
+    raster = _rasterize(src["local_path"], page_index, tmp_dir, stem, page_tag, opts)
+    raster_path = raster["dest_path"]
+
+    orientation = pipeline.reused_orientation(status)
+    if orientation:
+        pipeline.log_skip(prefix, "orientation decision")
+    else:
+        utils.log(f"{prefix}: deciding orientation (running OCR twice)...")
+        orientation = pipeline.select_orientation(raster_path, tmp_dir, opts)
+    apply_deskew = orientation["deskew"]
+
+    image_outputs, kept_images = [], []
+    if status["thumbnails"]:
+        pipeline.log_skip(prefix, f"{len(widths)} thumbnail(s)")
+        kept_images += [(f"{label}.jpg", bronze_path) for label in pipeline.THUMBNAIL_SIZE_LABELS]
+        size_by_label = {label: pipeline.stored_size(stored_manifest[label]) for label in pipeline.THUMBNAIL_SIZE_LABELS}
+    else:
+        utils.log(f"{prefix}: generating {len(widths)} thumbnail(s)...")
+        thumb_set = pipeline.generate_thumbnail_set(
+            raster_path, tmp_dir, widths, f"{stem}-{page_no}", {**opts, "deskew": apply_deskew}
+        )
+        image_outputs += [(fn, local_path, bronze_path) for fn, local_path in thumb_set]
+
+    tile_dest = None
+    if status["tiled"]:
+        pipeline.log_skip(prefix, "tiled pyramid TIFF")
+        kept_images.append(("tiled.tif", bronze_path))
+    else:
+        utils.log(f"{prefix}: generating tiled pyramid TIFF...")
+        tile_dest = os.path.join(tmp_dir, f"{stem}-{page_no}-tiled.tif")
+        image_magick.tile(raster_path, tile_dest, opts)
+        image_outputs.append(("tiled.tif", tile_dest, bronze_path))
+
+    ocr_outputs, kept_ocr = [], []
+    if status["prep"]:
+        pipeline.log_skip(prefix, "OCR-prep image")
+        kept_ocr.append((status["prep"], bronze_path))
+    else:
+        utils.log(f"{prefix}: generating OCR-prep image...")
+        base_prep_name = "prep-deskew.jpg" if apply_deskew else "prep.jpg"
+        prep_path = os.path.join(tmp_dir, f"{stem}-{page_tag}-{base_prep_name}")
+        image_magick.prep_ocr(raster_path, prep_path, opts={**opts, "deskew": apply_deskew})
+        ocr_outputs.append((os.path.basename(prep_path), prep_path, bronze_path))
+
+    if not status["thumbnails"] or tile_dest:
+        utils.log(f"{prefix}: probing derivative dimensions...")
+    if not status["thumbnails"]:
+        size_by_label = {label: image_magick.probe_dimensions(local_path) for label, (fn, local_path, _) in zip(pipeline.THUMBNAIL_SIZE_LABELS, image_outputs)}
+    tiled_size = (
+        [pipeline.size_as_strings(d) for d in image_magick.probe_all_frame_dimensions(tile_dest)]
+        if tile_dest else stored_manifest["tiled"]["size"]
+    )
+    images_dir = pipeline.derivative_dir(item, f"{page['images_base']}/{page_no}")
+    ocr_dir = pipeline.derivative_dir(item, f"{page['ocr_prefix']}ocr/{page_tag}")
+
+    if status["ocr_layer"]:
+        pipeline.log_skip(prefix, "OCR text layer")
+        kept_ocr += [("ocr.djvu", bronze_path), ("ocr-stats.json", bronze_path)]
+        djvu_filename = "ocr.djvu"
+    else:
+        utils.log(f"{prefix}: building OCR text layer...")
+        # Each page already publishes into its own page_tag-unique ocr/
+        # subdir, so djvu/stats never need output_name()'s multi-source
+        # filename prefix -- multi=False always here.
+        ocr_products = pipeline.build_ocr_products(
+            orientation, tmp_dir, f"{stem}-{page_tag}", False, size_by_label["large"], opts
+        )
+        djvu_filename = ocr_products[0][0]
+        ocr_outputs += [(fn, local_path, bronze_path) for fn, local_path in ocr_products]
+
+    manifest_extra = {
+        "page": page_no,
+        "extractDensity": raster["dpi"],
+        **{
+            label: {
+                "size": pipeline.size_as_strings(size_by_label[label]),
+                "url": pipeline.cask_public_ref(f"{images_dir}/{label}.jpg"),
+            }
+            for label in pipeline.THUMBNAIL_SIZE_LABELS
+        },
+        "tiled": {
+            "size": tiled_size,
+            "url": pipeline.cask_public_ref(f"{images_dir}/tiled.tif"),
+        },
+        "ocr": {
+            "size": pipeline.size_as_strings(size_by_label["large"]),
+            "imageSize": "large",
+            "url": pipeline.cask_public_ref(f"{ocr_dir}/{djvu_filename}"),
+        },
+    }
+
+    images_result = pipeline.publish(
+        item, f"{page['images_base']}/{page_no}", image_outputs,
+        command=page["command"],
+        params={"widths": widths, "page": page_index, "orientation": {"deskew_selected": apply_deskew, "stats": orientation["stats"]}},
+        opts={
+            "manifest_opts": {"extra": manifest_extra},
+            "link_relation": _LINK_RELATION["derivatives"],
+            "kept_outputs": kept_images,
+        },
+    )
+    ocr_result = pipeline.publish(
+        item, f"{page['ocr_prefix']}ocr/{page_tag}", ocr_outputs,
+        command=page["command"],
+        params={"page": page_index, "orientation": {"deskew_selected": apply_deskew}},
+        opts={"link_relation": _LINK_RELATION["ocr"], "kept_outputs": kept_ocr},
+    )
+    return {"orientation": orientation, "manifest_extra": manifest_extra, "images": images_result, "ocr": ocr_result}
 
 
 def _read_manifests(item, pdf_paths):

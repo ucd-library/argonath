@@ -780,17 +780,11 @@ How `argonath` reaches Dagster:
   anything added with `digtk collection add --root bronze` or `digtk preservica import`.
   Partitions under the older `<group>/<collection>` form aren't removed automatically;
   delete them in the UI once they're no longer needed.
-- **Tools on a bronze item:** `gold_dcs_process_item` has the same step checkboxes and
-  options as `workspace_process` (`split_detect`, `split_apply`, `ocr`, `ocr_correct`,
-  `alt_text`, `figures`, `tag_pdf`, `pdf_build`, all off by default). Set
-  `ops.pdc_plan_item.config.item` to the bronze folder and tick the steps you want. They
-  run next to the showcase derivatives, one step per file, and write to the item's silver
-  folder (`text/`, `accessibility/`, `split-spreads/`). Only Preservation masters are
-  processed when a page also has an Access copy. `pdf_build` runs after the file steps,
-  and alt text is picked up by `build-item`. A failed tool step doesn't stop the item
-  being published; the run fails at the end instead. `ocr_correct` needs `ocr` output,
-  and `split_detect` / `split_apply` are meant to be separate runs with `gutters.json`
-  reviewed in between.
+- **Tools on a bronze item:** `gold_dcs_process_item` only builds the showcase
+  derivatives (including their OCR). It doesn't run the pike tool steps. To run those on
+  an item that has an ARK, use `digtk workspace run <ark> --steps ...` (see "Items that
+  already have an ARK" above). Alt text written that way is picked up by `build-item`
+  the next time the item is processed.
 - **Webapp derivatives for a whole collection:** `gold_dcs_process_collection` queues one
   `gold_dcs_process_item` run per item in the collection's bronze `tree/`, the same path
   `bronze_collection_cask_audit` uses for changed items (see below). The launch run itself
@@ -809,6 +803,14 @@ How `argonath` reaches Dagster:
     `MISSING MEDIA: no image/PDF/video/audio files in bronze latest/tree/<item>/`.
   - **Batching:** `max_steps` on each item run (default from `ItemRunConfig`; `0` turns
     batching off) caps how many derivative steps one item fans out to.
+  - **Skipping existing derivatives:** each derivative step skips outputs an earlier run
+    already published and only builds what's missing (e.g. `page 2: tiled pyramid TIFF
+    already generated, skipping`). A file whose outputs are all there isn't downloaded.
+    New thumbnail widths, audio format or video resolutions count as missing. This also
+    applies to `bronze_collection_cask_audit` runs. To rebuild everything, set `force: true`
+    on the `gold_dcs_process_collection` launchpad (`ops.enqueue_collection_items.config.force`)
+    or on `gold_dcs_process_item` (`ops.pdc_plan_item.config.force`). From the CLI, pass
+    `--force` to `digtk showcase <format> derivatives`.
   - **Failures:** a failed item only fails its own run. Re-run it with
     `gold_dcs_process_item` (set `ops.pdc_plan_item.config.item` to its bronze folder), or
     launch `gold_dcs_process_collection` again. Re-launching replaces rows still waiting in the

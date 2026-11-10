@@ -116,6 +116,21 @@ def test_derivatives_calls_pdf(monkeypatch):
     assert "document page-000: deskewed" in result.output
 
 
+def test_derivatives_passes_force(monkeypatch):
+    seen = {}
+
+    def fake_derivatives(ark, opts={}):
+        seen.update(opts=opts)
+        return {"status": "success", "pdfs": {}}
+
+    monkeypatch.setattr(pdf_model, "derivatives", fake_derivatives)
+
+    assert runner.invoke(pdf.app, ["derivatives", ARK]).exit_code == 0
+    assert seen["opts"]["force"] is False
+    assert runner.invoke(pdf.app, ["derivatives", ARK, "--force"]).exit_code == 0
+    assert seen["opts"]["force"] is True
+
+
 def test_derivatives_logs_orientation_for_every_page(monkeypatch):
     def fake_derivatives(ark, opts={}):
         return {

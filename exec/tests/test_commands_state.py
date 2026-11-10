@@ -30,6 +30,20 @@ def test_enqueue_collection_passes_the_batch(monkeypatch):
     assert last_json_line(result.output)["enqueued"] == 1
 
 
+def test_enqueue_collection_passes_force(monkeypatch):
+    seen = {}
+
+    def fake(key, opts={}):
+        seen.update(opts=opts)
+        return {"collection": key, "items": 1, "added": 1, "enqueued": 1}
+    monkeypatch.setattr(collection_state, "enqueue_collection", fake)
+
+    result = runner.invoke(app, ["state", "enqueue-collection", "--collection-key", KEY, "--force"])
+
+    assert result.exit_code == 0
+    assert seen["opts"] == {"force": True}
+
+
 def test_pending_and_ack(monkeypatch):
     monkeypatch.setattr(collection_state, "pending", lambda job, limit, opts={}: [{"id": 1, "limit": limit}])
     monkeypatch.setattr(collection_state, "ack", lambda ids, opts={}: len(ids))
