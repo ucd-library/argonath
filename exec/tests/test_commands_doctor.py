@@ -2,6 +2,7 @@ import json
 
 from typer.testing import CliRunner
 
+from digtk.commands import doctor as doctor_command
 from digtk.lib import doctor as doctor_lib
 from digtk.main import app
 
@@ -22,10 +23,12 @@ def test_check_reports_all_available(monkeypatch):
 
     assert result.exit_code == 0
     assert "[OK]      tesseract: /usr/bin/tesseract (tesseract 5.3.0)" in result.output
+    assert "Install guide:" not in result.output  # only shown when something's missing
     body = last_json_line(result.output)
     assert body["status"] == "success"
     assert body["all_available"] is True
     assert body["tools"][0]["name"] == "tesseract"
+    assert body["docs_url"] == doctor_command.DOCS_URL
 
 
 def test_check_reports_missing_tools_with_install_url(monkeypatch):
@@ -40,6 +43,7 @@ def test_check_reports_missing_tools_with_install_url(monkeypatch):
 
     assert result.exit_code == 0
     assert "[MISSING] verapdf: install from https://example.com/verapdf" in result.output
+    assert f"Install guide: {doctor_command.DOCS_URL}" in result.output
     body = last_json_line(result.output)
     assert body["all_available"] is False
     assert [t["name"] for t in body["tools"]] == ["tesseract", "verapdf"]
