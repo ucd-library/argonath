@@ -26,6 +26,9 @@ Subcommands mirror the pipeline phases:
   digtk workspace     — stage local folders into CaskFS workspace, run ocr/
                           accessibility/split-spreads on them, pull outputs
                           (see digtk.models.workspace)
+  digtk doctor        — check whether required external CLI tools (tesseract,
+                          ImageMagick, Ghostscript, poppler, ffmpeg, veraPDF,
+                          whisper) are installed (see digtk.lib.doctor)
 
 Every command finishes with a result — --output controls whether that also
 includes a structured JSON line (see digtk.lib.utils's module docstring):
@@ -38,8 +41,8 @@ from typing import Annotated
 import typer
 
 from digtk.commands import (
-    accessibility, ai, auth, collection, config, ocr, metadata, ingest, preservica, reporting, showcase, split,
-    state, workspace,
+    accessibility, ai, auth, collection, config, doctor, ocr, metadata, ingest, preservica, reporting, showcase,
+    split, state, workspace,
 )
 from digtk.lib import utils
 from digtk.lib.banner import print_banner
@@ -65,6 +68,7 @@ app.add_typer(collection.app,    name="collection")
 app.add_typer(reporting.app,     name="reporting")
 app.add_typer(state.app,         name="state")
 app.add_typer(workspace.app,     name="workspace")
+app.add_typer(doctor.app,        name="doctor")
 
 class OutputMode(str, Enum):
     """CLI-wide --output mode, applying to every command's final result line."""

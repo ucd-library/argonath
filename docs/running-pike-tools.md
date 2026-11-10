@@ -247,7 +247,9 @@ folders still goes through the `argo-local-dev` cask environment.
   Staging shells out to `cask cp`.
 - **Imaging tools** are needed if you run digtk on your own machine: `tesseract`,
   ImageMagick, poppler (`pdfinfo`), Ghostscript, and `verapdf` for tag-pdf (or pass
-  `--no-validate`). The worker image already has all of them.
+  `--no-validate`). The worker image already has all of them. Run `digtk doctor check`
+  to see which of these (plus `ffmpeg` and `whisper`, for video/audio/captions) are
+  installed on your machine, with an install link for anything missing.
 
 ## CLI
 
