@@ -489,7 +489,7 @@ def _figure_specs(item, pages, images, alt, opts):
         if fresh:
             new_rows.setdefault(filename, (page["source_path"], []))[1].extend(
                 dict(f, page=page["page_no"] or 1) for f in figs)
-        specs.append(figures.for_tagger(figs))
+        specs.append(figures.for_tagger(figs, keep_text=bool(opts.get("comic"))))
     for filename, (source_path, rows) in new_rows.items():
         figures.append_review(item, filename, source_path, rows)
     return specs

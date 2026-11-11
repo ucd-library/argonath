@@ -112,6 +112,17 @@ def test_describe_photo_gets_no_long_description_ask(monkeypatch):
     assert '"long_description" to null' in seen[0][0]
 
 
+def test_describe_comic_panel_is_a_scene_with_long_description(monkeypatch):
+    fake, seen = _chat(['{"alt": "Two men argue in a street.", "long_description": null}'])
+    monkeypatch.setattr(ai, "chat_completion", fake)
+    flags = figures.describe("img", "drawing", "", {"comic": True})[2]
+    prompt = seen[0][0]
+    assert '"long_description": 2-5 sentences' in prompt
+    assert figures.COMIC_INSTRUCTIONS in prompt
+    assert "Do not transcribe visible text." in prompt
+    assert flags == ["NO_LONG_DESCRIPTION"]
+
+
 def test_describe_shortens_long_alt(monkeypatch):
     fake, _ = _chat(['{"alt": "' + "x" * 200 + '"}', '{"alt": "Short."}'])
     monkeypatch.setattr(ai, "chat_completion", fake)
@@ -146,7 +157,15 @@ def test_for_tagger_skips_decorative_rejected_and_unspoken():
         {"bbox": [0, 0, 1, 1], "alt": ""},
     ]
     assert figures.for_tagger(figs) == [
-        {"bbox": [0, 0, 1, 1], "alt": "A chart. Rises.", "caption": "", "kind": "chart"}]
+        {"bbox": [0, 0, 1, 1], "alt": "A chart. Rises.", "caption": "", "kind": "chart",
+         "keep_text": False}]
+
+
+def test_for_tagger_keep_text_drops_the_caption():
+    figs = [{"bbox": [0, 0, 1, 1], "alt": "Two men talk.", "caption": "Gaza, 1992", "kind": "drawing"}]
+    assert figures.for_tagger(figs, keep_text=True) == [
+        {"bbox": [0, 0, 1, 1], "alt": "Two men talk.", "caption": "", "kind": "drawing",
+         "keep_text": True}]
 
 
 def test_review_csv_round_trip_with_edits():
@@ -242,6 +261,28 @@ def test_page_figures_does_not_cache_unusable_detection(monkeypatch, page_image,
     monkeypatch.setattr(ai, "chat_completion", fake)
     assert figures.page_figures(ITEM, PAGE, page_image) == ([], False)
     assert written == []
+
+
+def test_page_figures_comic_describes_a_page_without_panels_whole(monkeypatch, page_image, written):
+    _serve(monkeypatch, {})
+    fake, seen = _chat(["sorry", '{"alt": "A crowded market.", "long_description": "Stalls line a street."}'])
+    monkeypatch.setattr(ai, "chat_completion", fake)
+    figs, fresh = figures.page_figures(ITEM, PAGE, page_image, {"comic": True})
+    assert fresh is True and len(seen) == 2
+    assert figs[0]["bbox"] == figures.WHOLE_PAGE and figs[0]["kind"] == "drawing"
+    assert figs[0]["long_description"] == "Stalls line a street."
+    assert written[-1]["rel_path"].endswith("figures.json")
+
+
+def test_page_figures_comic_ignores_the_caption(monkeypatch, page_image, written):
+    _serve(monkeypatch, {})
+    fake, seen = _chat([
+        '{"figures": [{"bbox": [0, 0, 500, 500], "kind": "drawing", "caption": "WE WAITED"}]}',
+        '{"alt": "A man waits.", "long_description": "He sits alone."}',
+    ])
+    monkeypatch.setattr(ai, "chat_completion", fake)
+    figures.page_figures(ITEM, PAGE, page_image, {"comic": True})
+    assert "WE WAITED" not in seen[1][0]
 
 
 def test_image_pages_use_the_file_dir():
