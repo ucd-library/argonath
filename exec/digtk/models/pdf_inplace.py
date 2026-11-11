@@ -253,6 +253,13 @@ class _Walker:
                     tlm = _mul((1, 0, 0, 1, 0, -leading), tlm)
                     tm = tlm
                     pos_known = True
+                if not _shows_glyphs(o, operands):
+                    # nothing drawn, so PyMuPDF has no span for it: don't consume one
+                    if cur is not None:
+                        cur.end = i + 1
+                    else:
+                        st.units.append(_Unit("text", st.obj, i, i + 1))
+                    continue
                 x, y = _apply(_mul(tm, ctm), 0.0, rise)
                 cur = self._text_unit(st, i, x, y, pos_known, state_changed, cur)
                 pos_known = state_changed = False
@@ -288,6 +295,26 @@ class _Walker:
             elif o == "INLINE IMAGE":
                 st.units.append(_Unit("image", stm_obj, i, i + 1, bbox=_unit_box(ctm)))
         return st
+
+
+def _shows_glyphs(op, operands):
+    """False for a text-showing operator with an empty string, e.g. `() Tj`.
+
+    Google Slides' PDF export ends lines with one. It draws nothing, so
+    PyMuPDF's text trace has no span to pair it with.
+
+    :param str op: Tj, TJ, ' or ".
+    :param operands: The operator's operands; the string or array is last.
+    :rtype: bool
+    """
+    if not operands:
+        return False
+    arg = operands[-1]
+    if op == "TJ":
+        if not isinstance(arg, pikepdf.Array):
+            return True
+        return any(isinstance(a, pikepdf.String) and len(bytes(a)) for a in arg)
+    return not isinstance(arg, pikepdf.String) or len(bytes(arg)) > 0
 
 
 def _unit_box(ctm):
