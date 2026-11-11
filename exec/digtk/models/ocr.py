@@ -22,6 +22,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import tempfile
 
 import pymupdf
@@ -43,6 +44,11 @@ _LINES_PROMPT = (
     "normalized page coordinates (0,0 = top-left). Transcribe handwriting as written. "
     "If the page has no readable text, return []. No commentary."
 )
+# One complete {"text": ..., "bbox": [...]} line object, to recover the lines of
+# an answer cut off at max_tokens (a dense comic page's 128 lettered lines ran
+# past 4,096 tokens, and the whole page was lost at every retry size).
+_LINE_OBJ = re.compile(r'\{\s*"text"\s*:\s*("(?:[^"\\]|\\.)*")\s*,\s*'
+                       r'"bbox(?:_2d)?"\s*:\s*\[([^\]]*)\]\s*\}')
 _MIN_LINES_OK = 3  # fewer lines: re-ask at another size
 _LINE_RETRY_PX = (1400, 2600)
 
@@ -464,12 +470,16 @@ def _parse_lines(raw, width, height):
     :rtype: list[dict]|None
     """
     start, end = raw.find("["), raw.rfind("]")
-    if start < 0 or end <= start:
-        return None
-    try:
-        data = json.loads(raw[start:end + 1])
-    except ValueError:
-        return None
+    data = None
+    if start >= 0 and end > start:
+        try:
+            data = json.loads(raw[start:end + 1])
+        except ValueError:
+            data = None
+    if not isinstance(data, list):
+        data = _salvage_lines(raw)  # cut off at max_tokens: keep the complete lines
+        if data is None:
+            return None
     # boxes without text: unusable
     n_box, n_txt = raw.count('"bbox'), raw.count('"text"')
     if n_box >= 3 and n_txt * 2 < n_box:
@@ -491,6 +501,23 @@ def _parse_lines(raw, width, height):
     return lines
 
 
+def _salvage_lines(raw):
+    """Complete line objects from a truncated JSON answer.
+
+    :param str raw: Model output.
+    :returns: [{'text', 'bbox'}] in the model's 0-1000 space, or None if none.
+    :rtype: list[dict]|None
+    """
+    out = []
+    for m in _LINE_OBJ.finditer(raw):
+        try:
+            out.append({"text": json.loads(m.group(1)),
+                        "bbox": [float(v) for v in m.group(2).split(",")]})
+        except ValueError:
+            continue
+    return out or None
+
+
 def ocr_page_lines(image_path, tmp_dir, opts={}):
     """Vision OCR with line boxes, for handwriting and faint typescript.
 
@@ -506,7 +533,7 @@ def ocr_page_lines(image_path, tmp_dir, opts={}):
     pix = pymupdf.Pixmap(image_path)
     width, height = pix.width, pix.height
     pix = None
-    chat_opts = {"max_tokens": 4096, "temperature": 0.0}
+    chat_opts = {"max_tokens": 8192, "temperature": 0.0}  # dense pages need >4,096
     if opts.get("model"):
         chat_opts["model"] = opts["model"]
     best = None
