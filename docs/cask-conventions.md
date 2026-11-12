@@ -508,12 +508,26 @@ the consuming app/environment (`[app]`, e.g. `digital-dev`, `digital-prod` — m
 environment's records are promoted independently.
 
 ```
-gold/[app]/[collection]/
-├── collection.jsonld.json   # domain: the collection's canonical record (no hasPart)
+gold/[app]/
+├── collections/             # pipeline-written collection imports
+│   └── [collection]/        # see below
+├── static-assets/           # app-owned site config, seeded by dc-showcase
+│   ├── hero-banner.json     # (services/client/bin/init-cask.js)
+│   ├── hero-banner/
+│   ├── browse-by.json
+│   └── browse-by/
+└── edits/                   # app-owned admin edits
+    ├── featured-collections.json
+    └── collections/
+        └── [collection]/
+            ├── collection.jsonld.json   # domain: the collection's canonical record (no hasPart)
+            └── featured-image.jpg       # set from dc-showcase's collection page
+
+gold/[app]/collections/[collection]/
 └── [item]/
     └── ...                  # see below
 
-gold/[app]/[collection]/[item]/
+gold/[app]/collections/[collection]/[item]/
 ├── manifest.json        # structural: which bronze snapshot this was promoted from
 ├── item.jsonld.json     # domain: the item's canonical record — DC fields + associatedMedia
 ├── Preservation/        # preservation/download products: every bronze binary,
@@ -578,7 +592,8 @@ Content reaches silver and gold by one of two paths, depending on the content ty
   gold has no time dimension, its `manifest.json` is the only durable record of
   which bronze snapshot a given entry was promoted from. `argonath publish` re-runs this
   for a whole collection, and `argonath unpublish` deletes the collection's
-  `gold/[app]/[collection]/` folder (and its ES documents); `--purge-silver` also deletes
+  `gold/[app]/collections/[collection]/` folder, its `collection.jsonld.json` under `edits/`
+  (the featured image stays) and its ES documents; `--purge-silver` also deletes
   its silver website derivatives, unless another `[app]` still has the collection.
 
 ## Workspace Layout
@@ -628,8 +643,8 @@ kinds of file, never merged into one:
 |---|---|---|
 | `manifest.json` | Structural/system: CaskFS layout facts, pipeline run records, item lists + hashes, promotion status | schema.org / descriptive fields |
 | `metadata.jsonld.json` / `<item>.jsonld.json` | Domain: schema.org descriptive metadata about the collection or item | Pipeline state, run history, promotion status |
-| `gold/[app]/[collection]/collection.jsonld.json` | Domain: the collection's canonical record — one collection node (descriptive fields, identifiers), no `hasPart` | Pipeline state, run history, item lists |
-| `gold/[app]/[collection]/[item]/item.jsonld.json` | Domain: the item's canonical record — an `@graph` of the item node (descriptive fields, identifiers, `isPartOf`) and one node per preservation master (referencing its gold copy via `cask://` — see "Gold Layout" above) | Pipeline state, run history, promotion status |
+| `gold/[app]/edits/collections/[collection]/collection.jsonld.json` | Domain: the collection's canonical record — one collection node (descriptive fields, identifiers), no `hasPart` | Pipeline state, run history, item lists |
+| `gold/[app]/collections/[collection]/[item]/item.jsonld.json` | Domain: the item's canonical record — an `@graph` of the item node (descriptive fields, identifiers, `isPartOf`) and one node per preservation master (referencing its gold copy via `cask://` — see "Gold Layout" above) | Pipeline state, run history, promotion status |
 
 This is a deliberate reaction against LDP's convention of mixing container/structural
 triples with a resource's own descriptive triples in one graph — CaskFS keeps them as

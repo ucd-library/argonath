@@ -264,7 +264,7 @@ def outputs(monkeypatch):
             _Entry("a.jpg", "/silver/g/c/latest/tree/gone/public-frontend-derivatives/a.jpg", "file"),
             _Entry("b.jpg", "/silver/g/c/latest/tree/gone/public-frontend-derivatives/b.jpg", "file"),
         ],
-        "cask:/gold/digital-dev/c/tree/gone": [_Entry("item.jsonld.json", "/gold/digital-dev/c/tree/gone/item.jsonld.json", "file")],
+        "cask:/gold/digital-dev/collections/c/tree/gone": [_Entry("item.jsonld.json", "/gold/digital-dev/collections/c/tree/gone/item.jsonld.json", "file")],
     }
     state = {"exists": set(tree) - {"cask:/gold"}, "deleted": []}
     monkeypatch.setattr(collection_index.fs, "ls", lambda path, opts={}: tree[path])
@@ -278,8 +278,8 @@ def outputs(monkeypatch):
 def test_item_output_dirs_covers_silver_and_every_gold_project(outputs):
     assert collection_index.item_output_dirs("/bronze/g/c/latest/tree/gone") == [
         "cask:/silver/g/c/latest/tree/gone",
-        "cask:/gold/digital-dev/c/tree/gone",
-        "cask:/gold/digital-prod/c/tree/gone",
+        "cask:/gold/digital-dev/collections/c/tree/gone",
+        "cask:/gold/digital-prod/collections/c/tree/gone",
     ]
 
 
@@ -293,11 +293,11 @@ def test_remove_item_outputs_deletes_and_reports_what_existed(outputs):
 
     assert outputs["deleted"] == [
         ("cask:/silver/g/c/latest/tree/gone", {"directory": True}),
-        ("cask:/gold/digital-dev/c/tree/gone", {"directory": True}),
+        ("cask:/gold/digital-dev/collections/c/tree/gone", {"directory": True}),
     ]
     assert result["removed"] == [
         {"folder": "/bronze/g/c/latest/tree/gone", "path": "cask:/silver/g/c/latest/tree/gone", "files": 3},
-        {"folder": "/bronze/g/c/latest/tree/gone", "path": "cask:/gold/digital-dev/c/tree/gone", "files": 1},
+        {"folder": "/bronze/g/c/latest/tree/gone", "path": "cask:/gold/digital-dev/collections/c/tree/gone", "files": 1},
     ]
 
 
@@ -318,34 +318,46 @@ def test_remove_item_outputs_keeps_an_item_back_in_bronze(outputs):
     assert outputs["deleted"] == []
 
 
+RECORD = "cask:/gold/digital-dev/edits/collections/c/collection.jsonld.json"
+
+
 def test_remove_collection_gold_deletes_the_project_folder(monkeypatch, outputs):
-    outputs["exists"].add("cask:/gold/digital-dev/c")
+    outputs["exists"].add("cask:/gold/digital-dev/collections/c")
     tree_ls = collection_index.fs.ls
 
     def ls(path, opts={}):
-        if path == "cask:/gold/digital-dev/c":
-            return [_Entry("tree", "/gold/digital-dev/c/tree", "directory")]
-        if path == "cask:/gold/digital-dev/c/tree":
-            return [_Entry("gone", "/gold/digital-dev/c/tree/gone", "directory")]
+        if path == "cask:/gold/digital-dev/collections/c":
+            return [_Entry("tree", "/gold/digital-dev/collections/c/tree", "directory")]
+        if path == "cask:/gold/digital-dev/collections/c/tree":
+            return [_Entry("gone", "/gold/digital-dev/collections/c/tree/gone", "directory")]
         return tree_ls(path, opts)
 
     monkeypatch.setattr(collection_index.fs, "ls", ls)
     result = collection_index.remove_collection_gold("bronze/g/c")
 
-    assert outputs["deleted"] == [("cask:/gold/digital-dev/c", {"directory": True})]
+    assert outputs["deleted"] == [("cask:/gold/digital-dev/collections/c", {"directory": True})]
     assert result == {
-        "collection": "bronze/g/c", "path": "cask:/gold/digital-dev/c", "files": 1, "removed": True, "dryRun": False,
+        "collection": "bronze/g/c", "path": "cask:/gold/digital-dev/collections/c",
+        "record": RECORD, "files": 1, "removed": True, "dryRun": False,
     }
 
 
+def test_remove_collection_gold_deletes_the_edits_record_only(monkeypatch, outputs):
+    outputs["exists"].add(RECORD)
+    result = collection_index.remove_collection_gold("bronze/g/c")
+
+    assert outputs["deleted"] == [(RECORD, {})]
+    assert result["removed"] is True and result["files"] == 1
+
+
 def test_remove_collection_gold_uses_project_and_dry_run(monkeypatch, outputs):
-    outputs["exists"].add("cask:/gold/digital-prod/c")
+    outputs["exists"].add("cask:/gold/digital-prod/collections/c")
     monkeypatch.setattr(collection_index.fs, "ls", lambda path, opts={}: [])
 
     result = collection_index.remove_collection_gold("bronze/g/c", {"project": "digital-prod", "dry_run": True})
 
     assert outputs["deleted"] == []
-    assert result["path"] == "cask:/gold/digital-prod/c"
+    assert result["path"] == "cask:/gold/digital-prod/collections/c"
     assert result["removed"] is False and result["dryRun"] is True
 
 
@@ -400,7 +412,7 @@ def test_remove_collection_silver_dry_run_deletes_nothing(silver):
 
 
 def test_remove_collection_silver_skips_while_another_project_has_it(silver):
-    silver["exists"].add("cask:/gold/digital-prod/c")
+    silver["exists"].add("cask:/gold/digital-prod/collections/c")
 
     result = collection_index.remove_collection_silver("bronze/g/c")
 
@@ -409,7 +421,7 @@ def test_remove_collection_silver_skips_while_another_project_has_it(silver):
 
 
 def test_other_gold_projects_ignores_the_current_project(silver):
-    silver["exists"].update({"cask:/gold/digital-dev/c", "cask:/gold/digital-prod/c"})
+    silver["exists"].update({"cask:/gold/digital-dev/collections/c", "cask:/gold/digital-prod/collections/c"})
 
     assert collection_index.other_gold_projects("bronze/g/c") == ["digital-prod"]
     assert collection_index.other_gold_projects("bronze/g/c", {"project": "digital-prod"}) == ["digital-dev"]
@@ -456,23 +468,23 @@ def test_reindex_collection_lists_bronze_only_with_rebuild(monkeypatch, bronze, 
 
 def test_gold_item_folders_walks_gold_for_records(monkeypatch):
     tree = {
-        "cask:/gold/digital-dev/c": [
-            _Entry("collection.jsonld.json", "/gold/digital-dev/c/collection.jsonld.json", "file"),
-            _Entry("tree", "/gold/digital-dev/c/tree", "directory"),
+        "cask:/gold/digital-dev/collections/c": [
+            _Entry("collection.jsonld.json", "/gold/digital-dev/collections/c/collection.jsonld.json", "file"),
+            _Entry("tree", "/gold/digital-dev/collections/c/tree", "directory"),
         ],
-        "cask:/gold/digital-dev/c/tree": [
-            _Entry("a", "/gold/digital-dev/c/tree/a", "directory"),
-            _Entry("b", "/gold/digital-dev/c/tree/b", "directory"),
+        "cask:/gold/digital-dev/collections/c/tree": [
+            _Entry("a", "/gold/digital-dev/collections/c/tree/a", "directory"),
+            _Entry("b", "/gold/digital-dev/collections/c/tree/b", "directory"),
         ],
-        "cask:/gold/digital-dev/c/tree/a": [
-            _Entry("item.jsonld.json", "/gold/digital-dev/c/tree/a/item.jsonld.json", "file"),
-            _Entry("manifest.json", "/gold/digital-dev/c/tree/a/manifest.json", "file"),
+        "cask:/gold/digital-dev/collections/c/tree/a": [
+            _Entry("item.jsonld.json", "/gold/digital-dev/collections/c/tree/a/item.jsonld.json", "file"),
+            _Entry("manifest.json", "/gold/digital-dev/collections/c/tree/a/manifest.json", "file"),
         ],
-        "cask:/gold/digital-dev/c/tree/b": [
-            _Entry("item.jsonld.json", "/gold/digital-dev/c/tree/b/item.jsonld.json", "file"),
+        "cask:/gold/digital-dev/collections/c/tree/b": [
+            _Entry("item.jsonld.json", "/gold/digital-dev/collections/c/tree/b/item.jsonld.json", "file"),
         ],
     }
-    manifests = {"cask:/gold/digital-dev/c/tree/a/manifest.json": {"bronze": "/bronze/g/c/latest/tree/a"}}
+    manifests = {"cask:/gold/digital-dev/collections/c/tree/a/manifest.json": {"bronze": "/bronze/g/c/latest/tree/a"}}
     monkeypatch.setattr(collection_index.fs, "ls", lambda path, opts={}: tree[path])
     monkeypatch.setattr(collection_index.fs, "exists", lambda path: path in manifests)
     monkeypatch.setattr(collection_index.fs, "read", lambda path: json.dumps(manifests[path]).encode())

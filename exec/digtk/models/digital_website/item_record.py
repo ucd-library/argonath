@@ -14,7 +14,7 @@ It's meant to run once derivative generation/finalize are done, as its own
 pipeline step (see dagster/lib/pipeline_item.py's pdc_generate_item_record op
 and dagster/lib/pipeline_fanout.py's build_item_record()).
 
-The record is written to gold/[project]/[collection]/[item_path]/item.jsonld.json,
+The record is written to gold/[project]/collections/[collection]/[item_path]/item.jsonld.json,
 next to a manifest.json recording the bronze folder it was built from — gold
 has no time dimension, so that manifest is what digtk.lib.items.resolve() reads
 to get from an ARK back to the item's bronze location.
@@ -150,7 +150,7 @@ def record_path(item, opts={}):
 
     :param digtk.lib.items.ItemLocation item: Resolved item location.
     :param dict opts: 'project' — see _project().
-    :returns: e.g. 'cask:/gold/digital-dev/haeger/tree/quarter-mile/item.jsonld.json'.
+    :returns: e.g. 'cask:/gold/digital-dev/collections/haeger/tree/quarter-mile/item.jsonld.json'.
     :rtype: str
     """
     dest = derivative.dest_path(
@@ -176,8 +176,8 @@ def _bronze_path_for(content_url, gold_dir, bronze):
     (see promote_media()) maps back to the same path under the bronze item
     folder, and a bronze URL (records built before promotion) is kept.
 
-    :param str content_url: e.g. 'cask://gold/digital-dev/c/tree/a/Preservation/p1.tif'.
-    :param str gold_dir: The record's gold folder, e.g. '/gold/digital-dev/c/tree/a'.
+    :param str content_url: e.g. 'cask://gold/digital-dev/collections/c/tree/a/Preservation/p1.tif'.
+    :param str gold_dir: The record's gold folder, e.g. '/gold/digital-dev/collections/c/tree/a'.
     :param str bronze: The manifest's bronze folder, e.g. '/bronze/g/c/latest/tree/a'.
     :returns: e.g. 'cask:/bronze/g/c/latest/tree/a/Preservation/p1.tif', or None.
     :rtype: str|None
@@ -768,7 +768,7 @@ def gold_media_path(item, bronze_path, opts={}):
     :param digtk.lib.items.ItemLocation item: Resolved item location.
     :param str bronze_path: 'cask:/bronze/...' binary path.
     :param dict opts: 'project' — see _project().
-    :returns: e.g. 'cask:/gold/digital-dev/haeger/tree/quarter-mile/Preservation/page_001.tif'.
+    :returns: e.g. 'cask:/gold/digital-dev/collections/haeger/tree/quarter-mile/Preservation/page_001.tif'.
     :rtype: str
     """
     rel = _media_rel_path(item, bronze_path)

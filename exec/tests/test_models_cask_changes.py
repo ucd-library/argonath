@@ -44,7 +44,7 @@ def cask(monkeypatch):
 
 
 def _gold_path(item_path):
-    return f"cask:/gold/digital-dev/haeger/{item_path}/item.jsonld.json"
+    return f"cask:/gold/digital-dev/collections/haeger/{item_path}/item.jsonld.json"
 
 
 def _changes(cursor={"after": 0, "done": {}}, **opts):

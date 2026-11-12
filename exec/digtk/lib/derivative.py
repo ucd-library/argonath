@@ -3,7 +3,7 @@ digtk.lib.derivative — write silver/gold/workspace derivative files into CaskF
 
 A thin wrapper around digtk.lib.fs: builds the CaskFS destination path for a
 derivative artifact (silver mirrors bronze's [group]/[collection]/[time]/ shape;
-gold is a flattened, app-scoped [app]/[collection]/ current-state view with no
+gold is a flattened, app-scoped [app]/collections/[collection]/ current-state view with no
 time dimension, holding item/collection records and promoted preservation/download
 binaries;
 workspace is a per-user [group]/[collection]/ view — same 'group' opt as silver,
@@ -28,6 +28,11 @@ from digtk.lib import fs
 
 TYPES = ("silver", "gold", "workspace")
 
+# Gold app folder holding collection imports
+GOLD_COLLECTIONS_DIR = "collections"
+# Gold app folder holding per-collection edits
+GOLD_COLLECTION_EDITS_DIR = "edits/collections"
+
 
 def _clean_rel_path(rel_path):
     """Validate and normalize a caller-supplied path relative to a collection[/time] root.
@@ -45,6 +50,29 @@ def _clean_rel_path(rel_path):
     return cleaned
 
 
+def gold_collection_dir(*, app, collection):
+    """The CaskFS-absolute gold folder for one app's copy of a collection.
+
+    :param str app: Gold app/project, e.g. 'digital-dev'.
+    :param str collection: Collection name.
+    :returns: e.g. '/gold/digital-dev/collections/haeger'.
+    :rtype: str
+    """
+    return f"/gold/{app}/{GOLD_COLLECTIONS_DIR}/{collection}"
+
+
+def gold_collection_edits_dir(*, app, collection):
+    """The CaskFS-absolute gold edits folder for one app's copy of a collection.
+    Holds the collection record beside the website's featured image.
+
+    :param str app: Gold app/project, e.g. 'digital-dev'.
+    :param str collection: Collection name.
+    :returns: e.g. '/gold/digital-dev/edits/collections/haeger'.
+    :rtype: str
+    """
+    return f"/gold/{app}/{GOLD_COLLECTION_EDITS_DIR}/{collection}"
+
+
 def dest_path(*, type, collection, rel_path, opts={}):
     """Build the CaskFS-absolute destination path for a derivative file.
 
@@ -55,8 +83,9 @@ def dest_path(*, type, collection, rel_path, opts={}):
         inferred, since a derivative can be produced from more than one source.
     :param dict opts: 'group' (required when type='silver' or 'workspace' — for
         'workspace' this is the user's username, plumbed in by the caller), 'app'
-        (required when type='gold'), 'time' (silver only, defaults to 'latest' if
-        omitted — gold and workspace have no time dimension).
+        (required when type='gold'), 'edits' (gold only, bool — write under
+        gold_collection_edits_dir() instead of gold_collection_dir()), 'time' (silver
+        only, defaults to 'latest' if omitted — gold and workspace have no time dimension).
     :returns: CaskFS-absolute path, e.g.
         '/silver/digital-collections/ucd-photos/latest/item-1/derivatives/thumb-256.jpg'.
     :rtype: str
@@ -79,10 +108,13 @@ def dest_path(*, type, collection, rel_path, opts={}):
         app = opts.get("app")
         if not app:
             raise ValueError("opts['app'] is required when type='gold'")
-        return f"/gold/{app}/{collection}/{rel_path}"
+        folder = gold_collection_edits_dir if opts.get("edits") else gold_collection_dir
+        return f"{folder(app=app, collection=collection)}/{rel_path}"
 
     if opts.get("app"):
         raise ValueError(f"opts['app'] does not apply when type={type!r}")
+    if opts.get("edits"):
+        raise ValueError(f"opts['edits'] does not apply when type={type!r}")
     group = opts.get("group")
     if not group:
         raise ValueError(f"opts['group'] is required when type={type!r}")
@@ -114,7 +146,7 @@ def write_cask(*, type, collection, rel_path, data, source_files, opts={}):
     :param bytes data: Derivative file content.
     :param list[str] source_files: CaskFS paths ('cask:/'-prefixed) this derivative was
         produced from. Must be non-empty — a derivative always has at least one source.
-    :param dict opts: 'group'/'app'/'time' — see dest_path(). 'mime_type' (str, guessed
+    :param dict opts: 'group'/'app'/'edits'/'time' — see dest_path(). 'mime_type' (str, guessed
         from `rel_path` if omitted). 'replace' (bool, default False — overwrite vs. fail
         if the destination already exists). 'link_relation' (str, optional — forwarded to
         fs.add_derivative_link() as 'relation' for every source link; defaults server-side

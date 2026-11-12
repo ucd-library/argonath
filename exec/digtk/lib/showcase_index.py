@@ -23,7 +23,7 @@ import urllib.parse
 
 import httpx
 
-from digtk.lib import edtf_dates, items, fs, utils
+from digtk.lib import derivative, edtf_dates, items, fs, utils
 from digtk.lib.config import CONFIG
 from digtk.models.digital_website import (
     audio, captions, collection_record, image, item_record, pdf, pipeline, video, visibility,
@@ -1013,7 +1013,7 @@ def build_collection_document(name, opts={}):
         "itemCount": opts.get("item_count", 0),
         "visibility": "public" if "public" in roles else "private",
         # dc-showcase stores collection files here
-        "goldPath": posixpath.dirname(collection_record.record_path(name, opts).removeprefix("cask:")),
+        "goldPath": derivative.gold_collection_dir(app=item_record._project(opts), collection=name),
         **_date_fields(record),
     }
     return {
