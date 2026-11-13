@@ -170,7 +170,7 @@ def test_build_adopts_bronze_sidecar_descriptive_fields(fake_derivative, monkeyp
     assert root["identifier"][0] == bronze_doc["identifier"][0]
     assert {
         "@type": "PropertyValue", "propertyID": "CaskGoldPath",
-        "value": "cask://gold/digital-dev/c/item/item.jsonld.json",
+        "value": "cask://gold/digital-dev/collections/c/item/item.jsonld.json",
     } in root["identifier"]
     assert root["associatedMedia"] == []
     assert "@context" not in root
@@ -246,7 +246,7 @@ def test_build_minimal_doc_from_identifiers_json_when_no_bronze_sidecar(fake_der
     assert {"@type": "PropertyValue", "propertyID": "ARK", "value": ARK} in root["identifier"]
     assert {
         "@type": "PropertyValue", "propertyID": "CaskGoldPath",
-        "value": "cask://gold/digital-dev/c/item/item.jsonld.json",
+        "value": "cask://gold/digital-dev/collections/c/item/item.jsonld.json",
     } in root["identifier"]
     assert root["associatedMedia"] == []
 
@@ -327,7 +327,7 @@ def test_build_flat_associated_media_for_single_file_item(fake_derivative, monke
     root = _node(doc, ITEM_URI)
     assert len(root["associatedMedia"]) == 1
     media_node = _node(doc, root["associatedMedia"][0]["@id"])
-    assert media_node == {"@id": media_node["@id"], "contentUrl": "cask://gold/digital-dev/c/item/photo.tiff"}
+    assert media_node == {"@id": media_node["@id"], "contentUrl": "cask://gold/digital-dev/collections/c/item/photo.tiff"}
     assert root["image"] == {"@id": media_node["@id"]}
     assert len(doc["@graph"]) == 2
 
@@ -385,11 +385,11 @@ def test_build_has_part_for_multi_file_item(fake_derivative, monkeypatch):
     assert [c["position"] for c in children] == [1, 2]
     assert children[0] == {
         "@id": children[0]["@id"], "position": 1,
-        "contentUrl": "cask://gold/digital-dev/c/box-1/folder-3/photo-a.tiff",
+        "contentUrl": "cask://gold/digital-dev/collections/c/box-1/folder-3/photo-a.tiff",
     }
     assert children[1] == {
         "@id": children[1]["@id"], "position": 2,
-        "contentUrl": "cask://gold/digital-dev/c/box-1/folder-3/photo-b.tiff",
+        "contentUrl": "cask://gold/digital-dev/collections/c/box-1/folder-3/photo-b.tiff",
     }
     assert root["image"] == {"@id": children[0]["@id"]}
     assert len(doc["@graph"]) == 4
@@ -485,7 +485,7 @@ def test_build_pdf_only_item_uses_root_associated_media(fake_derivative, monkeyp
     root = _node(doc, ITEM_URI)
     assert len(root["associatedMedia"]) == 1
     pdf_node = _node(doc, root["associatedMedia"][0]["@id"])
-    assert pdf_node == {"@id": pdf_node["@id"], "contentUrl": "cask://gold/digital-dev/c/item/document.pdf"}
+    assert pdf_node == {"@id": pdf_node["@id"], "contentUrl": "cask://gold/digital-dev/collections/c/item/document.pdf"}
     assert "image" not in root
 
 
@@ -505,7 +505,7 @@ def test_build_audio_video_node_is_bare(fake_derivative, monkeypatch):
         "@id": video_node["@id"],
         "@type": ["schema:VideoObject", "schema:CreativeWork"],
         "argonath:sourceGroup": "video",
-        "contentUrl": "cask://gold/digital-dev/c/item/interview.mp4",
+        "contentUrl": "cask://gold/digital-dev/collections/c/item/interview.mp4",
     }
 
 
@@ -538,9 +538,9 @@ def test_build_writes_a_gold_manifest_recording_the_bronze_folder(fake_derivativ
 
 
 def test_record_path_is_under_the_gold_project():
-    assert item_record.record_path(TREE_ITEM) == "cask:/gold/digital-dev/haeger/tree/quarter-mile/item.jsonld.json"
+    assert item_record.record_path(TREE_ITEM) == "cask:/gold/digital-dev/collections/haeger/tree/quarter-mile/item.jsonld.json"
     assert item_record.record_path(TREE_ITEM, {"project": "digital-prod"}) == (
-        "cask:/gold/digital-prod/haeger/tree/quarter-mile/item.jsonld.json"
+        "cask:/gold/digital-prod/collections/haeger/tree/quarter-mile/item.jsonld.json"
     )
 
 
@@ -596,15 +596,15 @@ def test_gold_location_reads_only_gold(monkeypatch):
         {"@id": "https://digital.ucdavis.edu/item/ark:/1/a#x", "contentUrl": "https://example.org/x"},
     ]}
     files = {
-        "cask:/gold/digital-dev/c/tree/a/item.jsonld.json": record,
-        "cask:/gold/digital-dev/c/tree/a/manifest.json": {"bronze": "/bronze/g/c/latest/tree/a"},
+        "cask:/gold/digital-dev/collections/c/tree/a/item.jsonld.json": record,
+        "cask:/gold/digital-dev/collections/c/tree/a/manifest.json": {"bronze": "/bronze/g/c/latest/tree/a"},
     }
     reads = []
 
     def fake_read(path):
         reads.append(path)
         return json.dumps(files[path]).encode()
-    monkeypatch.setattr(item_record.items, "find_gold_record", lambda ark, opts={}: "/gold/digital-dev/c/tree/a/item.jsonld.json")
+    monkeypatch.setattr(item_record.items, "find_gold_record", lambda ark, opts={}: "/gold/digital-dev/collections/c/tree/a/item.jsonld.json")
     monkeypatch.setattr(item_record.fs, "read", fake_read)
 
     location, got = item_record.gold_location("ark:/1/a")
@@ -618,23 +618,23 @@ def test_gold_location_reads_only_gold(monkeypatch):
 
 
 def test_gold_location_maps_gold_copies_back_to_bronze(monkeypatch):
-    gold = "cask://gold/digital-dev/c/tree/a"
+    gold = "cask://gold/digital-dev/collections/c/tree/a"
     record = {"@id": "ark:/1/a", "@graph": [
         {"@id": "https://digital.ucdavis.edu/item/ark:/1/a", "name": "A"},
         {"@id": "https://digital.ucdavis.edu/item/ark:/1/a#imagelist/p1.tif", "contentUrl": f"{gold}/Preservation/p1.tif"},
         {"@id": "https://digital.ucdavis.edu/item/ark:/1/a#media/a.pdf", "contentUrl": f"{gold}/Access/a.pdf"},
-        {"@id": "https://digital.ucdavis.edu/item/ark:/1/a#x", "contentUrl": "cask://gold/digital-dev/c/tree/other/x.tif"},
+        {"@id": "https://digital.ucdavis.edu/item/ark:/1/a#x", "contentUrl": "cask://gold/digital-dev/collections/c/tree/other/x.tif"},
     ]}
     files = {
-        "cask:/gold/digital-dev/c/tree/a/item.jsonld.json": record,
-        "cask:/gold/digital-dev/c/tree/a/manifest.json": {"bronze": "/bronze/g/c/latest/tree/a"},
+        "cask:/gold/digital-dev/collections/c/tree/a/item.jsonld.json": record,
+        "cask:/gold/digital-dev/collections/c/tree/a/manifest.json": {"bronze": "/bronze/g/c/latest/tree/a"},
     }
     reads = []
 
     def fake_read(path):
         reads.append(path)
         return json.dumps(files[path]).encode()
-    monkeypatch.setattr(item_record.items, "find_gold_record", lambda ark, opts={}: "/gold/digital-dev/c/tree/a/item.jsonld.json")
+    monkeypatch.setattr(item_record.items, "find_gold_record", lambda ark, opts={}: "/gold/digital-dev/collections/c/tree/a/item.jsonld.json")
     monkeypatch.setattr(item_record.fs, "read", fake_read)
 
     location, _ = item_record.gold_location("ark:/1/a")
@@ -654,12 +654,12 @@ def test_gold_location_without_a_record_raises(monkeypatch):
 
 def test_gold_media_path_keeps_representation_folder():
     path = item_record.gold_media_path(TREE_ITEM, f"{TREE_FOLDER}/Preservation/photo.tiff")
-    assert path == "cask:/gold/digital-dev/haeger/tree/quarter-mile/Preservation/photo.tiff"
+    assert path == "cask:/gold/digital-dev/collections/haeger/tree/quarter-mile/Preservation/photo.tiff"
 
 
 def test_gold_media_path_uses_project():
     path = item_record.gold_media_path(ITEM, "cask:/bronze/g/c/latest/item/photo.tiff", {"project": "digital-prod"})
-    assert path == "cask:/gold/digital-prod/c/item/photo.tiff"
+    assert path == "cask:/gold/digital-prod/collections/c/item/photo.tiff"
 
 
 def test_promote_media_copies_every_binary(fake_copy):
@@ -668,7 +668,7 @@ def test_promote_media_copies_every_binary(fake_copy):
         bronze_binary_paths=[f"{TREE_FOLDER}/Access/photo.jpg", f"{TREE_FOLDER}/Preservation/photo.tiff"],
     )
     gold_paths = item_record.promote_media(item)
-    gold = "cask:/gold/digital-dev/haeger/tree/quarter-mile"
+    gold = "cask:/gold/digital-dev/collections/haeger/tree/quarter-mile"
     assert gold_paths == {
         f"{TREE_FOLDER}/Access/photo.jpg": f"{gold}/Access/photo.jpg",
         f"{TREE_FOLDER}/Preservation/photo.tiff": f"{gold}/Preservation/photo.tiff",
@@ -680,7 +680,7 @@ def test_build_points_content_url_at_gold_copy(monkeypatch, fake_derivative, fak
     monkeypatch.setattr(item_record.items, "resolve_target", lambda target, opts={}: TREE_ITEM)
     _fs(monkeypatch)
     doc = item_record.build(TREE_ITEM)
-    gold = "gold/digital-dev/haeger/tree/quarter-mile/Preservation/photo.tiff"
+    gold = "gold/digital-dev/collections/haeger/tree/quarter-mile/Preservation/photo.tiff"
     assert fake_copy == [(f"{TREE_FOLDER}/Preservation/photo.tiff", f"cask:/{gold}", {"replace": True})]
     media = [n for n in doc["@graph"] if "contentUrl" in n]
     assert [n["contentUrl"] for n in media] == [f"cask://{gold}"]

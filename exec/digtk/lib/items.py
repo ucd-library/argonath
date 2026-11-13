@@ -36,6 +36,7 @@ instead of silver — every ItemLocation carries its own destination
 (dest_type/dest_prefix, see dest_rel()/dest_opts()/dest_dir()), so the root-level
 tools write wherever their item came from without branching on it themselves.
 """
+import fnmatch
 import json
 import re
 from dataclasses import dataclass
@@ -155,13 +156,43 @@ def _list_item_binaries(group, collection, time, item_path):
 
 
 def _is_binary(filename):
-    """Whether a listed file is a real source binary rather than a sidecar or
-    source-system bookkeeping file.
+    """Whether a listed file is a real source binary rather than a sidecar,
+    source-system bookkeeping file, or ignored OS clutter (see is_ignored_file()).
 
     :param str filename: File name (no directory).
     :rtype: bool
     """
-    return not filename.endswith(SIDECAR_SUFFIX) and filename not in _NON_BINARY_FILENAMES
+    return (
+        not filename.endswith(SIDECAR_SUFFIX)
+        and filename not in _NON_BINARY_FILENAMES
+        and not is_ignored_file(filename)
+    )
+
+
+def ignored_patterns(opts={}):
+    """The lowercased filename globs for files every pipeline ignores.
+
+    :param dict opts: 'ignored_files' (comma-separated str) overrides
+        CONFIG["items"]["ignored_files"].
+    :returns: Glob patterns, e.g. ['.ds_store', '*.lnk'].
+    :rtype: list[str]
+    """
+    raw = opts.get("ignored_files", CONFIG["items"]["ignored_files"]) or ""
+    return [p.strip().lower() for p in raw.split(",") if p.strip()]
+
+
+def is_ignored_file(filename, opts={}):
+    """Whether a file is OS clutter (e.g. .DS_Store, Thumbs.db, .lnk shortcuts)
+    that pipelines should skip. Bronze keeps it; it's just never processed.
+    Patterns come from items.ignored_files (env DIGTK_IGNORED_FILES).
+
+    :param str filename: File name or path; only the basename is matched.
+    :param dict opts: Forwarded to ignored_patterns().
+    :returns: True if the name matches any ignore pattern (case-insensitive).
+    :rtype: bool
+    """
+    name = filename.rsplit("/", 1)[-1].lower()
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in ignored_patterns(opts))
 
 
 def _resolve_gold_record(ark, record_path):
@@ -249,6 +280,7 @@ def resolve(ark, opts={}):
         m for m in matches
         if m.startswith(BRONZE_PREFIX) and m.endswith(SIDECAR_SUFFIX)
         and m.rsplit("/", 1)[-1] != ITEM_RECORD_FILENAME
+        and not is_ignored_file(m[: -len(SIDECAR_SUFFIX)])
     )
 
     if not sidecar_paths:

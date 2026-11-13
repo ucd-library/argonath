@@ -118,7 +118,7 @@ def derivatives(target, opts={}):
     Runs the HLS adaptive-bitrate ladder for every source video, publishing into its
     own `<video-filename>/streaming/` directory (see PUBLIC_FRONTEND_DIR and
     docs/cask-conventions.md's Video Streaming section), then transcribes every
-    source to a WebVTT caption via captions.transcribe_sources() (local Whisper ASR —
+    source with an audio stream to a WebVTT caption via captions.transcribe_sources() (local Whisper ASR —
     machine-generated and unreviewed, see docs/cask-conventions.md's
     Captions/Transcripts section) using the same staged sources. All local
     generation happens before anything is published to CaskFS, so a failure at any

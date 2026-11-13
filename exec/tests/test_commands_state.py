@@ -3,7 +3,7 @@ import json
 from typer.testing import CliRunner
 
 from digtk.main import app
-from digtk.models import collection_state
+from digtk.models import collection_registry
 
 runner = CliRunner()
 
@@ -21,7 +21,7 @@ def test_enqueue_collection_passes_the_batch(monkeypatch):
     def fake(key, opts={}):
         seen.update(key=key, opts=opts)
         return {"collection": key, "items": 1, "added": 1, "enqueued": 1}
-    monkeypatch.setattr(collection_state, "enqueue_collection", fake)
+    monkeypatch.setattr(collection_registry, "enqueue_collection", fake)
 
     result = runner.invoke(app, ["state", "enqueue-collection", "--collection-key", KEY, "--batch", "run-1"])
 
@@ -36,7 +36,7 @@ def test_enqueue_collection_passes_force(monkeypatch):
     def fake(key, opts={}):
         seen.update(opts=opts)
         return {"collection": key, "items": 1, "added": 1, "enqueued": 1}
-    monkeypatch.setattr(collection_state, "enqueue_collection", fake)
+    monkeypatch.setattr(collection_registry, "enqueue_collection", fake)
 
     result = runner.invoke(app, ["state", "enqueue-collection", "--collection-key", KEY, "--force"])
 
@@ -45,8 +45,8 @@ def test_enqueue_collection_passes_force(monkeypatch):
 
 
 def test_pending_and_ack(monkeypatch):
-    monkeypatch.setattr(collection_state, "pending", lambda job, limit, opts={}: [{"id": 1, "limit": limit}])
-    monkeypatch.setattr(collection_state, "ack", lambda ids, opts={}: len(ids))
+    monkeypatch.setattr(collection_registry, "pending", lambda job, limit, opts={}: [{"id": 1, "limit": limit}])
+    monkeypatch.setattr(collection_registry, "ack", lambda ids, opts={}: len(ids))
 
     pending = runner.invoke(app, ["state", "pending", "--job-name", "process_item_job", "--limit", "5"])
     ack = runner.invoke(app, ["state", "ack", "--id", "1", "--id", "2"])
@@ -57,7 +57,7 @@ def test_pending_and_ack(monkeypatch):
 
 def test_result_parses_the_json_and_targets_the_item(monkeypatch):
     seen = {}
-    monkeypatch.setattr(collection_state, "record_result",
+    monkeypatch.setattr(collection_registry, "record_result",
                         lambda job, opts={}: seen.update(job=job, opts=opts) or {"id": 1})
 
     result = runner.invoke(app, [
@@ -83,8 +83,8 @@ def test_result_rejects_non_object_json():
 
 def test_rollup_reports_db_errors_through_utils_error(monkeypatch):
     def missing(key, opts={}):
-        raise LookupError(f"collection not tracked in collection_state: {key}")
-    monkeypatch.setattr(collection_state, "rollup", missing)
+        raise LookupError(f"collection not tracked in collection_registry: {key}")
+    monkeypatch.setattr(collection_registry, "rollup", missing)
 
     result = runner.invoke(app, ["state", "rollup", "--collection-key", KEY])
 

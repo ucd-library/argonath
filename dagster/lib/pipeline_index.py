@@ -13,7 +13,7 @@ from dagster import (
 from lib.configs import (
     CaskChangesConfig, DeleteItemIndexConfig, ReindexCollectionConfig, UnpublishCollectionConfig, collections_partitions,
 )
-from lib import collection_state
+from lib import collection_registry
 from lib.fanout_batching import emit, log_batch, relative_id, step_key
 from lib.pipeline_collection import pdc_index_collection
 from lib.utils import celery_job_executor, default_run_config, exec
@@ -36,7 +36,7 @@ def fan_out_reindex_tasks(context: OpExecutionContext, config: ReindexCollection
         missing = set(silver["missing"])
         folders = [f for f in silver["items"] if f not in missing]
         if missing:
-            queued = collection_state.enqueue_items(sorted(missing), {"trigger": "publish"})["enqueued"]
+            queued = collection_registry.enqueue_items(sorted(missing), {"trigger": "publish"})["enqueued"]
             context.log.info(f"{key}: {len(missing)} item(s) missing silver derivatives, {queued} queued for item runs")
     else:
         folders = exec(["digtk", "showcase", "es", "gold-items", key])["items"]

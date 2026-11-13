@@ -1,6 +1,6 @@
 """
-Dagster's side of the collection_state store (see digtk.models.collection_state
-and exec/digtk/sql/collection_state.sql): the job queue, item/collection job
+Dagster's side of the collection_registry store (see digtk.models.collection_registry
+and exec/digtk/sql/collection_registry.sql): the job queue, item/collection job
 results and collection rollups. Every call goes through the digtk CLI (`digtk
 state ...`) via lib.utils.exec(), like every other Dagster/digtk interaction.
 
@@ -60,7 +60,7 @@ def item_result(context, item, status, opts={}):
 
 
 def record_item_result(item, result, opts={}):
-    """Record an item job's result in collection_state. Never raises.
+    """Record an item job's result in collection_registry. Never raises.
 
     :param str item: Item bronze folder path.
     :param dict result: item_result()'s dict.
@@ -79,7 +79,7 @@ def record_item_result(item, result, opts={}):
     try:
         _state(cmd)
     except Exception as e:
-        log.warning(f"collection_state: couldn't record {result['status']} for {item}: {e}")
+        log.warning(f"collection_registry: couldn't record {result['status']} for {item}: {e}")
         return False
     return True
 

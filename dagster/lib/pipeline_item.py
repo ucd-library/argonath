@@ -33,7 +33,7 @@ Runs screen. Queued runs (see lib.pipeline_collection.item_queue) already have
 argonath/item and argonath/collection at launch.
 
 Each run's outcome is recorded as the item's gold_dcs_process_item result in
-collection_state (see lib.collection_state): "success" once the item is
+collection_registry (see lib.collection_registry): "success" once the item is
 indexed, and "failed" from the op that fails. A recorded
 result also tags the run argonath/result=<status>. process_item_failure
 records "failed" for failed runs without that tag, e.g. a crashed worker or an
@@ -52,7 +52,7 @@ from dagster import (
     op,
 )
 
-from lib import collection_state
+from lib import collection_registry
 from lib.configs import ItemRunConfig
 from lib.fanout_batching import batches, log_batch, log_batching, relative_id, step_key
 from lib.pipeline_fanout import (
@@ -244,7 +244,7 @@ def pdc_index_item(context: OpExecutionContext, item: dict) -> dict:
 
 
 def _record(context, item, status, opts={}):
-    """Record this run's result for the item in collection_state (best-effort)
+    """Record this run's result for the item in collection_registry (best-effort)
     and tag the run with it.
 
     :param context: Dagster op execution context.
@@ -252,8 +252,8 @@ def _record(context, item, status, opts={}):
     :param str status: "success" or "failed".
     :param dict opts: 'error' (str).
     """
-    result = collection_state.item_result(context, item, status, opts)
-    collection_state.record_item_result(item["item"], result, {"log": context.log, "context": context})
+    result = collection_registry.item_result(context, item, status, opts)
+    collection_registry.record_item_result(item["item"], result, {"log": context.log, "context": context})
 
 
 @job(
@@ -285,7 +285,7 @@ def gold_dcs_process_item():
     ),
 )
 def process_item_failure(context: dg.RunFailureSensorContext):
-    """Record "failed" in collection_state for failed gold_dcs_process_item runs
+    """Record "failed" in collection_registry for failed gold_dcs_process_item runs
     that didn't record a result themselves — no argonath/result tag, e.g. a
     crashed celery worker or an unexpected error in an op. The error is taken
     from the run's step failures. Runs whose op already recorded "failed" are
@@ -298,7 +298,7 @@ def process_item_failure(context: dg.RunFailureSensorContext):
     :param context: Dagster run failure sensor context.
     """
     run = context.dagster_run
-    if run.tags.get(collection_state.RESULT_TAG):
+    if run.tags.get(collection_registry.RESULT_TAG):
         return
     item = run.tags.get("argonath/item")
     if not item:
@@ -308,7 +308,7 @@ def process_item_failure(context: dg.RunFailureSensorContext):
         try:
             item, _ = normalize_item(configured)
         except ValueError:
-            context.log.warning(f"run {run.run_id} has no valid item, nothing to record in collection_state")
+            context.log.warning(f"run {run.run_id} has no valid item, nothing to record in collection_registry")
             return
     errors = [
         f"{event.step_key}: {event.event_specific_data.error.message.strip()}"
@@ -316,7 +316,7 @@ def process_item_failure(context: dg.RunFailureSensorContext):
         if event.event_specific_data and event.event_specific_data.error
     ]
     error = "; ".join(errors) or (context.failure_event.message if context.failure_event else "run failed")
-    result = collection_state.item_result(
+    result = collection_registry.item_result(
         context, {"ark": run.tags.get("argonath/ark")}, "failed", {"error": error, "run_id": run.run_id},
     )
-    collection_state.record_item_result(item, result, {"log": context.log})
+    collection_registry.record_item_result(item, result, {"log": context.log})

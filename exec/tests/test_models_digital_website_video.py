@@ -118,6 +118,8 @@ def fake_whisper(monkeypatch):
         return {"argv": [], "dest_path": dest_path}
 
     monkeypatch.setattr(vw.captions.whisper_utils, "transcribe", fake_transcribe)
+    monkeypatch.setattr(vw.captions.ffmpeg_utils, "has_audio_stream", lambda path, opts={}: True)
+    monkeypatch.setattr(vw.captions, "whisper_timeout", lambda path, opts={}: 3600.0)
     return calls
 
 

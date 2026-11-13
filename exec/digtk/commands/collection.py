@@ -16,18 +16,17 @@ Subcommands:
   items      — list a collection's current item folders (see
                digtk.models.collection.list_item_folders) — used by Dagster's
                collection-level fan-out (dagster/lib/pipeline_fanout.py).
-  init-pg    — apply the collection registry's Postgres schema (see
-               digtk.models.collection.init_pg / collection_registry.sql). Safe
-               to run repeatedly.
+
+Registrations live in collection_registry.collection; apply its schema with
+`digtk state init-pg`.
 """
 import subprocess
 from enum import Enum
 from typing import Annotated
 
-import psycopg2
 import typer
 
-from digtk.lib import db, utils
+from digtk.lib import utils
 from digtk.models import collection as collection_model
 
 app = typer.Typer(help="Manage CaskFS collections.", no_args_is_help=True)
@@ -162,19 +161,3 @@ def items(
 
     utils.result({"status": "success", "collection": collection, "items": paths})
 
-
-@app.command("init-pg")
-def init_pg():
-    """Apply the collection registry's Postgres schema (creates the 'argonath'
-    schema and its collection_registry/collection_identifiers tables if they
-    don't already exist — see digtk.models.collection.init_pg()). Safe to run
-    repeatedly."""
-    try:
-        collection_model.init_pg()
-    except ValueError as e:
-        utils.error(str(e))
-    except psycopg2.OperationalError as e:
-        utils.error(f"Could not connect to Postgres: {e}")
-
-    utils.log(f"Applied collection registry schema to Postgres schema '{db.SCHEMA}'.")
-    utils.result({"status": "success", "schema": db.SCHEMA})
