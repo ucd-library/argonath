@@ -69,6 +69,26 @@ manifest to find:
 - **removed** ARKs — no longer present in the batch — delete downstream (see below)
 - **changed** ARKs — same ARK, different content hash — reprocess
 
+### Ignored Files
+
+Bronze keeps whatever the source delivered, but every pipeline skips OS clutter
+in an item: it's never treated as a binary (no derivatives, no item record, no
+"unrecognized media extension" failure), and the `bronze_collection_cask_audit`
+sensor ignores it appearing or disappearing, so no item is reprocessed.
+
+The list is `items.ignored_files`: comma-separated, case-insensitive filename
+globs matched against the file's basename (see `digtk.lib.items.is_ignored_file()`).
+Default:
+
+```
+.DS_Store,Thumbs.db,desktop.ini,*.lnk,._*
+```
+
+To change it, set `DIGTK_IGNORED_FILES` (in the compose `.env` or kustomize
+`app.env`) or run `digtk config set items.ignored_files "<list>"`. The new value
+**replaces** the default list, so include the defaults you still want, e.g.
+`.DS_Store,Thumbs.db,desktop.ini,*.lnk,._*,*.tmp`.
+
 ## Silver Layout
 
 Mirrors the bronze path exactly (`[group]/[collection]/[time]/[item]/`) but holds only

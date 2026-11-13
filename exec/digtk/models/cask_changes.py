@@ -53,9 +53,13 @@ def target_for(path, resource_type, roots):
     :param str path: CaskFS-absolute path from the audit row.
     :param str resource_type: 'file' or 'directory'.
     :param list[dict] roots: watched_roots()'s result.
-    :returns: {"kind": "item"|"collection", "key", "folder"?, "rel"?}, or None.
+    :returns: {"kind": "item"|"collection", "key", "folder"?, "rel"?}, or None
+        (also for ignored files, see digtk.lib.items.is_ignored_file()).
     :rtype: dict|None
     """
+    # OS clutter never triggers work
+    if resource_type == "file" and items.is_ignored_file(path):
+        return None
     for root in roots:
         if path in root["collection_files"]:
             return {"kind": "collection", "key": root["key"]}

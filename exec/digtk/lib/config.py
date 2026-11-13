@@ -179,6 +179,9 @@ CAPTIONS_WHISPER_BIN_ENV = "DIGTK_CAPTIONS_WHISPER_BIN"
 CAPTIONS_TIMEOUT_S_ENV = "DIGTK_CAPTIONS_TIMEOUT_S"
 CAPTIONS_TIMEOUT_FACTOR_ENV = "DIGTK_CAPTIONS_TIMEOUT_FACTOR"
 
+# Replaces (not extends) the default list
+IGNORED_FILES_ENV = "DIGTK_IGNORED_FILES"
+
 SHOWCASE_GOLD_PROJECT_ENV = "DIGTK_SHOWCASE_GOLD_PROJECT"
 SHOWCASE_ES_HOST_ENV = "SHOWCASE_ES_HOST"
 SHOWCASE_ES_INDEX_ENV = "SHOWCASE_ES_INDEX"
@@ -303,6 +306,7 @@ SETTINGS = [
     {"dotpath": "captions.whisper_bin", "env": CAPTIONS_WHISPER_BIN_ENV, "cast": str, "secret": False},
     {"dotpath": "captions.timeout_s", "env": CAPTIONS_TIMEOUT_S_ENV, "cast": float, "secret": False},
     {"dotpath": "captions.timeout_factor", "env": CAPTIONS_TIMEOUT_FACTOR_ENV, "cast": float, "secret": False},
+    {"dotpath": "items.ignored_files", "env": IGNORED_FILES_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase.gold_project", "env": SHOWCASE_GOLD_PROJECT_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase.es_host", "env": SHOWCASE_ES_HOST_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase.es_index", "env": SHOWCASE_ES_INDEX_ENV, "cast": str, "secret": False},
@@ -593,6 +597,10 @@ CONFIG = {
         "waveform_height": _env(AUDIO_WAVEFORM_HEIGHT_ENV, 256, int),
         "waveform_color": _env(AUDIO_WAVEFORM_COLOR_ENV, "0x3b82f6"),
         "timeout_s": _env(AUDIO_TIMEOUT_S_ENV, 600.0, float),
+    },
+    "items": {
+        # Comma-separated, case-insensitive filename globs
+        "ignored_files": _env(IGNORED_FILES_ENV, ".DS_Store,Thumbs.db,desktop.ini,*.lnk,._*"),
     },
     "captions": {
         "language": _env(CAPTIONS_LANGUAGE_ENV, "en"),

@@ -169,6 +169,11 @@ def test_captions_timeout_defaults():
     assert captions["timeout_factor"] == 3.0
 
 
+def test_items_ignored_files_default():
+    """OS clutter every pipeline skips; DIGTK_IGNORED_FILES replaces this list."""
+    assert config.CONFIG["items"]["ignored_files"] == ".DS_Store,Thumbs.db,desktop.ini,*.lnk,._*"
+
+
 def test_ocr_orientation_defaults():
     """Distinct from ocr.confidence_threshold (the ML-fallback trigger) — these
     govern the derivatives-time deskew orientation comparison."""

@@ -244,6 +244,21 @@ def test_resolve_path_attaches_ark_when_the_folder_has_one(monkeypatch):
     assert location.bronze_binary_paths == ["cask:/bronze/preservica/haeger/latest/tree/quarter-mile/page_001.tif"]
 
 
+def test_resolve_path_skips_ignored_os_files(monkeypatch):
+    base = "/bronze/preservica/greene/latest/tree/item/Access"
+    monkeypatch.setattr(fs, "exists", lambda path: False)
+    monkeypatch.setattr(fs, "ls", lambda path, opts={}: [
+        _entry("page.tif", f"{base}/page.tif", "file"),
+        _entry(".DS_Store", f"{base}/.DS_Store", "file"),
+        _entry("item.lnk", f"{base}/item.lnk", "file"),
+        _entry("Thumbs.db", f"{base}/Thumbs.db", "file"),
+    ] if path == f"cask:{base}" else [])
+
+    location = items.resolve_path("bronze/preservica/greene/latest/tree/item/Access")
+
+    assert location.bronze_binary_paths == [f"cask:{base}/page.tif"]
+
+
 def test_resolve_path_raises_when_folder_has_no_binaries(monkeypatch):
     monkeypatch.setattr(fs, "ls", lambda path, opts={}: [])
     with pytest.raises(LookupError):
@@ -618,3 +633,32 @@ def test_location_for_folder_reads_nothing(monkeypatch):
 
     assert (location.group, location.collection, location.time, location.item_path) == ("g", "c", "latest", "tree/a")
     assert location.ark is None and location.bronze_binary_paths == []
+
+
+# --- ignored files ---------------------------------------------------------------
+
+@pytest.mark.parametrize("name", [".DS_Store", "THUMBS.DB", "desktop.ini", "x.lnk", "X.LNK", "._page_001.tif", "/a/b/Thumbs.db"])
+def test_is_ignored_file_matches_default_patterns(name):
+    assert items.is_ignored_file(name)
+
+
+@pytest.mark.parametrize("name", ["page_001.tif", "notes.txt", "item.pdf", "lnk.tif", "thumbs.jpg"])
+def test_is_ignored_file_keeps_real_files(name):
+    assert not items.is_ignored_file(name)
+
+
+def test_ignored_files_override_replaces_defaults():
+    opts = {"ignored_files": " *.tmp , ,~$*"}
+    assert items.ignored_patterns(opts) == ["*.tmp", "~$*"]
+    assert items.is_ignored_file("scratch.TMP", opts)
+    assert items.is_ignored_file("~$report.docx", opts)
+    assert not items.is_ignored_file(".DS_Store", opts)
+
+
+def test_resolve_drops_sidecars_of_ignored_binaries(monkeypatch):
+    monkeypatch.setattr(fs, "find_by_subject", lambda subject, opts={}: [
+        "/bronze/digital-collections/my-coll/latest/box-1/photo.tiff.jsonld.json",
+        "/bronze/digital-collections/my-coll/latest/box-1/photo.lnk.jsonld.json",
+    ])
+    location = items.resolve(ARK)
+    assert location.bronze_binary_paths == ["cask:/bronze/digital-collections/my-coll/latest/box-1/photo.tiff"]
