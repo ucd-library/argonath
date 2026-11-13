@@ -177,6 +177,7 @@ CAPTIONS_LANGUAGE_ENV = "DIGTK_CAPTIONS_LANGUAGE"
 CAPTIONS_MODEL_ENV = "DIGTK_CAPTIONS_MODEL"
 CAPTIONS_WHISPER_BIN_ENV = "DIGTK_CAPTIONS_WHISPER_BIN"
 CAPTIONS_TIMEOUT_S_ENV = "DIGTK_CAPTIONS_TIMEOUT_S"
+CAPTIONS_TIMEOUT_FACTOR_ENV = "DIGTK_CAPTIONS_TIMEOUT_FACTOR"
 
 SHOWCASE_GOLD_PROJECT_ENV = "DIGTK_SHOWCASE_GOLD_PROJECT"
 SHOWCASE_ES_HOST_ENV = "SHOWCASE_ES_HOST"
@@ -301,6 +302,7 @@ SETTINGS = [
     {"dotpath": "captions.model", "env": CAPTIONS_MODEL_ENV, "cast": str, "secret": False},
     {"dotpath": "captions.whisper_bin", "env": CAPTIONS_WHISPER_BIN_ENV, "cast": str, "secret": False},
     {"dotpath": "captions.timeout_s", "env": CAPTIONS_TIMEOUT_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "captions.timeout_factor", "env": CAPTIONS_TIMEOUT_FACTOR_ENV, "cast": float, "secret": False},
     {"dotpath": "showcase.gold_project", "env": SHOWCASE_GOLD_PROJECT_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase.es_host", "env": SHOWCASE_ES_HOST_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase.es_index", "env": SHOWCASE_ES_INDEX_ENV, "cast": str, "secret": False},
@@ -597,6 +599,8 @@ CONFIG = {
         "model": _env(CAPTIONS_MODEL_ENV, "small"),
         "whisper_bin": _env(CAPTIONS_WHISPER_BIN_ENV, "whisper"),
         "timeout_s": _env(CAPTIONS_TIMEOUT_S_ENV, 3600.0, float),
+        # Whisper timeout per second of media; timeout_s is the floor
+        "timeout_factor": _env(CAPTIONS_TIMEOUT_FACTOR_ENV, 3.0, float),
     },
     "showcase": {
         "gold_project": _env(SHOWCASE_GOLD_PROJECT_ENV, "digital-dev"),

@@ -162,6 +162,13 @@ def test_image_derivatives_defaults():
     assert image["timeout_s"] == 120.0
 
 
+def test_captions_timeout_defaults():
+    """The Whisper timeout floor and its per-second-of-media scale factor."""
+    captions = config.CONFIG["captions"]
+    assert captions["timeout_s"] == 3600.0
+    assert captions["timeout_factor"] == 3.0
+
+
 def test_ocr_orientation_defaults():
     """Distinct from ocr.confidence_threshold (the ML-fallback trigger) — these
     govern the derivatives-time deskew orientation comparison."""

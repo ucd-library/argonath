@@ -27,7 +27,7 @@ import json
 import os
 import time
 
-from digtk.lib import fs, utils, whisper_utils
+from digtk.lib import ffmpeg_utils, fs, utils, whisper_utils
 from digtk.lib.config import CONFIG
 from digtk.lib.schema import ARGONATH_NS
 from digtk.models.digital_website import pipeline
@@ -92,6 +92,25 @@ def caption_status(item, bronze_paths, opts={}):
     return status
 
 
+def whisper_timeout(path, opts={}):
+    """Whisper timeout for one source, scaled to its duration so long
+    recordings aren't cut off: the larger of captions.timeout_s and
+    duration * captions.timeout_factor.
+
+    :param str path: Local media file path.
+    :param dict opts: 'timeout_s' / 'timeout_factor' override the CONFIG
+        values; forwarded to ffmpeg_utils.probe().
+    :returns: Timeout in seconds.
+    :rtype: float
+    """
+    floor = opts.get("timeout_s", CONFIG["captions"]["timeout_s"])
+    factor = opts.get("timeout_factor", CONFIG["captions"]["timeout_factor"])
+    duration = ffmpeg_utils.probe(path, opts).get("duration_s")
+    if not duration:
+        return floor
+    return max(floor, duration * factor)
+
+
 def transcribe_sources(item, sources, tmp_dir, command, opts={}):
     """Transcribe an already-staged set of source video/audio files to WebVTT
     caption files (see attach_captions() for how they reach the search index).
@@ -99,7 +118,8 @@ def transcribe_sources(item, sources, tmp_dir, command, opts={}):
     Called directly by video.derivatives()/audio.derivatives() using the sources
     they've already staged into their own tmp_dir — never re-stages, so captions
     generate as part of that same derivative run rather than a separate pass.
-    Sources already captioned (opts['captioned']) are skipped and kept.
+    Sources already captioned (opts['captioned']) are skipped and kept, and
+    sources with no audio stream (e.g. silent film) are skipped with no caption.
 
     :param digtk.lib.items.ItemLocation item: Resolved item location.
     :param list[dict] sources: Already-staged sources (see pipeline.stage_sources()) —
@@ -113,7 +133,8 @@ def transcribe_sources(item, sources, tmp_dir, command, opts={}):
         (str, default CONFIG["captions"]["model"], must be one of
         digtk.lib.whisper_utils.MODEL_CHOICES), 'captioned' (caption_status()'s
         return covering every source in the run; default: none captioned).
-    :returns: {"dir": str, "outputs": [...], "manifest": {...}}
+    :returns: {"dir": str, "outputs": [...], "manifest": {...}} — 'manifest' is
+        None, and nothing is published, when no source produced or kept a caption.
     :rtype: dict
     """
     language = opts.get("language", CONFIG["captions"]["language"])
@@ -132,11 +153,20 @@ def transcribe_sources(item, sources, tmp_dir, command, opts={}):
             kept_outputs.append((captioned[bronze_path], bronze_path))
             continue
         src = staged[bronze_path]
-        utils.log(f"[{i}/{total}] {stem}: transcribing (model={model})...")
+        if not ffmpeg_utils.has_audio_stream(src["local_path"], opts):
+            # Whisper silently writes nothing here
+            utils.log(f"[{i}/{total}] {stem}: no audio stream, skipping caption")
+            continue
+        timeout = whisper_timeout(src["local_path"], opts)
+        utils.log(f"[{i}/{total}] {stem}: transcribing (model={model}, timeout={timeout:.0f}s)...")
         filename = pipeline.output_name(stem, f"output-{language}.vtt", multi)
         local_dest = os.path.join(tmp_dir, filename)
-        whisper_utils.transcribe(src["local_path"], local_dest, opts=opts)
+        whisper_utils.transcribe(src["local_path"], local_dest, opts={**opts, "timeout": timeout})
         local_outputs.append((filename, local_dest, bronze_path))
+
+    # Nothing to publish, e.g. all silent
+    if not local_outputs and not kept_outputs:
+        return {"dir": pipeline.derivative_dir(item, "captions"), "outputs": [], "manifest": None}
 
     result = pipeline.publish(
         item, "captions", local_outputs,
