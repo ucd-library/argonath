@@ -87,6 +87,13 @@ RUN cd exec && uv pip install --system --no-cache-dir -r pyproject.toml
 COPY exec/digtk exec/digtk
 RUN cd exec && uv pip install --system --no-cache-dir --no-deps -e .
 
+# Install the production init script (run as a k8s job) and the cask
+# auto-path rules it loads
+COPY cask/auto-path-rules.json cask/auto-path-rules.json
+COPY cmds/prod-init.sh cmds/prod-init.sh
+RUN chmod +x cmds/prod-init.sh && \
+    ln -s /opt/argonath/cmds/prod-init.sh /usr/local/bin/argonath-prod-init
+
 # Install dagster configuration files
 WORKDIR /opt/dagster/dagster_home
 COPY dagster/lib lib
