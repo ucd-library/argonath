@@ -21,8 +21,8 @@ Subcommands mirror the pipeline phases:
   digtk preservica  — pull a collection out of Preservica into bronze (import/tree)
   digtk reporting     — admin commands for the reporting Postgres schema
                           (see digtk.lib.reporting)
-  digtk state         — collection_state queue and job results, used by Dagster
-                          (see digtk.models.collection_state)
+  digtk state         — collection_registry queue and job results, used by Dagster
+                          (see digtk.models.collection_registry)
   digtk workspace     — stage local folders into CaskFS workspace, run ocr/
                           accessibility/split-spreads on them, pull outputs
                           (see digtk.models.workspace)

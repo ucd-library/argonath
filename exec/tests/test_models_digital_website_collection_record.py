@@ -72,7 +72,7 @@ def test_build_writes_to_gold_with_bronze_lineage(bronze, writes):
     assert len(writes) == 1
     call = writes[0]
     assert (call["type"], call["collection"], call["rel_path"]) == ("gold", "c", "collection.jsonld.json")
-    assert call["opts"] == {"app": "digital-dev", "replace": True}
+    assert call["opts"] == {"app": "digital-dev", "edits": True, "replace": True}
     assert call["source_files"] == [f"{ROOT}/tree/metadata.json", f"{ROOT}/tree/identifiers.json"]
 
 
@@ -83,6 +83,6 @@ def test_build_requires_a_collection_ark(bronze, writes):
     assert writes == []
 
 
-def test_record_path_is_under_the_gold_collection():
+def test_record_path_is_under_the_gold_collection_edits():
     path = collection_record.record_path("c", {"project": "digital-dev"})
-    assert path == "cask:/gold/digital-dev/c/collection.jsonld.json"
+    assert path == "cask:/gold/digital-dev/edits/collections/c/collection.jsonld.json"

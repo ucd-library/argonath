@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import uuid
 
 import pytest
 
@@ -9,85 +10,72 @@ from digtk.models import collection
 
 
 class _FakeRegistry:
-    """In-memory stand-in for collection_registry + collection_identifiers,
-    driven by monkeypatching digtk.lib.db.query/execute — see
-    collection.register_collection()/get_registration()/list_active_collections().
+    """In-memory stand-in for collection_registry.collection's registration columns
+    + collection_registry.collection_identifiers, driven by monkeypatching
+    digtk.lib.db.query/execute — see collection.register_collection()/
+    get_registration()/list_active_collections(). Rows are kept as
+    {id, name (slug), group_name, source_type, workflow_tags, status}.
     Pattern-matches on SQL text rather than implementing a real query engine,
     since collection.py only ever issues a handful of fixed statement shapes."""
 
     def __init__(self):
         self.rows = {}
         self.identifiers = {}
-        self._next_id = 1
+
+    def _registered(self):
+        return [r for r in self.rows.values()
+                if r["status"] == "active" and r["source_type"] != "unknown"]
+
+    @staticmethod
+    def _out(row):
+        return {k: row[k] for k in ("id", "name", "group_name", "source_type", "workflow_tags", "status")}
 
     def query(self, sql, params=(), opts={}):
-        if "JOIN argonath.collection_identifiers" in sql:
+        if "JOIN collection_registry.collection_identifiers" in sql:
             id_type, id_value = params
-            for cid, idents in self.identifiers.items():
-                row = self.rows[cid]
-                if row["status"] != "active":
-                    continue
+            for row in self._registered():
+                idents = self.identifiers.get(row["id"], [])
                 if any(i["id_type"] == id_type and i["id_value"] == id_value for i in idents):
-                    return [{
-                        "id": row["id"], "name": row["name"], "group_name": row["group_name"],
-                        "source_type": row["source_type"], "workflow_tags": row["workflow_tags"],
-                        "status": row["status"],
-                    }]
+                    return [self._out(row)]
             return []
-        if "FROM argonath.collection_identifiers" in sql:
+        if "FROM collection_registry.collection_identifiers" in sql:
             collection_id = params[0]
             return [
                 {"id_value": i["id_value"]} for i in self.identifiers.get(collection_id, [])
                 if i["id_type"] == "preservica_ref"
             ]
-        if "WHERE name = %s AND group_name = %s" in sql:
-            name, group = params
-            return [
-                {"id": r["id"], "name": r["name"], "group_name": r["group_name"],
-                 "source_type": r["source_type"], "workflow_tags": r["workflow_tags"]}
-                for r in self.rows.values()
-                if r["name"] == name and r["group_name"] == group and r["status"] == "active"
-            ]
-        if "name = %s" in sql:
-            name = params[0]
-            return [
-                {"id": r["id"], "group_name": r["group_name"], "source_type": r["source_type"]}
-                for r in self.rows.values() if r["name"] == name and r["status"] == "active"
-            ]
-        if "FROM argonath.collection_registry" in sql:
-            rows = [r for r in self.rows.values() if r["status"] == "active"]
+        if "c.slug = %s" in sql:
+            return [self._out(r) for r in self._registered() if r["name"] == params[0]]
+        if "c.name = %s" in sql:
+            _, group, name = params[0].split("/")
+            return [self._out(r) for r in self._registered()
+                    if r["name"] == name and r["group_name"] == group]
+        if "FROM collection_registry.collection c" in sql:
+            rows = self._registered()
             if params:
                 rows = [r for r in rows if r["source_type"] == params[0]]
-            return [
-                {"id": r["id"], "name": r["name"], "group_name": r["group_name"],
-                 "source_type": r["source_type"], "workflow_tags": r["workflow_tags"]}
-                for r in rows
-            ]
+            return [self._out(r) for r in rows]
         raise AssertionError(f"Unexpected query: {sql}")
 
     def execute(self, sql, params=(), opts={}):
-        if sql.startswith("INSERT INTO argonath.collection_registry"):
-            name, group, source_type, tags = params
-            row_id = self._next_id
-            self._next_id += 1
-            self.rows[row_id] = {
-                "id": row_id, "name": name, "group_name": group,
-                "source_type": source_type, "workflow_tags": tags, "status": "active",
-            }
-            return [{"id": row_id}] if opts.get("returning") else None
-        if sql.startswith("UPDATE argonath.collection_registry SET last_synced_at = now() WHERE id"):
+        if sql.startswith("INSERT INTO collection_registry.collection ("):
+            key, source_type, tags = params
+            _, group, name = key.split("/")
+            row = next((r for r in self.rows.values()
+                        if r["name"] == name and r["group_name"] == group), None)
+            if row is None:
+                row = {"id": str(uuid.uuid4()), "name": name, "group_name": group}
+                self.rows[row["id"]] = row
+            row.update(source_type=source_type, workflow_tags=tags, status="active")
+            return [{"id": row["id"]}] if opts.get("returning") else None
+        if sql.startswith("UPDATE collection_registry.collection SET last_synced_at = now() WHERE id"):
             (collection_id,) = params
             self.rows[collection_id]["last_synced_at_touched"] = True
             return None
-        if sql.startswith("UPDATE argonath.collection_registry"):
-            source_type, tags, collection_id = params
-            self.rows[collection_id]["source_type"] = source_type
-            self.rows[collection_id]["workflow_tags"] = tags
-            return None
-        if sql.startswith("DELETE FROM argonath.collection_identifiers"):
+        if sql.startswith("DELETE FROM collection_registry.collection_identifiers"):
             self.identifiers[params[0]] = []
             return None
-        if sql.startswith("INSERT INTO argonath.collection_identifiers"):
+        if sql.startswith("INSERT INTO collection_registry.collection_identifiers"):
             collection_id, id_type, id_value = params
             self.identifiers.setdefault(collection_id, []).append(
                 {"id_type": id_type, "id_value": id_value}
@@ -303,15 +291,18 @@ def test_add_bronze_resync_same_name_and_group_does_not_raise(tmp_path, fake_reg
 
 # --- collection registry (register_collection / get_registration / list_active_collections) --
 
-def test_init_pg_runs_the_schema_sql_file(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(collection.db, "run_script", lambda sql, opts={}: seen.update(sql=sql, opts=opts))
+def test_registration_lookups_skip_unknown_source_type(fake_registry):
+    row_id = str(uuid.uuid4())
+    fake_registry.rows[row_id] = {
+        "id": row_id, "name": "haeger", "group_name": "preservica",
+        "source_type": "unknown", "workflow_tags": [], "status": "active",
+    }
 
-    collection.init_pg()
+    assert collection.list_active_collections() == []
+    result = collection.register_collection("haeger", "preservica", "preservica")
 
-    assert "CREATE SCHEMA IF NOT EXISTS argonath" in seen["sql"]
-    assert "argonath.collection_registry" in seen["sql"]
-    assert "argonath.collection_identifiers" in seen["sql"]
+    assert result["id"] == row_id  # unknown row is promoted, not a collision
+    assert fake_registry.rows[row_id]["source_type"] == "preservica"
 
 
 def test_parse_workflow_tags_always_includes_sync():
@@ -468,8 +459,9 @@ def test_list_item_folders_flat_when_manifest_missing_items_root(tmp_path, capsy
 
 
 def test_list_item_folders_resolves_group_via_registry(tmp_path, fake_registry):
-    fake_registry.rows[1] = {
-        "id": 1, "name": "my-collection", "group_name": "preservica",
+    row_id = str(uuid.uuid4())
+    fake_registry.rows[row_id] = {
+        "id": row_id, "name": "my-collection", "group_name": "preservica",
         "source_type": "preservica", "workflow_tags": [], "status": "active",
     }
     latest = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"

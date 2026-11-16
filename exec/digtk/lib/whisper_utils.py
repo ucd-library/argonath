@@ -64,7 +64,8 @@ def transcribe(src_path, dest_path, opts={}):
     :param dict opts: 'language' (str, default CONFIG["captions"]["language"]), 'model'
         (str, default CONFIG["captions"]["model"], must be one of MODEL_CHOICES),
         'whisper_bin' (str, default CONFIG["captions"]["whisper_bin"]), 'timeout'
-        (float, default CONFIG["captions"]["timeout_s"]).
+        (float, default CONFIG["captions"]["timeout_s"]; transcribe_sources()
+        passes a duration-scaled value, see captions.whisper_timeout()).
     :returns: {"argv": [...], "dest_path": str}
     :rtype: dict
     :raises ValueError: If 'model' isn't one of MODEL_CHOICES.

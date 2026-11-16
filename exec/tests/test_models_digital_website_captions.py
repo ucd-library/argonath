@@ -67,6 +67,8 @@ def fake_whisper(monkeypatch):
         return {"argv": [], "dest_path": dest_path}
 
     monkeypatch.setattr(captions.whisper_utils, "transcribe", fake_transcribe)
+    monkeypatch.setattr(captions.ffmpeg_utils, "has_audio_stream", lambda path, opts={}: True)
+    monkeypatch.setattr(captions.ffmpeg_utils, "probe", lambda path, opts={}: {"duration_s": 60.0, "streams": []})
     return calls
 
 
@@ -163,3 +165,43 @@ def test_transcribe_sources_skips_captioned_sources(fake_fs, fake_derivative, fa
 
     assert [c["src_path"] for c in fake_whisper] == [sources[1]["local_path"]]
     assert result["outputs"] == ["clip-b-output-en.vtt", "clip-a-output-en.vtt"]
+
+
+def test_transcribe_sources_skips_sources_without_audio(fake_fs, fake_derivative, fake_whisper, tmp_path, monkeypatch):
+    sources = _sources(MULTI_ITEM)
+    silent = sources[0]["local_path"]
+    monkeypatch.setattr(captions.ffmpeg_utils, "has_audio_stream", lambda path, opts={}: path != silent)
+
+    result = captions.transcribe_sources(MULTI_ITEM, sources, str(tmp_path), COMMAND, opts={})
+
+    assert [c["src_path"] for c in fake_whisper] == [sources[1]["local_path"]]
+    assert result["outputs"] == ["clip-b-output-en.vtt"]
+
+
+def test_transcribe_sources_all_silent_publishes_no_captions(fake_fs, fake_derivative, fake_whisper, tmp_path, monkeypatch):
+    monkeypatch.setattr(captions.ffmpeg_utils, "has_audio_stream", lambda path, opts={}: False)
+
+    result = captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND, opts={})
+
+    assert fake_whisper == []
+    assert fake_derivative == []
+    assert result["outputs"] == []
+    assert result["manifest"] is None
+
+
+def test_whisper_timeout_scales_with_duration(monkeypatch):
+    monkeypatch.setattr(captions.ffmpeg_utils, "probe", lambda path, opts={}: {"duration_s": 7200.0})
+    assert captions.whisper_timeout("x.mp3", {"timeout_s": 3600.0, "timeout_factor": 3.0}) == 21600.0
+
+
+def test_whisper_timeout_keeps_floor_for_short_or_unknown_duration(monkeypatch):
+    monkeypatch.setattr(captions.ffmpeg_utils, "probe", lambda path, opts={}: {"duration_s": 60.0})
+    assert captions.whisper_timeout("x.mp3", {"timeout_s": 3600.0, "timeout_factor": 3.0}) == 3600.0
+    monkeypatch.setattr(captions.ffmpeg_utils, "probe", lambda path, opts={}: {"duration_s": None})
+    assert captions.whisper_timeout("x.mp3", {"timeout_s": 3600.0, "timeout_factor": 3.0}) == 3600.0
+
+
+def test_transcribe_sources_passes_scaled_timeout(fake_fs, fake_derivative, fake_whisper, tmp_path, monkeypatch):
+    monkeypatch.setattr(captions.ffmpeg_utils, "probe", lambda path, opts={}: {"duration_s": 7200.0})
+    captions.transcribe_sources(ITEM, _sources(ITEM), str(tmp_path), COMMAND, opts={"timeout_factor": 3.0})
+    assert fake_whisper[0]["opts"]["timeout"] == 21600.0

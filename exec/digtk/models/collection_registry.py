@@ -1,7 +1,7 @@
 """
-collection_state — argonath's processing-state store: which collections and
+collection_registry — argonath's processing-state store: which collections and
 items are being tracked, the work queue Dagster's sensors poll, and each job's
-latest result (see exec/digtk/sql/collection_state.sql for the schema itself).
+latest result (see exec/digtk/sql/collection_registry.sql for the schema itself).
 
 Identity:
   - a collection's `name` is its collection key, "bronze/[group]/[collection]"
@@ -12,10 +12,11 @@ Identity:
     Dagster's gold_dcs_process_item is launched with. Its ARK is an identifier
     (item_identifiers, id_type 'ark'), kept after the item leaves bronze.
 
-Visibility: a collection is 'public' if its argonath.collection_registry row's
-workflow_tags include 'public' (see collection.register_collection()), else
-'private' (also for a collection that isn't registered at all); its items
-inherit that value. Nothing tracks per-item access yet.
+Registration: a collection's row also holds its source registration
+(source_type, workflow_tags, status — see collection.register_collection()).
+A collection this module creates before anything registered it gets
+source_type 'unknown'. Visibility isn't tracked here; dc-showcase's
+dcf_edits.collection_edit owns it (see digital_website.visibility).
 
 The queue: enqueue_collection() writes one job_queue row per item for
 ITEM_JOB, replacing any row already pending for the same item, so the latest
@@ -30,8 +31,8 @@ Rollup: rollups_due() finds collections with item results newer than their
 last ROLLUP_JOB result and nothing left in the queue; rollup() recomputes the
 collection's item count and failed items into its own ROLLUP_JOB result.
 
-Every table name is schema-qualified — digtk.lib.db.connect() sets
-search_path to the 'argonath' schema, not this one.
+Every table name is schema-qualified rather than relying on
+digtk.lib.db.connect()'s search_path.
 """
 import json
 from contextlib import contextmanager
@@ -44,7 +45,7 @@ import psycopg2.extras
 from digtk.lib import db, items
 from digtk.models import collection as collection_model
 
-_SCHEMA_SQL_PATH = Path(__file__).parent.parent / "sql" / "collection_state.sql"
+_SCHEMA_SQL_PATH = Path(__file__).parent.parent / "sql" / "collection_registry.sql"
 
 # Queue keys, not current Dagster job names.
 ITEM_JOB = "process_item_job"  # gold_dcs_process_item's queue
@@ -52,7 +53,7 @@ ROLLUP_JOB = "collection_rollup_job"  # gold_dcs_collection_rollup's results
 
 
 def init_pg(opts={}):
-    """Apply the collection_state schema (exec/digtk/sql/collection_state.sql).
+    """Apply the collection_registry schema (exec/digtk/sql/collection_registry.sql).
     Safe to run repeatedly — every statement is IF NOT EXISTS / OR REPLACE.
 
     :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
@@ -61,7 +62,7 @@ def init_pg(opts={}):
 
 
 def item_name(path):
-    """An item's collection_state name: its bronze folder path with no 'cask:'
+    """An item's collection_registry name: its bronze folder path with no 'cask:'
     prefix, leading slash or trailing slash.
 
     :param str path: e.g. "cask:/bronze/preservica/haeger/latest/tree/quarter-mile/".
@@ -122,64 +123,27 @@ def _transaction(opts={}):
             conn.close()
 
 
-def registry_info(key):
-    """A collection's visibility and identifiers, from argonath.collection_registry.
-
-    Looked up on its own connection (not inside a collection_state transaction)
-    so a missing registry schema can't abort the caller's transaction.
-
-    :param str key: Collection key, "bronze/[group]/[collection]".
-    :returns: {"visibility": "public"|"private", "identifiers": [(id_type, id_value), ...]}
-        — 'private' with no identifiers if the collection isn't registered.
-    :rtype: dict
-    """
-    _, group, name = key.split("/")
-    try:
-        reg = collection_model._get_active_registration_by_name(name, group)
-        idents = db.query(
-            "SELECT id_type, id_value FROM argonath.collection_identifiers WHERE collection_id = %s",
-            (reg["id"],),
-        )
-    except (ValueError, psycopg2.Error):
-        return {"visibility": "private", "identifiers": []}
-    tags = reg.get("workflow_tags") or []
-    return {
-        "visibility": "public" if "public" in tags else "private",
-        "identifiers": [("registry_id", str(reg["id"]))] + [(i["id_type"], i["id_value"]) for i in idents],
-    }
-
-
-def _upsert_collection(cur, key, info):
-    """Insert or update a collection row and add its identifiers.
+def _upsert_collection(cur, key):
+    """Ensure a collection row exists, as source_type 'unknown' if new.
 
     :param cur: Cursor inside the caller's transaction.
     :param str key: Collection key.
-    :param dict info: registry_info()'s result.
-    :returns: {"id", "visibility"}.
+    :returns: {"id"}.
     :rtype: dict
     """
     cur.execute(
-        "INSERT INTO collection_state.collection (name, visibility) VALUES (%s, %s) "
-        "ON CONFLICT (name) DO UPDATE SET visibility = EXCLUDED.visibility, last_updated_at = now() "
-        "RETURNING id, visibility",
-        (key, info["visibility"]),
+        "INSERT INTO collection_registry.collection (name) VALUES (%s) "
+        "ON CONFLICT (name) DO UPDATE SET last_updated_at = now() RETURNING id",
+        (key,),
     )
-    row = cur.fetchone()
-    for id_type, id_value in info["identifiers"]:
-        cur.execute(
-            "INSERT INTO collection_state.collection_identifiers (collection_id, id_type, id_value) "
-            "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-            (row["id"], id_type, id_value),
-        )
-    return dict(row)
+    return dict(cur.fetchone())
 
 
-def _upsert_items(cur, entries, visibility):
+def _upsert_items(cur, entries):
     """Insert or update item rows and add their ARK identifiers.
 
     :param cur: Cursor inside the caller's transaction.
     :param list[tuple[str, str|None]] entries: (item name, ARK or None) pairs.
-    :param str visibility: 'public' or 'private' (the collection's).
     :returns: {item name: item id}.
     :rtype: dict
     """
@@ -187,16 +151,16 @@ def _upsert_items(cur, entries, visibility):
         return {}
     names = [name for name, _ in entries]
     cur.execute(
-        "INSERT INTO collection_state.item (name, visibility) SELECT unnest(%s::text[]), %s "
-        "ON CONFLICT (name) DO UPDATE SET visibility = EXCLUDED.visibility, last_updated_at = now() "
+        "INSERT INTO collection_registry.item (name) SELECT unnest(%s::text[]) "
+        "ON CONFLICT (name) DO UPDATE SET last_updated_at = now() "
         "RETURNING id, name",
-        (names, visibility),
+        (names,),
     )
     ids = {row["name"]: row["id"] for row in cur.fetchall()}
     cur.execute(
-        "INSERT INTO collection_state.item_identifiers (item_id, id_type, id_value) "
+        "INSERT INTO collection_registry.item_identifiers (item_id, id_type, id_value) "
         "SELECT i.id, 'ark', x.ark FROM unnest(%s::text[], %s::text[]) AS x(name, ark) "
-        "JOIN collection_state.item i ON i.name = x.name WHERE x.ark IS NOT NULL "
+        "JOIN collection_registry.item i ON i.name = x.name WHERE x.ark IS NOT NULL "
         "ON CONFLICT DO NOTHING",
         (names, [ark for _, ark in entries]),
     )
@@ -207,16 +171,16 @@ def _link_items(cur, collection_id, item_ids):
     """Link items to a collection (collection_item), skipping existing links.
 
     :param cur: Cursor inside the caller's transaction.
-    :param int collection_id: Collection row id.
-    :param list[int] item_ids: Item row ids.
+    :param str collection_id: Collection row id (uuid).
+    :param list[str] item_ids: Item row ids (uuid).
     :returns: Ids of the items that weren't linked before.
-    :rtype: set[int]
+    :rtype: set[str]
     """
     if not item_ids:
         return set()
     cur.execute(
-        "INSERT INTO collection_state.collection_item (collection_id, item_id) "
-        "SELECT %s, unnest(%s::int[]) ON CONFLICT DO NOTHING RETURNING item_id",
+        "INSERT INTO collection_registry.collection_item (collection_id, item_id) "
+        "SELECT %s, unnest(%s::uuid[]) ON CONFLICT DO NOTHING RETURNING item_id",
         (collection_id, list(item_ids)),
     )
     return {row["item_id"] for row in cur.fetchall()}
@@ -227,7 +191,7 @@ def _enqueue(cur, job_name, requests):
 
     :param cur: Cursor inside the caller's transaction.
     :param str job_name: e.g. ITEM_JOB.
-    :param list[tuple[int, dict]] requests: (item id, job config) pairs.
+    :param list[tuple[str, dict]] requests: (item uuid, job config) pairs.
     :returns: How many rows were queued.
     :rtype: int
     """
@@ -235,12 +199,12 @@ def _enqueue(cur, job_name, requests):
         return 0
     item_ids = [item_id for item_id, _ in requests]
     cur.execute(
-        "DELETE FROM collection_state.job_queue WHERE job_name = %s AND item_id = ANY(%s::int[])",
+        "DELETE FROM collection_registry.job_queue WHERE job_name = %s AND item_id = ANY(%s::uuid[])",
         (job_name, item_ids),
     )
     cur.execute(
-        "INSERT INTO collection_state.job_queue (item_id, job_name, config) "
-        "SELECT x.item_id, %s, x.config::jsonb FROM unnest(%s::int[], %s::text[]) AS x(item_id, config)",
+        "INSERT INTO collection_registry.job_queue (item_id, job_name, config) "
+        "SELECT x.item_id, %s, x.config::jsonb FROM unnest(%s::uuid[], %s::text[]) AS x(item_id, config)",
         (job_name, item_ids, [json.dumps(config) for _, config in requests]),
     )
     return len(requests)
@@ -275,7 +239,6 @@ def enqueue_collection(key, opts={}):
                 ark = None
             current.append((path, ark))
 
-    info = registry_info(key)
     extra = {"trigger": opts.get("trigger", "collection")}
     if opts.get("batch"):
         extra["batch"] = opts["batch"]
@@ -283,8 +246,8 @@ def enqueue_collection(key, opts={}):
         extra["force"] = True
 
     with _transaction(opts) as cur:
-        coll = _upsert_collection(cur, key, info)
-        ids = _upsert_items(cur, current, coll["visibility"])
+        coll = _upsert_collection(cur, key)
+        ids = _upsert_items(cur, current)
         added = _link_items(cur, coll["id"], ids.values())
         requests = [(ids[path], {"item": path, **extra}) for path, _ in current]
         enqueued = _enqueue(cur, ITEM_JOB, requests)
@@ -319,10 +282,9 @@ def enqueue_items(paths, opts={}):
                 ark = None
             current.append((name, ark))
         count += len(current)
-        info = registry_info(key)
         with _transaction(opts) as cur:
-            coll = _upsert_collection(cur, key, info)
-            ids = _upsert_items(cur, current, coll["visibility"])
+            coll = _upsert_collection(cur, key)
+            ids = _upsert_items(cur, current)
             _link_items(cur, coll["id"], ids.values())
             enqueued += _enqueue(cur, ITEM_JOB, [(ids[name], {"item": name, **extra}) for name, _ in current])
     return {"items": count, "enqueued": enqueued, "collections": sorted(by_key)}
@@ -341,9 +303,9 @@ def pending(job_name, limit, opts={}):
         return []
     rows = db.query(
         "SELECT q.id, q.job_name, q.config, i.name AS item, c.name AS collection, q.created_at "
-        "FROM collection_state.job_queue q "
-        "LEFT JOIN collection_state.item i ON i.id = q.item_id "
-        "LEFT JOIN collection_state.collection c ON c.id = q.collection_id "
+        "FROM collection_registry.job_queue q "
+        "LEFT JOIN collection_registry.item i ON i.id = q.item_id "
+        "LEFT JOIN collection_registry.collection c ON c.id = q.collection_id "
         "WHERE q.job_name = %s ORDER BY q.created_at, q.id LIMIT %s",
         (job_name, limit), opts,
     )
@@ -361,7 +323,7 @@ def ack(ids, opts={}):
     if not ids:
         return 0
     rows = db.execute(
-        "DELETE FROM collection_state.job_queue WHERE id = ANY(%s::int[]) RETURNING id",
+        "DELETE FROM collection_registry.job_queue WHERE id = ANY(%s::int[]) RETURNING id",
         ([int(i) for i in ids],), {**opts, "returning": True},
     )
     return len(rows)
@@ -389,19 +351,18 @@ def record_result(job_name, opts={}):
         raise ValueError("give exactly one of item or collection")
     result = opts.get("result") or {}
     key = collection_key(item or coll_key)
-    info = registry_info(key)
 
     with _transaction(opts) as cur:
-        coll = _upsert_collection(cur, key, info)
+        coll = _upsert_collection(cur, key)
         if item:
             name = item_name(item)
-            item_id = _upsert_items(cur, [(name, opts.get("ark"))], coll["visibility"])[name]
+            item_id = _upsert_items(cur, [(name, opts.get("ark"))])[name]
             _link_items(cur, coll["id"], [item_id])
             target = (None, item_id)
         else:
             target = (coll["id"], None)
         cur.execute(
-            "SELECT * FROM collection_state.upsert_job_result(%s, %s::integer, %s::integer, %s::jsonb)",
+            "SELECT * FROM collection_registry.upsert_job_result(%s, %s::uuid, %s::uuid, %s::jsonb)",
             (job_name, target[0], target[1], json.dumps(result)),
         )
         row = dict(cur.fetchone())
@@ -409,7 +370,7 @@ def record_result(job_name, opts={}):
 
 
 def item_ark(path, opts={}):
-    """An item's most recently recorded ARK, from collection_state rather than
+    """An item's most recently recorded ARK, from collection_registry rather than
     its bronze identifiers.json.
 
     :param str path: Item bronze folder path.
@@ -418,8 +379,8 @@ def item_ark(path, opts={}):
     :rtype: str|None
     """
     rows = db.query(
-        "SELECT ii.id_value FROM collection_state.item_identifiers ii "
-        "JOIN collection_state.item i ON i.id = ii.item_id "
+        "SELECT ii.id_value FROM collection_registry.item_identifiers ii "
+        "JOIN collection_registry.item i ON i.id = ii.item_id "
         "WHERE i.name = %s AND ii.id_type = 'ark' ORDER BY ii.created_at DESC, ii.id DESC LIMIT 1",
         (item_name(path),), opts,
     )
@@ -437,17 +398,17 @@ def rollups_due(opts={}):
     rows = db.query(
         "WITH latest AS ("
         "  SELECT ci.collection_id, max(r.updated_at) AS latest_result_at "
-        "  FROM collection_state.collection_item ci "
-        "  JOIN collection_state.job_result r ON r.item_id = ci.item_id AND r.job_name = %s "
+        "  FROM collection_registry.collection_item ci "
+        "  JOIN collection_registry.job_result r ON r.item_id = ci.item_id AND r.job_name = %s "
         "  GROUP BY ci.collection_id"
         ") "
         "SELECT c.name AS collection, l.latest_result_at FROM latest l "
-        "JOIN collection_state.collection c ON c.id = l.collection_id "
-        "LEFT JOIN collection_state.job_result cr ON cr.collection_id = c.id AND cr.job_name = %s "
+        "JOIN collection_registry.collection c ON c.id = l.collection_id "
+        "LEFT JOIN collection_registry.job_result cr ON cr.collection_id = c.id AND cr.job_name = %s "
         "WHERE (cr.updated_at IS NULL OR l.latest_result_at > cr.updated_at) "
         "AND NOT EXISTS ("
-        "  SELECT 1 FROM collection_state.job_queue q "
-        "  JOIN collection_state.collection_item ci2 ON ci2.item_id = q.item_id "
+        "  SELECT 1 FROM collection_registry.job_queue q "
+        "  JOIN collection_registry.collection_item ci2 ON ci2.item_id = q.item_id "
         "  WHERE ci2.collection_id = c.id"
         ") ORDER BY c.name",
         (ITEM_JOB, ROLLUP_JOB), opts,
@@ -465,20 +426,20 @@ def rollup(key, opts={}):
     :returns: {"collection", "item_count", "succeeded", "failed", "never_run",
         "failed_items": [{"item", "error", "run_id"}], "rolled_up_at"}.
     :rtype: dict
-    :raises LookupError: If the collection isn't tracked in collection_state.
+    :raises LookupError: If the collection isn't tracked in collection_registry.
     """
     key = collection_key(key)
     rows = db.query(
         "SELECT c.id AS collection_id, i.name AS item, r.result "
-        "FROM collection_state.collection c "
-        "LEFT JOIN collection_state.collection_item ci ON ci.collection_id = c.id "
-        "LEFT JOIN collection_state.item i ON i.id = ci.item_id "
-        "LEFT JOIN collection_state.job_result r ON r.item_id = i.id AND r.job_name = %s "
+        "FROM collection_registry.collection c "
+        "LEFT JOIN collection_registry.collection_item ci ON ci.collection_id = c.id "
+        "LEFT JOIN collection_registry.item i ON i.id = ci.item_id "
+        "LEFT JOIN collection_registry.job_result r ON r.item_id = i.id AND r.job_name = %s "
         "WHERE c.name = %s ORDER BY i.name",
         (ITEM_JOB, key), opts,
     )
     if not rows:
-        raise LookupError(f"collection not tracked in collection_state: {key}")
+        raise LookupError(f"collection not tracked in collection_registry: {key}")
 
     summary = {"item_count": 0, "succeeded": 0, "failed": 0, "never_run": 0, "failed_items": []}
     for row in rows:

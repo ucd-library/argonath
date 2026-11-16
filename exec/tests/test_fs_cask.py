@@ -389,7 +389,7 @@ def test_find_by_graph_sends_graph_and_default_predicate_but_no_subject():
         seen["params"] = dict(request.url.params)
         return httpx.Response(200, json={
             "totalCount": 1,
-            "results": [{"filepath": "/gold/digital-dev/c/item/item.jsonld.json"}],
+            "results": [{"filepath": "/gold/digital-dev/collections/c/item/item.jsonld.json"}],
             "offset": 0,
             "limit": 100,
         })
@@ -401,7 +401,7 @@ def test_find_by_graph_sends_graph_and_default_predicate_but_no_subject():
     assert seen["params"]["predicate"] == "https://schema.org/ark"
     assert seen["params"]["partitionKeys"] == "medallion-gold"
     assert "subject" not in seen["params"]
-    assert result == ["/gold/digital-dev/c/item/item.jsonld.json"]
+    assert result == ["/gold/digital-dev/collections/c/item/item.jsonld.json"]
 
 
 def test_find_by_partition_keys_sends_no_subject_or_predicate():

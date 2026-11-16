@@ -44,7 +44,7 @@ def cask(monkeypatch):
 
 
 def _gold_path(item_path):
-    return f"cask:/gold/digital-dev/haeger/{item_path}/item.jsonld.json"
+    return f"cask:/gold/digital-dev/collections/haeger/{item_path}/item.jsonld.json"
 
 
 def _changes(cursor={"after": 0, "done": {}}, **opts):
@@ -61,6 +61,15 @@ def test_target_for_maps_paths_to_items_and_collection_files():
     assert cask_changes.target_for(f"{TREE}/metadata.json", "file", roots) == {"kind": "collection", "key": KEY}
     assert cask_changes.target_for(f"{TREE}/stray.txt", "file", roots) is None
     assert cask_changes.target_for("/bronze/preservica/haeger/latest/by-ref/x/entity.json", "file", roots) is None
+
+
+def test_target_for_ignores_os_clutter_files():
+    roots = [{"key": KEY, "items_root": TREE, "collection_files": []}]
+
+    assert cask_changes.target_for(f"{TREE}/foo/Access/Thumbs.db", "file", roots) is None
+    assert cask_changes.target_for(f"{TREE}/foo/Access/.DS_Store", "file", roots) is None
+    assert cask_changes.target_for(f"{TREE}/foo/Access/foo.lnk", "file", roots) is None
+    assert cask_changes.target_for(f"{TREE}/foo/Access/page.tif", "file", roots)["folder"] == f"{TREE}/foo"
 
 
 def test_reads_with_items_root_and_collection_file_prefixes(cask):

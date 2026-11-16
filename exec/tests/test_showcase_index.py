@@ -281,10 +281,10 @@ LOCATION = ItemLocation(
     ark=ARK, group="g", collection="c", time="latest", item_path="item",
     bronze_binary_paths=[],
 )
-RECORD_PATH = "cask:/gold/digital-dev/c/item/item.jsonld.json"
+RECORD_PATH = "cask:/gold/digital-dev/collections/c/item/item.jsonld.json"
 GOLD = f"https://digital.ucdavis.edu/item/{ARK}"
-ORIGINAL = "cask://gold/digital-dev/c/item"
-ORIGINAL_URL = "/cask/api/fs/gold/digital-dev/c/item"
+ORIGINAL = "cask://gold/digital-dev/collections/c/item"
+ORIGINAL_URL = "/cask/api/fs/gold/digital-dev/collections/c/item"
 
 
 def _image_entries(filename):
@@ -490,7 +490,7 @@ def test_build_document_adds_original_file_sizes_from_cask_listings(item_files):
         {"@type": "AudioObject", "contentUrl": f"{PFD}/talk.mp3/converted.mp3", "argonath:sourceGroup": "audio"},
     ])
     item_files["set_gold"](["media/talk.mp3", "media/logo.jpg"])
-    gold = "cask:/gold/digital-dev/c/item"
+    gold = "cask:/gold/digital-dev/collections/c/item"
     item_files["sizes"].update({f"{gold}/logo.jpg": 2048, f"{gold}/talk.mp3": 4096})
 
     document = showcase_index.build_document(ARK)
@@ -739,7 +739,7 @@ def test_build_collection_document_shape(collection_gold):
     assert root["creator"] == {"name": "Haeger, John Winthrop"}
     assert root["itemCount"] == 4
     assert root["visibility"] == "private"
-    assert root["goldPath"] == f"/gold/{showcase_index.CONFIG['showcase']['gold_project']}/c"
+    assert root["goldPath"] == f"/gold/{showcase_index.CONFIG['showcase']['gold_project']}/collections/c"
     assert "hasPart" not in root and "publisher" not in root
     assert collection_gold == [root["@id"]]
 

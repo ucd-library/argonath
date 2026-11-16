@@ -26,8 +26,8 @@ Submodule layout (all files live alongside this one in dagster/):
                             (audit reindex/delete changes),
                             gold_dcs_delete_collection_index, gold_dcs_unpublish_collection
                             and gold_dcs_delete_item_index
-  lib/collection_state.py — the collection_state queue/results store, via
-                            `digtk state` (see digtk.models.collection_state)
+  lib/collection_registry.py — the collection_registry queue/results store, via
+                               `digtk state` (see digtk.models.collection_registry)
 
 Note: Dagster inserts this file's parent directory into sys.path when loading
 via python_file in workspace.yaml, so sibling-module imports work without

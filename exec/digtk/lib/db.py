@@ -1,6 +1,6 @@
 """
 Generic Postgres connection/query helper for argonath's own app-level schema
-(the collection registry — see digtk.models.collection). Domain-agnostic, per
+(collection_registry — see digtk.models.collection_registry). Domain-agnostic, per
 CLAUDE.md's lib-vs-models split: this module knows nothing about "collections."
 
 A distinct database/credentials from Dagster's own run/event-log storage —
@@ -9,7 +9,7 @@ that one (configured by dagster/dagster.yaml's storage.postgres block). Both
 happen to point at the shared Postgres/pgvector instance project-anduin
 provisions (see README), but as distinct databases/credentials.
 
-Everything argonath owns in that shared instance lives under its own 'argonath'
+Argonath's app tables in that shared instance live under the 'collection_registry'
 Postgres schema (SCHEMA below), namespaced apart from anything else there (e.g.
 project-anduin's own tables) — every connection's search_path is set to it, and callers should still
 schema-qualify table names in their own SQL (see digtk.models.collection) rather
@@ -26,12 +26,12 @@ import os
 
 from digtk.lib.config import CONFIG
 
-SCHEMA = "argonath"
+SCHEMA = "collection_registry"
 
 
 def connect():
     """Open a new connection to argonath's own Postgres database, scoped to
-    the 'argonath' schema (SCHEMA).
+    the 'collection_registry' schema (SCHEMA).
 
     :returns: A live psycopg2 connection.
     :rtype: psycopg2.extensions.connection

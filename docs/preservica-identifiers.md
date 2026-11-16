@@ -11,22 +11,24 @@ Applied to the structural object that is the *root* of the collection — the sa
 entity passed as `ref` to `digtk preservica import`.
 
 - **Type**: `argonath`
-- **Value**: a comma-separated list of workflow tags, e.g. `sync`, `ai,public`,
-  `sync,ai,public`.
+- **Value**: a comma-separated list of workflow tags, e.g. `sync`, `ai`,
+  `sync,ai`.
 
 | Tag      | Meaning                                                                 |
 |----------|--------------------------------------------------------------------------|
-| `sync`   | Track this collection and sync it into argonath bronze. Implied by any other tag — `argonath=ai,public` behaves identically to `argonath=sync,ai,public`. |
+| `sync`   | Track this collection and sync it into argonath bronze. Implied by any other tag — `argonath=ai` behaves identically to `argonath=sync,ai`. |
 | `ai`     | Permit the AI metadata-draft stage (`generate_metadata`) to run for this collection's items. |
-| `public` | Permit the public-dc/showcase publish step to run for this collection. |
 
 The tag vocabulary is expected to grow as new optional pipeline stages come
-online — an unrecognized tag is stored verbatim in the registry rather than
-rejected.
+online — an unrecognized tag is stored verbatim rather than rejected.
+
+There is no visibility tag. Whether a collection is public is set only in the
+dc-showcase admin (`dcf_edits.collection_edit.visibility`); a collection with
+no row there is private.
 
 ## What the tag does — and doesn't — gate
 
-Registration into argonath's collection registry (see below) does **not**
+Registration (see below) does **not**
 depend on this identifier at all: `digtk collection add` (disk) and `digtk
 preservica import` (Preservica) always register a collection, labeled or not.
 The `argonath` identifier only governs two things:
@@ -37,8 +39,8 @@ The `argonath` identifier only governs two things:
    Preservica collection is registered — whether by a human running `digtk
    preservica import` or by the sensor's own auto-discovery — it is **always**
    checked by the sensor going forward, regardless of its tags.
-2. **Optional-stage gating** — `ai`/`public` permit those specific pipeline
-   stages to run for the collection's items.
+2. **Optional-stage gating** — `ai` permits that pipeline stage to run for
+   the collection's items.
 
 ## Naming
 
@@ -50,23 +52,27 @@ fix is renaming the source folder in Preservica (or picking a different name
 for a manual disk collection via `digtk collection add`), not a generated
 alternate slug.
 
-## Storage: the collection registry
+## Storage: collection_registry
 
-See `exec/digtk/sql/collection_registry.sql` for the schema (applied via
-`digtk collection init-pg`) and `digtk.models.collection`
-(`register_collection()`, `get_registration()`, `list_active_collections()`,
-`find_changed_preservica_collections()`, `init_pg()`) for the logic that reads
-and writes it. Tables live in their own `argonath` Postgres schema, namespaced
-apart from anything else in the shared instance. Every known identifier for a
+Registrations are stored on `collection_registry.collection` rows (`source_type`,
+`workflow_tags`, `status`, keyed by `bronze/[group]/[slug]`) — see
+`exec/digtk/sql/collection_registry.sql` (applied via `digtk state init-pg`) and
+`digtk.models.collection` (`register_collection()`, `get_registration()`,
+`list_active_collections()`, `find_changed_preservica_collections()`) for the
+logic that reads and writes them. `source_type` is `manual` (`digtk collection
+add`), `preservica` (`digtk preservica import` or auto-sync), or `unknown` (a
+row collection_registry created before anything registered it — e.g. a hand-run
+`digtk state enqueue-items`); registration lookups ignore `unknown` rows.
+Every known identifier for a
 registered collection (the Preservica ref, ARK, LocalID/box-folder id, the raw
 `argonath` tag value, etc.) is stored verbatim in `collection_identifiers` —
 not just a single hardcoded ref column — so a collection can be looked up by
 any of them.
 
-Two Dagster sensors (`dagster/lib/sensors.py`) consume the registry:
+Two Dagster sensors (`dagster/lib/sensors.py`) consume the registrations:
 
 - `bronze_preservica_auto_sync` — polls `/entities/updated-since` and
   reconciles only the registered collections that actually changed.
 - `bronze_collection_partition_sync` — keeps Dagster's `collections` dynamic
-  partition in sync with the registry, so a collection registered via CLI is
+  partition in sync with the registrations, so a collection registered via CLI is
   immediately visible even before its first successful reconcile run.

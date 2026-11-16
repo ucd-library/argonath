@@ -44,7 +44,6 @@ import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from pathlib import Path
 
 from digtk.lib import db, fs, items, preservica, utils
 from digtk.lib.config import CONFIG
@@ -288,27 +287,31 @@ def _resolve_identifier_key(identifiers, ref):
     return {"key": ref, "identifiers": values or [ref]}
 
 
-# --- Collection registry (Postgres) -----------------------------------------
+# --- Collection registration (Postgres) -------------------------------------
 #
 # Tracks which collections argonath knows about (source, name, workflow tags)
 # so Dagster's sensors know what to watch and what to do when a source changes
 # — see docs/preservica-identifiers.md and dagster/lib/sensors.py's
-# bronze_collection_partition_sync / bronze_preservica_auto_sync. Built on
-# digtk.lib.db (generic Postgres helper); tables live in the 'argonath' schema
-# (digtk.lib.db.SCHEMA) — see digtk/sql/collection_registry.sql for the schema
-# itself, and init_pg() below to apply it.
+# bronze_collection_partition_sync / bronze_preservica_auto_sync. Stored on
+# collection_registry.collection rows (name = "bronze/[group]/[slug]") and
+# collection_registry.collection_identifiers — see digtk/sql/collection_registry.sql,
+# applied by digtk.models.collection_registry.init_pg(). Rows with source_type
+# 'unknown' were never registered and are skipped by every lookup here.
 
-_SCHEMA_SQL_PATH = Path(__file__).parent.parent / "sql" / "collection_registry.sql"
+# Columns every registration lookup returns; 'name' is the slug.
+_REG_COLUMNS = "c.id, c.slug AS name, c.group_name, c.source_type, c.workflow_tags, c.status"
+_REGISTERED = "c.status = 'active' AND c.source_type <> 'unknown'"
 
 
-def init_pg(opts={}):
-    """Apply collection_registry.sql (schema + tables) to argonath's Postgres
-    database — safe to run repeatedly (every statement is CREATE ... IF NOT
-    EXISTS). See `digtk collection init-pg`.
+def _collection_key(name, group):
+    """The collection_registry key for a slug and group.
 
-    :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
+    :param str name: Collection slug.
+    :param str group: Bronze group namespace.
+    :returns: e.g. "bronze/preservica/haeger".
+    :rtype: str
     """
-    db.run_script(_SCHEMA_SQL_PATH.read_text(), opts)
+    return f"bronze/{group}/{name}"
 
 
 def _parse_workflow_tags(value):
@@ -328,7 +331,7 @@ def _parse_workflow_tags(value):
 
 
 def register_collection(name, group, source_type, identifiers=(), opts={}):
-    """Upsert a collection_registry row (+ its collection_identifiers) — argonath's
+    """Upsert a collection's registration (+ its collection_identifiers) — argonath's
     durable record that a collection is tracked, for Dagster's sensors to read
     (dagster/lib/sensors.py's bronze_collection_partition_sync and
     bronze_preservica_auto_sync).
@@ -360,7 +363,7 @@ def register_collection(name, group, source_type, identifiers=(), opts={}):
         identifier has type == 'argonath'.
     :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse —
         see digtk.lib.db).
-    :returns: {'id': int, 'name': str, 'workflow_tags': list[str]}.
+    :returns: {'id': str (uuid), 'name': str, 'workflow_tags': list[str]}.
     :rtype: dict
     :raises ValueError: If `name` collides with a different active registration.
     """
@@ -373,18 +376,17 @@ def register_collection(name, group, source_type, identifiers=(), opts={}):
             incoming_ref = identifier["value"]
 
     existing = db.query(
-        "SELECT id, group_name, source_type FROM argonath.collection_registry "
-        "WHERE name = %s AND status = 'active'",
+        f"SELECT {_REG_COLUMNS} FROM collection_registry.collection c "
+        f"WHERE c.slug = %s AND {_REGISTERED}",
         (name,), opts,
     )
 
-    collection_id = None
     if existing:
         row = existing[0]
         same_collection = False
         if source_type == "preservica" and row["source_type"] == "preservica" and incoming_ref:
             stored = db.query(
-                "SELECT id_value FROM argonath.collection_identifiers "
+                "SELECT id_value FROM collection_registry.collection_identifiers "
                 "WHERE collection_id = %s AND id_type = 'preservica_ref'",
                 (row["id"],), opts,
             )
@@ -399,29 +401,25 @@ def register_collection(name, group, source_type, identifiers=(), opts={}):
                 "source folder (or choose a different name) rather than reusing an "
                 "active collection's name."
             )
-        collection_id = row["id"]
 
-    if collection_id is None:
-        inserted = db.execute(
-            "INSERT INTO argonath.collection_registry (name, group_name, source_type, workflow_tags, last_synced_at) "
-            "VALUES (%s, %s, %s, %s, now()) RETURNING id",
-            (name, group, source_type, tags), {**opts, "returning": True},
-        )
-        collection_id = inserted[0]["id"]
-    else:
-        db.execute(
-            "UPDATE argonath.collection_registry SET source_type = %s, workflow_tags = %s, "
-            "last_synced_at = now(), updated_at = now() WHERE id = %s",
-            (source_type, tags, collection_id), opts,
-        )
+    # same key reactivates a disabled or 'unknown' row
+    upserted = db.execute(
+        "INSERT INTO collection_registry.collection (name, source_type, workflow_tags, status, last_synced_at) "
+        "VALUES (%s, %s, %s, 'active', now()) "
+        "ON CONFLICT (name) DO UPDATE SET source_type = EXCLUDED.source_type, "
+        "workflow_tags = EXCLUDED.workflow_tags, status = 'active', "
+        "last_synced_at = now(), last_updated_at = now() RETURNING id",
+        (_collection_key(name, group), source_type, tags), {**opts, "returning": True},
+    )
+    collection_id = upserted[0]["id"]
 
     db.execute(
-        "DELETE FROM argonath.collection_identifiers WHERE collection_id = %s", (collection_id,), opts,
+        "DELETE FROM collection_registry.collection_identifiers WHERE collection_id = %s", (collection_id,), opts,
     )
     for identifier in identifiers:
         if identifier.get("type") and identifier.get("value"):
             db.execute(
-                "INSERT INTO argonath.collection_identifiers (collection_id, id_type, id_value) "
+                "INSERT INTO collection_registry.collection_identifiers (collection_id, id_type, id_value) "
                 "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                 (collection_id, identifier["type"], identifier["value"]), opts,
             )
@@ -442,10 +440,9 @@ def get_registration(id_type, id_value, opts={}):
     :rtype: dict | None
     """
     rows = db.query(
-        "SELECT r.id, r.name, r.group_name, r.source_type, r.workflow_tags, r.status "
-        "FROM argonath.collection_registry r "
-        "JOIN argonath.collection_identifiers i ON i.collection_id = r.id "
-        "WHERE i.id_type = %s AND i.id_value = %s AND r.status = 'active'",
+        f"SELECT {_REG_COLUMNS} FROM collection_registry.collection c "
+        "JOIN collection_registry.collection_identifiers i ON i.collection_id = c.id "
+        f"WHERE i.id_type = %s AND i.id_value = %s AND {_REGISTERED}",
         (id_type, id_value), opts,
     )
     return rows[0] if rows else None
@@ -460,24 +457,21 @@ def list_active_collections(source_type=None, opts={}):
 
     :param str|None source_type: 'manual' or 'preservica', or None for all.
     :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
-    :returns: [{'id', 'name', 'group_name', 'source_type', 'workflow_tags'}, ...].
+    :returns: [{'id', 'name', 'group_name', 'source_type', 'workflow_tags', 'status'}, ...].
     :rtype: list[dict]
     """
-    sql = (
-        "SELECT id, name, group_name, source_type, workflow_tags FROM argonath.collection_registry "
-        "WHERE status = 'active'"
-    )
+    sql = f"SELECT {_REG_COLUMNS} FROM collection_registry.collection c WHERE {_REGISTERED}"
     params = ()
     if source_type:
-        sql += " AND source_type = %s"
+        sql += " AND c.source_type = %s"
         params = (source_type,)
     return db.query(sql, params, opts)
 
 
 def _group_for_collection(name, opts={}):
-    """Resolve a collection's bronze group from its name via the registry — collection
-    names are unique among active registrations (see register_collection()'s
-    collection_registry_active_name_uq), so no group needs to be given.
+    """Resolve a collection's bronze group from its name via its registration — slugs
+    are unique among active registrations (see collection_registry.sql's
+    collection_active_slug_uq), so no group needs to be given.
 
     :param str name: Collection name.
     :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
@@ -486,7 +480,7 @@ def _group_for_collection(name, opts={}):
     :raises ValueError: If there's no active registration for `name`.
     """
     rows = db.query(
-        "SELECT group_name FROM argonath.collection_registry WHERE name = %s AND status = 'active'",
+        f"SELECT c.group_name FROM collection_registry.collection c WHERE c.slug = %s AND {_REGISTERED}",
         (name,), opts,
     )
     if not rows:
@@ -578,14 +572,14 @@ def _get_active_registration_by_name(name, group, opts={}):
     :param str name: Collection name.
     :param str group: Bronze group namespace.
     :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
-    :returns: {'id', 'name', 'group_name', 'source_type', 'workflow_tags'}.
+    :returns: {'id', 'name', 'group_name', 'source_type', 'workflow_tags', 'status'}.
     :rtype: dict
     :raises ValueError: If no active collection is registered under name+group.
     """
     rows = db.query(
-        "SELECT id, name, group_name, source_type, workflow_tags FROM argonath.collection_registry "
-        "WHERE name = %s AND group_name = %s AND status = 'active'",
-        (name, group), opts,
+        f"SELECT {_REG_COLUMNS} FROM collection_registry.collection c "
+        f"WHERE c.name = %s AND {_REGISTERED}",
+        (_collection_key(name, group),), opts,
     )
     if not rows:
         raise ValueError(f"No active registered collection '{group}/{name}' — run `digtk preservica import` first.")
@@ -593,18 +587,18 @@ def _get_active_registration_by_name(name, group, opts={}):
 
 
 def _touch_last_synced(collection_id, opts={}):
-    """Update a collection_registry row's last_synced_at only, without
+    """Update a registered collection's last_synced_at only, without
     touching its identifiers — unlike register_collection() (which always
     deletes+re-inserts every identifier row from its `identifiers` param, so
     reusing it here with an empty list would silently wipe the collection's
     real identifiers). Used by preservica_sync_entities() after a targeted
     sync completes.
 
-    :param int collection_id: collection_registry.id.
+    :param str collection_id: collection_registry.collection.id (uuid).
     :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
     """
     db.execute(
-        "UPDATE argonath.collection_registry SET last_synced_at = now() WHERE id = %s",
+        "UPDATE collection_registry.collection SET last_synced_at = now() WHERE id = %s",
         (collection_id,), opts,
     )
 

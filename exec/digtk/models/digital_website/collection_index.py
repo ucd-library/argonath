@@ -5,7 +5,7 @@ Builds on digtk.lib.showcase_index.
 """
 import json
 
-from digtk.lib import fs, items, showcase_index, utils
+from digtk.lib import derivative, fs, items, showcase_index, utils
 from digtk.models import collection as collection_model
 from digtk.models.digital_website import collection_record, item_record
 
@@ -98,31 +98,43 @@ def gold_item_folders(key, opts={}):
             if entry.kind == "directory":
                 walk(f"cask:{entry.path}")
 
-    walk(f"cask:/gold/{item_record._project(opts)}/{name}")
+    walk("cask:" + derivative.gold_collection_dir(app=item_record._project(opts), collection=name))
     return sorted(folders)
 
 
 def remove_collection_gold(key, opts={}):
-    """Deletes a collection's gold folder for one project (its item records,
-    promoted binaries and collection record). Bronze, silver, ES and Postgres
-    are left alone.
+    """Deletes a collection's gold folder for one project (its item records and
+    promoted binaries) and its collection record under edits/. The featured
+    image beside that record, bronze, silver, ES and Postgres are left alone.
 
     :param str key: Collection key, [bronze/]<group>/<collection>.
     :param dict opts: 'project' (see item_record._project()), 'dry_run' (bool — report only).
-    :returns: {"collection": key, "path", "files": int, "removed": bool, "dryRun": bool}.
+    :returns: {"collection": key, "path", "record", "files": int, "removed": bool, "dryRun": bool}.
     :rtype: dict
     """
     _, name = collection_record.parse_key(key)
-    path = f"cask:/gold/{item_record._project(opts)}/{name}"
-    result = {"collection": key, "path": path, "files": 0, "removed": False, "dryRun": bool(opts.get("dry_run"))}
+    dry_run = bool(opts.get("dry_run"))
+    verb = "would remove" if dry_run else "removed"
+    path = "cask:" + derivative.gold_collection_dir(app=item_record._project(opts), collection=name)
+    record = collection_record.record_path(name, opts)
+    result = {"collection": key, "path": path, "record": record, "files": 0, "removed": False, "dryRun": dry_run}
+
+    if fs.exists(record):
+        result["files"] += 1
+        if not dry_run:
+            fs.delete(record)
+            result["removed"] = True
+        utils.log(f"{key}: {verb} {record}")
+
     if not fs.exists(path):
         utils.log(f"{key}: no gold folder at {path}")
         return result
-    result["files"] = _count_files(path)
-    if not opts.get("dry_run"):
+    count = _count_files(path)
+    result["files"] += count
+    if not dry_run:
         fs.delete(path, opts={"directory": True})
         result["removed"] = True
-    utils.log(f"{key}: {'would remove' if opts.get('dry_run') else 'removed'} {path} ({result['files']} file(s))")
+    utils.log(f"{key}: {verb} {path} ({count} file(s))")
     return result
 
 
@@ -144,7 +156,10 @@ def other_gold_projects(key, opts={}):
         projects = [e.name for e in fs.ls("cask:/gold") if e.kind == "directory"]
     except FileNotFoundError:
         return []
-    return sorted(p for p in projects if p != current and fs.exists(f"cask:/gold/{p}/{name}"))
+    return sorted(
+        p for p in projects
+        if p != current and fs.exists("cask:" + derivative.gold_collection_dir(app=p, collection=name))
+    )
 
 
 def _website_dirs(path):
@@ -404,7 +419,7 @@ def item_output_dirs(folder):
     item folder.
 
     :param str folder: Bronze item folder, e.g. '/bronze/g/c/latest/tree/foo'.
-    :returns: CaskFS paths, e.g. ['cask:/silver/g/c/latest/tree/foo', 'cask:/gold/digital-dev/c/tree/foo'].
+    :returns: CaskFS paths, e.g. ['cask:/silver/g/c/latest/tree/foo', 'cask:/gold/digital-dev/collections/c/tree/foo'].
     :rtype: list[str]
     :raises ValueError: If the folder has no item path below its time segment.
     """
@@ -416,7 +431,7 @@ def item_output_dirs(folder):
         projects = [e.name for e in fs.ls("cask:/gold") if e.kind == "directory"]
     except FileNotFoundError:
         projects = []
-    dirs += [f"cask:/gold/{project}/{collection}/{item_path}" for project in sorted(projects)]
+    dirs += [f"cask:{derivative.gold_collection_dir(app=p, collection=collection)}/{item_path}" for p in sorted(projects)]
     return dirs
 
 
