@@ -894,7 +894,8 @@ How `argonath` reaches Dagster:
   they finish.
   `gold_dcs_unpublish_collection` deletes the collection from ES, then deletes its gold
   folder. With `purge_silver` it also deletes the items' silver website derivatives
-  (`public-frontend-derivatives/`, `captions/`, `ocr/`); other silver work is kept. Silver is
+  (`public-frontend-derivatives/`, `captions/`, `ocr/`), then any silver folders left with no
+  files (the collection's whole silver folder when nothing else is there); other silver work is kept. Silver is
   shared by every gold project, so the purge is refused (and the run fails after removing gold)
   while another project still has the collection. Publishing again regenerates the purged
   derivatives through item runs. Bronze and

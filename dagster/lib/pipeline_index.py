@@ -374,7 +374,10 @@ def remove_collection_gold(context: OpExecutionContext, deleted: dict, config: U
         return
     if silver.get("skipped"):
         raise RuntimeError(f"{key}: gold removed, but silver kept: {silver['skipped']}")
-    context.log.info(f"{key}: removed {len(silver['removed'])} silver folder(s) ({silver['files']} file(s))")
+    context.log.info(
+        f"{key}: removed {len(silver['removed'])} silver folder(s) ({silver['files']} file(s)), "
+        f"pruned {len(silver.get('pruned', []))} empty folder(s)"
+    )
 
 
 @job(partitions_def=collections_partitions, tags={"argonath/kind": "collection-delete"})
@@ -391,8 +394,9 @@ def gold_dcs_delete_collection_index():
     config=default_run_config({"remove_collection_gold": UnpublishCollectionConfig}),
 )
 def gold_dcs_unpublish_collection():
-    """Delete a collection from showcase elastic indexes, and remove the silver and gold data for the collection
-    and its items. Bronze is left alone, and the collection can be reprocessed later, retaining its visiblity settings from Postgres.
+    """Delete a collection from showcase elastic indexes and remove its gold folder. With purge_silver,
+    also delete its silver website derivatives and any silver folders left empty. Bronze is left alone,
+    and the collection can be reprocessed later, retaining its visibility settings from Postgres.
     """
     remove_collection_gold(delete_collection_index())
 

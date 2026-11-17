@@ -99,7 +99,7 @@ def cask_changes_cmd(
     try:
         if cursor is None:
             utils.result({"status": "success", "process": [], "reindex": {}, "delete": {}, "cleanup": {}, "collections": [],
-                          "skipped": [], "deferred": 0, "cursor": cask_changes.start_cursor()})
+                          "removed": [], "skipped": [], "deferred": 0, "cursor": cask_changes.start_cursor()})
         result = cask_changes.changes(json.loads(cursor), {"settle_seconds": settle_seconds, "limit": limit})
         reindex = sum(len(v) for v in result["reindex"].values())
         delete = sum(len(v) for v in result["delete"].values())
@@ -107,7 +107,8 @@ def cask_changes_cmd(
         utils.log(
             f"{len(result['process'])} to process, {reindex} to reindex, {delete} to delete, "
             f"{cleanup} to clean up, "
-            f"{len(result['collections'])} collection(s), {result['deferred']} deferred"
+            f"{len(result['collections'])} collection(s), {len(result['removed'])} collection(s) removed, "
+            f"{result['deferred']} deferred"
         )
         utils.result({"status": "success", **result})
     except _ERRORS as e:
