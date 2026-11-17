@@ -318,16 +318,16 @@ def test_remove_item_outputs_keeps_an_item_back_in_bronze(outputs):
     assert outputs["deleted"] == []
 
 
-RECORD = "cask:/gold/digital-dev/edits/collections/c/collection.jsonld.json"
-
-
 def test_remove_collection_gold_deletes_the_project_folder(monkeypatch, outputs):
     outputs["exists"].add("cask:/gold/digital-dev/collections/c")
     tree_ls = collection_index.fs.ls
 
     def ls(path, opts={}):
         if path == "cask:/gold/digital-dev/collections/c":
-            return [_Entry("tree", "/gold/digital-dev/collections/c/tree", "directory")]
+            return [
+                _Entry("collection.jsonld.json", "/gold/digital-dev/collections/c/collection.jsonld.json", "file"),
+                _Entry("tree", "/gold/digital-dev/collections/c/tree", "directory"),
+            ]
         if path == "cask:/gold/digital-dev/collections/c/tree":
             return [_Entry("gone", "/gold/digital-dev/collections/c/tree/gone", "directory")]
         return tree_ls(path, opts)
@@ -338,16 +338,8 @@ def test_remove_collection_gold_deletes_the_project_folder(monkeypatch, outputs)
     assert outputs["deleted"] == [("cask:/gold/digital-dev/collections/c", {"directory": True})]
     assert result == {
         "collection": "bronze/g/c", "path": "cask:/gold/digital-dev/collections/c",
-        "record": RECORD, "files": 1, "removed": True, "dryRun": False,
+        "files": 2, "removed": True, "dryRun": False,
     }
-
-
-def test_remove_collection_gold_deletes_the_edits_record_only(monkeypatch, outputs):
-    outputs["exists"].add(RECORD)
-    result = collection_index.remove_collection_gold("bronze/g/c")
-
-    assert outputs["deleted"] == [(RECORD, {})]
-    assert result["removed"] is True and result["files"] == 1
 
 
 def test_remove_collection_gold_uses_project_and_dry_run(monkeypatch, outputs):
@@ -370,10 +362,14 @@ def test_remove_collection_gold_missing_folder_is_a_no_op(outputs):
 
 @pytest.fixture
 def silver(monkeypatch):
-    """Fake CaskFS holding one item's silver: website derivatives plus kept work."""
+    """Fake CaskFS holding one item's silver: website derivatives plus kept work.
+    Deletes drop the folder from the tree, so prunes see the result."""
     item = "/silver/g/c/latest/tree/a"
     tree = {
         "cask:/gold": [_Entry("digital-dev", "/gold/digital-dev", "directory"), _Entry("digital-prod", "/gold/digital-prod", "directory")],
+        "cask:/silver/g/c": [_Entry("latest", "/silver/g/c/latest", "directory")],
+        "cask:/silver/g/c/latest": [_Entry("tree", "/silver/g/c/latest/tree", "directory")],
+        "cask:/silver/g/c/latest/tree": [_Entry("a", item, "directory")],
         f"cask:{item}": [
             _Entry("public-frontend-derivatives", f"{item}/public-frontend-derivatives", "directory"),
             _Entry("ocr", f"{item}/ocr", "directory"),
@@ -386,10 +382,23 @@ def silver(monkeypatch):
         f"cask:{item}/doc": [_Entry("ocr", f"{item}/doc/ocr", "directory")],
         f"cask:{item}/doc/ocr": [_Entry("p.djvu", f"{item}/doc/ocr/p.djvu", "file")],
     }
-    state = {"exists": set(), "deleted": []}
-    monkeypatch.setattr(collection_index.fs, "ls", lambda path, opts={}: tree[path])
-    monkeypatch.setattr(collection_index.fs, "exists", lambda path: path in state["exists"])
-    monkeypatch.setattr(collection_index.fs, "delete", lambda path, opts={}: state["deleted"].append(path))
+    state = {"exists": set(), "deleted": [], "tree": tree}
+
+    def fake_ls(path, opts={}):
+        if path not in tree:
+            raise FileNotFoundError(path)
+        return list(tree[path])
+
+    def fake_delete(path, opts={}):
+        state["deleted"].append(path)
+        for key in [k for k in tree if k == path or k.startswith(f"{path}/")]:
+            del tree[key]
+        for key in tree:
+            tree[key] = [e for e in tree[key] if f"cask:{e.path}" != path]
+
+    monkeypatch.setattr(collection_index.fs, "ls", fake_ls)
+    monkeypatch.setattr(collection_index.fs, "exists", lambda path: path in state["exists"] or path in tree)
+    monkeypatch.setattr(collection_index.fs, "delete", fake_delete)
     monkeypatch.setattr(
         collection_index.collection_model, "list_item_folders", lambda name, opts={}: ["/bronze/g/c/latest/tree/a"],
     )
@@ -400,8 +409,23 @@ def test_remove_collection_silver_deletes_only_website_dirs(silver):
     result = collection_index.remove_collection_silver("bronze/g/c")
 
     item = "cask:/silver/g/c/latest/tree/a"
-    assert silver["deleted"] == [f"{item}/public-frontend-derivatives", f"{item}/ocr", f"{item}/doc/ocr"]
+    assert silver["deleted"] == [
+        f"{item}/public-frontend-derivatives", f"{item}/ocr", f"{item}/doc/ocr", f"{item}/doc",
+    ]
     assert result["files"] == 3 and result["skipped"] is None
+    assert result["pruned"] == [f"{item}/doc"]
+    assert f"{item}/text" in silver["tree"]
+
+
+def test_remove_collection_silver_prunes_fully_emptied_collection(silver):
+    item = "cask:/silver/g/c/latest/tree/a"
+    del silver["tree"][f"{item}/text"]
+    silver["tree"][item] = [e for e in silver["tree"][item] if e.name != "text"]
+
+    result = collection_index.remove_collection_silver("bronze/g/c")
+
+    assert result["pruned"] == ["cask:/silver/g/c"]
+    assert not any(k.startswith("cask:/silver") for k in silver["tree"])
 
 
 def test_remove_collection_silver_dry_run_deletes_nothing(silver):
@@ -409,6 +433,7 @@ def test_remove_collection_silver_dry_run_deletes_nothing(silver):
 
     assert silver["deleted"] == []
     assert len(result["removed"]) == 3 and result["dryRun"] is True
+    assert result["pruned"] == []
 
 
 def test_remove_collection_silver_skips_while_another_project_has_it(silver):

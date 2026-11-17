@@ -68,22 +68,6 @@ def test_dest_path_gold_has_no_time_dimension():
     assert path == "/gold/digital-prod/collections/ucd-photos/item-1/thumb.jpg"
 
 
-def test_dest_path_gold_edits_uses_the_edits_folder():
-    path = derivative.dest_path(
-        type="gold", collection="haeger", rel_path="collection.jsonld.json",
-        opts={"app": "digital-dev", "edits": True},
-    )
-    assert path == "/gold/digital-dev/edits/collections/haeger/collection.jsonld.json"
-
-
-def test_dest_path_silver_rejects_edits():
-    with pytest.raises(ValueError, match="edits"):
-        derivative.dest_path(
-            type="silver", collection="ucd-photos", rel_path="item-1/thumb.jpg",
-            opts={"group": "digital-collections", "edits": True},
-        )
-
-
 def test_dest_path_gold_requires_app():
     with pytest.raises(ValueError, match="app"):
         derivative.dest_path(type="gold", collection="ucd-photos", rel_path="item-1/thumb.jpg", opts={})

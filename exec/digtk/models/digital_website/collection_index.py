@@ -103,34 +103,26 @@ def gold_item_folders(key, opts={}):
 
 
 def remove_collection_gold(key, opts={}):
-    """Deletes a collection's gold folder for one project (its item records and
-    promoted binaries) and its collection record under edits/. The featured
-    image beside that record, bronze, silver, ES and Postgres are left alone.
+    """Deletes a collection's gold folder for one project: its collection
+    record, item records and promoted binaries. The featured image under
+    edits/, bronze, silver, ES and Postgres are left alone.
 
     :param str key: Collection key, [bronze/]<group>/<collection>.
     :param dict opts: 'project' (see item_record._project()), 'dry_run' (bool — report only).
-    :returns: {"collection": key, "path", "record", "files": int, "removed": bool, "dryRun": bool}.
+    :returns: {"collection": key, "path", "files": int, "removed": bool, "dryRun": bool}.
     :rtype: dict
     """
     _, name = collection_record.parse_key(key)
     dry_run = bool(opts.get("dry_run"))
     verb = "would remove" if dry_run else "removed"
     path = "cask:" + derivative.gold_collection_dir(app=item_record._project(opts), collection=name)
-    record = collection_record.record_path(name, opts)
-    result = {"collection": key, "path": path, "record": record, "files": 0, "removed": False, "dryRun": dry_run}
-
-    if fs.exists(record):
-        result["files"] += 1
-        if not dry_run:
-            fs.delete(record)
-            result["removed"] = True
-        utils.log(f"{key}: {verb} {record}")
+    result = {"collection": key, "path": path, "files": 0, "removed": False, "dryRun": dry_run}
 
     if not fs.exists(path):
         utils.log(f"{key}: no gold folder at {path}")
         return result
     count = _count_files(path)
-    result["files"] += count
+    result["files"] = count
     if not dry_run:
         fs.delete(path, opts={"directory": True})
         result["removed"] = True
@@ -185,19 +177,65 @@ def _website_dirs(path):
     return found
 
 
+def _empty_dirs(path):
+    """Whether a directory holds no files, and if not, its topmost
+    subfolders that hold none.
+
+    :param str path: fs-compatible directory path.
+    :returns: (empty, paths) — paths is [] when empty is True.
+    :rtype: tuple[bool, list[str]]
+    """
+    try:
+        entries = fs.ls(path)
+    except FileNotFoundError:
+        return True, []
+    empty, empty_children, nested = True, [], []
+    for entry in entries:
+        if entry.kind != "directory":
+            empty = False
+            continue
+        child = f"cask:{entry.path}"
+        child_empty, child_paths = _empty_dirs(child)
+        if child_empty:
+            empty_children.append(child)
+        else:
+            empty = False
+            nested += child_paths
+    if empty:
+        return True, []
+    return False, empty_children + nested
+
+
+def _prune_empty_dirs(path):
+    """Deletes every directory under path (and path itself) whose subtree
+    holds no files.
+
+    :param str path: fs-compatible directory path.
+    :returns: Deleted directory paths, topmost only.
+    :rtype: list[str]
+    """
+    if not fs.exists(path):
+        return []
+    empty, paths = _empty_dirs(path)
+    if empty:
+        paths = [path]
+    for p in paths:
+        fs.delete(p, opts={"directory": True})
+    return paths
+
+
 def remove_collection_silver(key, opts={}):
     """Deletes the website derivatives (SILVER_WEBSITE_DIRS) of every item in
-    a collection's bronze. Other silver work (text, accessibility, AI metadata)
-    is kept. Skipped while another gold project still has the collection,
-    since every project reads the same silver.
+    a collection's bronze, then any silver folders left with no files. Other
+    silver work is kept. Skipped while another gold project still has the collection.
 
     :param str key: Collection key, [bronze/]<group>/<collection>.
     :param dict opts: 'project' (see item_record._project()), 'dry_run' (bool — report only).
-    :returns: {"removed": [{"path", "files"}], "files": int, "skipped": str|None, "dryRun": bool}.
+    :returns: {"removed": [{"path", "files"}], "files": int, "pruned": [path], "skipped": str|None, "dryRun": bool}.
     :rtype: dict
     """
     group, name = collection_record.parse_key(key)
-    result = {"removed": [], "files": 0, "skipped": None, "dryRun": bool(opts.get("dry_run"))}
+    result = {"removed": [], "files": 0, "pruned": [], "skipped": None, "dryRun": bool(opts.get("dry_run"))}
     others = other_gold_projects(key, opts)
     if others:
         result["skipped"] = f"still published in {', '.join(others)}"
@@ -212,9 +250,12 @@ def remove_collection_silver(key, opts={}):
                 fs.delete(path, opts={"directory": True})
             result["removed"].append({"path": path, "files": files})
             result["files"] += files
+    if not opts.get("dry_run"):
+        result["pruned"] = _prune_empty_dirs(f"cask:/silver/{group}/{name}")
     utils.log(
         f"{key}: {'would remove' if opts.get('dry_run') else 'removed'} "
-        f"{len(result['removed'])} silver folder(s), {result['files']} file(s)"
+        f"{len(result['removed'])} silver folder(s), {result['files']} file(s), "
+        f"pruned {len(result['pruned'])} empty folder(s)"
     )
     return result
 

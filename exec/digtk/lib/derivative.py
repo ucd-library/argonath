@@ -30,8 +30,6 @@ TYPES = ("silver", "gold", "workspace")
 
 # Gold app folder holding collection imports
 GOLD_COLLECTIONS_DIR = "collections"
-# Gold app folder holding per-collection edits
-GOLD_COLLECTION_EDITS_DIR = "edits/collections"
 
 
 def _clean_rel_path(rel_path):
@@ -61,18 +59,6 @@ def gold_collection_dir(*, app, collection):
     return f"/gold/{app}/{GOLD_COLLECTIONS_DIR}/{collection}"
 
 
-def gold_collection_edits_dir(*, app, collection):
-    """The CaskFS-absolute gold edits folder for one app's copy of a collection.
-    Holds the collection record beside the website's featured image.
-
-    :param str app: Gold app/project, e.g. 'digital-dev'.
-    :param str collection: Collection name.
-    :returns: e.g. '/gold/digital-dev/edits/collections/haeger'.
-    :rtype: str
-    """
-    return f"/gold/{app}/{GOLD_COLLECTION_EDITS_DIR}/{collection}"
-
-
 def dest_path(*, type, collection, rel_path, opts={}):
     """Build the CaskFS-absolute destination path for a derivative file.
 
@@ -83,8 +69,7 @@ def dest_path(*, type, collection, rel_path, opts={}):
         inferred, since a derivative can be produced from more than one source.
     :param dict opts: 'group' (required when type='silver' or 'workspace' — for
         'workspace' this is the user's username, plumbed in by the caller), 'app'
-        (required when type='gold'), 'edits' (gold only, bool — write under
-        gold_collection_edits_dir() instead of gold_collection_dir()), 'time' (silver
+        (required when type='gold'), 'time' (silver
         only, defaults to 'latest' if omitted — gold and workspace have no time dimension).
     :returns: CaskFS-absolute path, e.g.
         '/silver/digital-collections/ucd-photos/latest/item-1/derivatives/thumb-256.jpg'.
@@ -108,13 +93,10 @@ def dest_path(*, type, collection, rel_path, opts={}):
         app = opts.get("app")
         if not app:
             raise ValueError("opts['app'] is required when type='gold'")
-        folder = gold_collection_edits_dir if opts.get("edits") else gold_collection_dir
-        return f"{folder(app=app, collection=collection)}/{rel_path}"
+        return f"{gold_collection_dir(app=app, collection=collection)}/{rel_path}"
 
     if opts.get("app"):
         raise ValueError(f"opts['app'] does not apply when type={type!r}")
-    if opts.get("edits"):
-        raise ValueError(f"opts['edits'] does not apply when type={type!r}")
     group = opts.get("group")
     if not group:
         raise ValueError(f"opts['group'] is required when type={type!r}")

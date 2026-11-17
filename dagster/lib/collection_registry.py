@@ -123,7 +123,7 @@ def cask_changes(cursor):
     """Settled bronze item changes from the CaskFS audit log (`digtk state cask-changes`).
 
     :param dict|None cursor: The previous result's cursor; None starts at the newest event.
-    :returns: {"process", "reindex", "delete", "collections", "skipped", "deferred", "cursor"}.
+    :returns: {"process", "reindex", "delete", "cleanup", "collections", "removed", "skipped", "deferred", "cursor"}.
     :rtype: dict
     """
     args = ["cask-changes"]

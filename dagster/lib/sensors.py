@@ -241,6 +241,8 @@ def bronze_collection_cask_audit(context: dg.SensorEvaluationContext):
 
     for skipped in result["skipped"]:
         context.log.info(f"[{skipped['folder']}] skipped: {skipped['reason']}")
+    for key in result.get("removed", []):
+        context.log.info(f"[{key}] skipped: collection removed from bronze")
 
     # Before the cursor moves, so failures retry.
     queued = 0

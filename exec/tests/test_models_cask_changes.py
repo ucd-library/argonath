@@ -8,6 +8,7 @@ NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
 OLD = NOW - timedelta(minutes=10)
 FRESH = NOW - timedelta(minutes=1)
 KEY = "bronze/preservica/haeger"
+COLLECTION_ROOT = "cask:/bronze/preservica/haeger"
 TREE = "/bronze/preservica/haeger/latest/tree"
 
 
@@ -21,7 +22,7 @@ def _event(eid, path, created=OLD, operation="file.write", resource_type="file",
 @pytest.fixture
 def cask(monkeypatch):
     """Fake registry, audit log, CaskFS and gold records."""
-    state = {"events": [], "exists": set(), "gold": {}, "arks": set(), "reads": []}
+    state = {"events": [], "exists": {COLLECTION_ROOT}, "gold": {}, "arks": set(), "reads": []}
     monkeypatch.setattr(
         cask_changes.collection_model, "list_active_collections",
         lambda source_type=None, opts={}: [{"name": "haeger", "group_name": "preservica"}],
@@ -160,6 +161,45 @@ def test_a_collection_file_edit_marks_the_collection(cask):
 
     assert result["collections"] == [KEY]
     assert result["process"] == []
+
+
+def test_a_deleted_collection_is_removed_not_cleaned_up(cask):
+    cask["events"] = [
+        _event(7, f"{TREE}/a/p1.tif", operation="file.delete"),
+        _event(8, f"{TREE}/b", operation="directory.delete", resource_type="directory"),
+    ]
+    cask["exists"].discard(COLLECTION_ROOT)
+    cask["gold"]["tree/a"] = "ark:/87293/a"
+
+    result = _changes()
+
+    assert result["removed"] == [KEY]
+    for name in ("process", "skipped", "collections"):
+        assert result[name] == []
+    for name in ("reindex", "delete", "cleanup"):
+        assert result[name] == {}
+    assert result["cursor"] == {"after": 8, "done": {}}
+
+
+def test_a_deleted_collection_file_edit_does_not_mark_the_collection(cask):
+    cask["events"] = [_event(3, f"{TREE}/metadata.json", operation="file.delete")]
+    cask["exists"].discard(COLLECTION_ROOT)
+
+    result = _changes()
+
+    assert result["collections"] == []
+    assert result["removed"] == [KEY]
+
+
+def test_a_removed_collection_is_reported_once(cask):
+    cask["events"] = [_event(7, f"{TREE}/a", operation="directory.delete", resource_type="directory")]
+    cask["exists"].discard(COLLECTION_ROOT)
+
+    first = _changes()
+    second = _changes(first["cursor"])
+
+    assert first["removed"] == [KEY]
+    assert second["removed"] == []
 
 
 def test_a_recent_item_is_deferred_and_holds_the_cursor(cask):
