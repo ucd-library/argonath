@@ -174,7 +174,7 @@ def rebuild_collection_tree(context: dg.AssetExecutionContext, config: RebuildTr
         context.log.info(
             f"Patched tree for {config.group}/{config.collection}: "
             f"+{len(result.get('added', []))} added, -{len(result.get('removed', []))} removed, "
-            f"~{len(result.get('moved', []))} moved"
+            f"~{len(result.get('moved', []))} moved, {len(result.get('purged', []))} by-ref purged"
         )
         return dg.Output(result)
 

@@ -1457,10 +1457,11 @@ def preservica_sync_entities(collection, group, entities, opts={}):
     A collection with no root manifest.json yet (one auto-registered by
     find_changed_preservica_collections(), which never runs
     preservica_import()) gets one written, see _write_collection_manifest(). A child IO that disappears
-    from children.json has its key reported in 'removed'; its bronze files
-    are left in place (never deleted), matching preservica_import()'s
-    existing never-delete-stale-bronze behavior. A removed child SO is
-    logged only — no partition action, since folders were never partitioned.
+    from children.json has its key reported in 'removed'. Its by-ref/ files
+    are not deleted here: the tree step (preservica_tree_partial()) needs
+    them to recognize the tree/ entry as Preservica-owned, and purges them
+    after removing that entry. A removed child SO is logged only — no
+    partition action, since folders were never partitioned.
 
     :param str collection: Registered collection name.
     :param str group: Bronze group namespace.
@@ -1571,7 +1572,7 @@ def preservica_sync_entities(collection, group, entities, opts={}):
                 identifiers = _read_bronze_json(root, f"by-ref/{ref}/identifiers.json", [])
                 removed.append(_resolve_identifier_key(identifiers, ref)["key"])
             else:
-                ctx["on_progress"](f"folder  {ref}  removed from parent {so_ref} (bronze left in place)")
+                ctx["on_progress"](f"folder  {ref}  removed from parent {so_ref} (by-ref purged by tree step)")
 
     seen = set()
     for entity in entities:
@@ -1940,26 +1941,85 @@ def _tree_siblings(root, tree_dir_rel, exclude_slug=None):
     return used
 
 
-def _reconcile_tree_children(root, collection, so_ref, root_so_ref):
+def _listed_refs(root):
+    """Map every ref listed in a by-ref/ children.json to the folders that
+    list it. Used to tell a deleted entity from one that moved elsewhere.
+
+    :param str root: fs-compatible bronze 'latest' root.
+    :returns: {ref: set of parent SO refs}.
+    :rtype: dict[str, set[str]]
+    """
+    listed = {}
+    try:
+        entries = fs.ls(f"{root}/by-ref")
+    except FileNotFoundError:
+        return listed
+    for entry in entries:
+        if entry.kind != "directory":
+            continue
+        for child in _read_bronze_json(root, f"by-ref/{entry.name}/children.json", []):
+            listed.setdefault(child["ref"], set()).add(entry.name)
+    return listed
+
+
+def _purge_by_ref(root, ref, listed):
+    """Delete a removed entity's by-ref/ folder and, for a folder, every
+    descendant's. A descendant still listed by a folder outside the removed
+    subtree (moved out) is kept.
+
+    :param str root: fs-compatible bronze 'latest' root.
+    :param str ref: The removed entity's ref.
+    :param dict listed: _listed_refs() index, from before the purge.
+    :returns: The refs whose by-ref/ folders were deleted.
+    :rtype: list[str]
+    """
+    subtree, pending = [], [ref]
+    while pending:
+        current = pending.pop()
+        if current in subtree:
+            continue
+        subtree.append(current)
+        for child in _read_bronze_json(root, f"by-ref/{current}/children.json", []):
+            pending.append(child["ref"])
+
+    inside = set(subtree)
+    purged = []
+    for current in subtree:
+        # moved out of the removed subtree
+        if current != ref and listed.get(current, set()) - inside:
+            continue
+        if not fs.exists(f"{root}/by-ref/{current}"):
+            continue
+        fs.delete(f"{root}/by-ref/{current}", opts={"directory": True})
+        purged.append(current)
+    return purged
+
+
+def _reconcile_tree_children(root, collection, so_ref, root_so_ref, opts={}):
     """Match one synced SO's tree/ entries to its by-ref/ children.json.
-    Entries Preservica knew (a by-ref/ entry) but no longer lists are deleted;
+    Entries Preservica knew (a by-ref/ entry) but no longer lists are deleted,
+    along with their by-ref/ folders unless another folder lists them (moved);
     entries added directly in bronze are kept.
 
     :param str root: fs-compatible bronze 'latest' root.
     :param str collection: Collection name (see _tree_partition_keys()).
     :param str so_ref: The synced SO's ref.
     :param str root_so_ref: The collection root SO's ref (its entry is 'tree').
-    :returns: (removed [{'ref', 'ark'}], missing [{'ref', 'type'}]).
-    :rtype: tuple[list[dict], list[dict]]
+    :param dict opts: 'listed_cache' (dict, shared across calls; holds the
+        _listed_refs() index once built).
+    :returns: (removed [{'ref', 'ark'}], missing [{'ref', 'type'}], purged [ref]).
+    :rtype: tuple[list[dict], list[dict], list[str]]
     """
     children = _read_bronze_json(root, f"by-ref/{so_ref}/children.json")
     tree_rel = "tree" if so_ref == root_so_ref else _find_tree_path_for_ref(so_ref, collection, root)
     if children is None or not tree_rel:
-        return [], []
+        return [], [], []
 
+    cache = opts.get("listed_cache") if opts.get("listed_cache") is not None else {}
     listed = {c["ref"]: c for c in children}
     present = set()
     removed = []
+    purged = []
     try:
         entries = fs.ls(f"{root}/{tree_rel}")
     except FileNotFoundError:
@@ -1983,9 +2043,15 @@ def _reconcile_tree_children(root, collection, so_ref, root_so_ref):
         ark = next((i.get("value") for i in identifiers if _is_ark(i.get("value") or "")), None)
         fs.delete(f"{root}/{tree_rel}/{entry.name}", opts={"directory": True})
         removed.append({"ref": ref, "ark": ark})
+        # built once, only when something is removed
+        if "index" not in cache:
+            cache["index"] = _listed_refs(root)
+        # listed elsewhere means moved, keep it
+        if not cache["index"].get(ref):
+            purged.extend(_purge_by_ref(root, ref, cache["index"]))
 
     missing = [{"ref": ref, "type": c["type"]} for ref, c in listed.items() if ref not in present]
-    return removed, missing
+    return removed, missing, purged
 
 
 def preservica_tree_partial(collection, group, changed_entities, opts={}):
@@ -2013,10 +2079,11 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
       changed media) are then refreshed from by-ref/, see
       _refresh_tree_entry().
     - **Folder children**: for each changed SO, tree/ entries whose ref has
-      left its children.json are deleted first, and listed children with no
-      entry under it are handled like any other entity (see
-      _reconcile_tree_children()). An item moved between two synced folders
-      is therefore re-placed, not lost.
+      left its children.json are deleted first, along with their by-ref/
+      folders (a folder's whole by-ref/ subtree) when no other folder lists
+      them, and listed children with no entry under it are handled like any
+      other entity (see _reconcile_tree_children()). An item moved between
+      two synced folders is therefore re-placed, not lost or purged.
     - **Added** (by-ref/ exists, no tree/ entry yet): the entity's parent SO
       is found via _find_parent_so_ref(), the entry is placed under that
       parent's current tree/ location (or directly under 'tree' if the
@@ -2037,7 +2104,8 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
         type) pairs are processed only once.
     :param dict opts: 'dest_root' (str, optional — see _bronze_collection_root()).
     :returns: {'moved': [...], 'added': [...], 'removed': [...],
-        'unresolved': [...], 'refreshed': [...]} — each a list of Preservica refs — plus
+        'unresolved': [...], 'refreshed': [...], 'purged': [...]} — each a list
+        of Preservica refs ('purged': by-ref/ folders deleted) — plus
         'removedArks', the ARKs of removed items that weren't re-placed.
     :rtype: dict
     :raises FileNotFoundError: If preservica_import() has not been run yet for
@@ -2052,7 +2120,7 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
         )
 
     root = _bronze_latest_root(collection, group, opts)
-    result = {"moved": [], "added": [], "removed": [], "unresolved": [], "refreshed": []}
+    result = {"moved": [], "added": [], "removed": [], "unresolved": [], "refreshed": [], "purged": []}
 
     # never built (e.g. auto-registered), nothing to patch
     if not fs.exists(f"{root}/tree/metadata.json"):
@@ -2064,10 +2132,14 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
     work = list(changed_entities)
     relisted = set()
     removed_arks = {}
+    listed_cache = {}
     for entity in changed_entities:
         if entity["type"] != "SO" or not fs.exists(f"{root}/by-ref/{entity['ref']}/entity.json"):
             continue
-        removed, missing = _reconcile_tree_children(root, collection, entity["ref"], root_so_ref)
+        removed, missing, purged = _reconcile_tree_children(
+            root, collection, entity["ref"], root_so_ref, {"listed_cache": listed_cache},
+        )
+        result["purged"].extend(purged)
         result["removed"].extend(r["ref"] for r in removed)
         removed_arks.update((r["ref"], r["ark"]) for r in removed)
         work.extend(missing)

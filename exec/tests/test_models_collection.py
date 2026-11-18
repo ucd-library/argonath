@@ -1389,6 +1389,7 @@ def test_sync_entities_removed_child_item_is_pruned_but_bronze_kept(tmp_path, fa
 
     assert result["removed"] == ["d7xyz999"]
     root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    # the tree step purges it, not sync
     assert (root / "by-ref" / "io-2" / "entity.json").exists()
 
 
@@ -1911,7 +1912,7 @@ def test_tree_partial_renames_io_moves_directory_without_recopying(tmp_path, fak
     )
 
     new_dir = root / "tree" / "item-one-renamed"
-    assert {k: v for k, v in result.items() if k != "refreshed"} == {"moved": ["io-1"], "added": [], "removed": [], "unresolved": [], "removedArks": []}
+    assert {k: v for k, v in result.items() if k not in ("refreshed", "purged")} == {"moved": ["io-1"], "added": [], "removed": [], "unresolved": [], "removedArks": []}
     assert not old_dir.exists()
     assert new_dir.exists()
     # A real move, not a delete+rewrite — same inode survives the rename.
@@ -1931,7 +1932,7 @@ def test_tree_partial_rename_is_noop_when_slug_unchanged(tmp_path, fake_registry
     result = collection.preservica_tree_partial(
         "my-collection", "preservica", [{"ref": "io-1", "type": "IO"}], {"dest_root": str(tmp_path)},
     )
-    assert {k: v for k, v in result.items() if k != "refreshed"} == {"moved": [], "added": [], "removed": [], "unresolved": [], "removedArks": []}
+    assert {k: v for k, v in result.items() if k not in ("refreshed", "purged")} == {"moved": [], "added": [], "removed": [], "unresolved": [], "removedArks": []}
     root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
     assert (root / "tree" / "item-one").exists()
 
@@ -1967,7 +1968,7 @@ def test_tree_partial_renames_folder_moves_whole_subtree(tmp_path, fake_registry
         "my-collection", "preservica", [{"ref": "sub-folder", "type": "SO"}], {"dest_root": str(tmp_path)},
     )
 
-    assert {k: v for k, v in result.items() if k != "refreshed"} == {"moved": ["sub-folder"], "added": [], "removed": [], "unresolved": [], "removedArks": []}
+    assert {k: v for k, v in result.items() if k not in ("refreshed", "purged")} == {"moved": ["sub-folder"], "added": [], "removed": [], "unresolved": [], "removedArks": []}
     assert not (root / "tree" / "sub-folder").exists()
     assert (
         root / "tree" / "sub-folder-renamed" / "item-one" / "Preservation" / "page1.tif"
@@ -1997,7 +1998,7 @@ def test_tree_partial_adds_new_item_via_parent_fallback_scan(tmp_path, fake_regi
         "my-collection", "preservica", [{"ref": "io-2", "type": "IO"}], {"dest_root": str(tmp_path)},
     )
 
-    assert {k: v for k, v in result.items() if k != "refreshed"} == {"moved": [], "added": ["io-2"], "removed": [], "unresolved": [], "removedArks": []}
+    assert {k: v for k, v in result.items() if k not in ("refreshed", "purged")} == {"moved": [], "added": ["io-2"], "removed": [], "unresolved": [], "removedArks": []}
     root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
     assert (root / "tree" / "item-two" / "identifiers.json").exists()
     assert (root / "tree" / "item-one").exists()
@@ -2009,15 +2010,15 @@ def test_tree_partial_removed_entity_deletes_tree_entry(tmp_path, fake_registry,
     root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
     assert (root / "tree" / "item-one").exists()
 
-    # Simulate the ref no longer existing in by-ref/ (preservica_sync_entities
-    # itself never deletes bronze — this exercises the safety-net path).
+    # Simulate the ref no longer existing in by-ref/ (only the folder-children
+    # path purges by-ref — this exercises the safety-net path).
     fs.delete(str(root / "by-ref" / "io-1" / "entity.json"))
 
     result = collection.preservica_tree_partial(
         "my-collection", "preservica", [{"ref": "io-1", "type": "IO"}], {"dest_root": str(tmp_path)},
     )
 
-    assert {k: v for k, v in result.items() if k != "refreshed"} == {"moved": [], "added": [], "removed": ["io-1"], "unresolved": [], "removedArks": ["ark:/87287/d7abc123"]}
+    assert {k: v for k, v in result.items() if k not in ("refreshed", "purged")} == {"moved": [], "added": [], "removed": ["io-1"], "unresolved": [], "removedArks": ["ark:/87287/d7abc123"]}
     assert not (root / "tree" / "item-one").exists()
 
 
@@ -2036,9 +2037,86 @@ def test_tree_partial_drops_a_child_removed_from_a_synced_folder(tmp_path, fake_
     )
 
     assert sync["removed"] == ["d7abc123"]
-    assert {k: v for k, v in result.items() if k != "refreshed"} == {"moved": [], "added": [], "removed": ["io-1"], "unresolved": [], "removedArks": ["ark:/87287/d7abc123"]}
+    assert {k: v for k, v in result.items() if k not in ("refreshed", "purged")} == {"moved": [], "added": [], "removed": ["io-1"], "unresolved": [], "removedArks": ["ark:/87287/d7abc123"]}
     assert not (root / "tree" / "item-one").exists()
-    # by-ref/ is never deleted
+    # deleted in Preservica, so by-ref goes too
+    assert result["purged"] == ["io-1"]
+    assert not (root / "by-ref" / "io-1").exists()
+    assert (root / "by-ref" / "root-ref" / "entity.json").exists()
+
+
+def test_tree_partial_purges_a_removed_folders_whole_by_ref_subtree(tmp_path, fake_registry, local_find_by_partition_keys):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["sub-folder"] = {"title": "Sub Folder", "type": "SO"}
+    client.entities["io-1"] = {"title": "Item One", "type": "IO"}
+    client.entities["io-2"] = {"title": "Item Two", "type": "IO"}
+    client.children["root-ref"] = [
+        {"ref": "sub-folder", "title": "Sub Folder", "type": "SO"},
+        {"ref": "io-2", "title": "Item Two", "type": "IO"},
+    ]
+    client.children["sub-folder"] = [{"ref": "io-1", "title": "Item One", "type": "IO"}]
+    client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc123"}]
+    client.identifiers["io-2"] = [{"type": None, "value": "ark:/87287/d7xyz999"}]
+    client.representations["io-1"] = []
+    client.representations["io-2"] = []
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+
+    client.children["root-ref"] = [{"ref": "io-2", "title": "Item Two", "type": "IO"}]
+    collection.preservica_sync_entities(
+        "my-collection", "preservica", [{"ref": "root-ref", "type": "SO"}],
+        {"client": client, "dest_root": str(tmp_path)},
+    )
+    result = collection.preservica_tree_partial(
+        "my-collection", "preservica", [{"ref": "root-ref", "type": "SO"}], {"dest_root": str(tmp_path)},
+    )
+
+    assert result["removed"] == ["sub-folder"]
+    assert sorted(result["purged"]) == ["io-1", "sub-folder"]
+    assert not (root / "tree" / "sub-folder").exists()
+    assert not (root / "by-ref" / "sub-folder").exists()
+    assert not (root / "by-ref" / "io-1").exists()
+    assert (root / "by-ref" / "io-2" / "entity.json").exists()
+    assert (root / "tree" / "item-two").exists()
+
+
+def test_tree_partial_keeps_by_ref_of_an_item_listed_by_an_unsynced_folder(tmp_path, fake_registry, local_find_by_partition_keys):
+    client = _FakePreservicaClient()
+    client.entities["root-ref"] = {"title": "Root", "type": "SO"}
+    client.entities["folder-a"] = {"title": "Folder A", "type": "SO"}
+    client.entities["folder-b"] = {"title": "Folder B", "type": "SO"}
+    client.entities["io-1"] = {"title": "Item One", "type": "IO"}
+    client.children["root-ref"] = [
+        {"ref": "folder-a", "title": "Folder A", "type": "SO"},
+        {"ref": "folder-b", "title": "Folder B", "type": "SO"},
+    ]
+    client.children["folder-a"] = [{"ref": "io-1", "title": "Item One", "type": "IO"}]
+    client.children["folder-b"] = []
+    client.identifiers["io-1"] = [{"type": None, "value": "ark:/87287/d7abc123"}]
+    client.representations["io-1"] = []
+    collection.preservica_import(
+        "root-ref", "my-collection", "preservica", {"client": client, "dest_root": str(tmp_path)},
+    )
+    collection.preservica_tree("my-collection", "preservica", {"dest_root": str(tmp_path)})
+    root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
+    # folder-b already lists io-1 in bronze
+    collection._write_bronze_json(
+        str(root), "by-ref/folder-b/children.json", [{"ref": "io-1", "title": "Item One", "type": "IO"}],
+    )
+
+    client.children["folder-a"] = []
+    changed = [{"ref": "folder-a", "type": "SO"}]
+    collection.preservica_sync_entities(
+        "my-collection", "preservica", changed, {"client": client, "dest_root": str(tmp_path)},
+    )
+    result = collection.preservica_tree_partial("my-collection", "preservica", changed, {"dest_root": str(tmp_path)})
+
+    assert result["removed"] == ["io-1"]
+    assert result["purged"] == []
     assert (root / "by-ref" / "io-1" / "entity.json").exists()
 
 
@@ -2056,7 +2134,7 @@ def test_tree_partial_removed_child_also_named_in_the_batch(tmp_path, fake_regis
         [{"ref": "root-ref", "type": "SO"}, {"ref": "io-1", "type": "IO"}], {"dest_root": str(tmp_path)},
     )
 
-    assert {k: v for k, v in result.items() if k != "refreshed"} == {"moved": [], "added": [], "removed": ["io-1"], "unresolved": [], "removedArks": ["ark:/87287/d7abc123"]}
+    assert {k: v for k, v in result.items() if k not in ("refreshed", "purged")} == {"moved": [], "added": [], "removed": ["io-1"], "unresolved": [], "removedArks": ["ark:/87287/d7abc123"]}
 
 
 def test_tree_partial_places_a_new_child_found_through_its_folder(tmp_path, fake_registry, local_find_by_partition_keys):
@@ -2077,7 +2155,7 @@ def test_tree_partial_places_a_new_child_found_through_its_folder(tmp_path, fake
     )
 
     root = tmp_path / "bronze" / "preservica" / "my-collection" / "latest"
-    assert {k: v for k, v in result.items() if k != "refreshed"} == {"moved": [], "added": ["io-2"], "removed": [], "unresolved": [], "removedArks": []}
+    assert {k: v for k, v in result.items() if k not in ("refreshed", "purged")} == {"moved": [], "added": ["io-2"], "removed": [], "unresolved": [], "removedArks": []}
     assert (root / "tree" / "item-two" / "identifiers.json").exists()
     assert (root / "tree" / "item-one").exists()
 
@@ -2115,6 +2193,9 @@ def test_tree_partial_moves_an_item_between_synced_folders(tmp_path, fake_regist
     assert result["added"] == ["io-1"]
     # moved, so its ES doc stays
     assert result["removedArks"] == []
+    # moved, so its by-ref stays
+    assert result["purged"] == []
+    assert (root / "by-ref" / "io-1" / "entity.json").exists()
     assert not (root / "tree" / "folder-a" / "item-one").exists()
     assert (root / "tree" / "folder-b" / "item-one" / "identifiers.json").exists()
 
@@ -2137,6 +2218,7 @@ def test_tree_partial_keeps_a_bronze_first_entry_with_a_ref(tmp_path, fake_regis
 
     assert result["removed"] == ["io-1"]
     assert result["removedArks"] == ["ark:/87287/d7abc123"]
+    assert result["purged"] == ["io-1"]
     assert (root / "tree" / "bronze-first" / "metadata.json").exists()
     assert not (root / "tree" / "item-one").exists()
 
@@ -2173,7 +2255,7 @@ def test_tree_partial_unresolved_when_parent_cannot_be_found(tmp_path, fake_regi
         "my-collection", "preservica", [{"ref": "orphan-1", "type": "IO"}], {"dest_root": str(tmp_path)},
     )
 
-    assert {k: v for k, v in result.items() if k != "refreshed"} == {"moved": [], "added": [], "removed": [], "unresolved": ["orphan-1"], "removedArks": []}
+    assert {k: v for k, v in result.items() if k not in ("refreshed", "purged")} == {"moved": [], "added": [], "removed": [], "unresolved": ["orphan-1"], "removedArks": []}
     assert not (root / "tree" / "orphan").exists()
     assert not any((root / "tree").glob("orphan*"))
 

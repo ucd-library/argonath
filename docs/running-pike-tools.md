@@ -873,8 +873,10 @@ How `argonath` reaches Dagster:
     `gold_dcs_process_item` and `gold_dcs_collection_rollup` can also be launched by hand.
 - **Items removed by a Preservica sync:** when a synced folder (SO) no longer lists a
   child that Preservica knew about (it has a `by-ref/` entry), the tree rebuild deletes
-  that child's `tree/` entry. `by-ref/` is kept. `bronze_collection_cask_audit` then sees the
-  delete and removes its ES docs.
+  that child's `tree/` entry, then its `by-ref/` folder (for a subfolder, every `by-ref/`
+  folder under it). A child that another folder's `children.json` still lists has moved,
+  so its `by-ref/` is kept. `bronze_collection_cask_audit` then sees the delete and removes
+  its ES docs.
   - To remove an item, remove it in Preservica and sync its parent folder. In the
     launchpad, `preservica_changed` names the parent with `type: SO`, not the item.
   - Items added directly in bronze `tree/` (no `by-ref/` entry yet) are never deleted by a
