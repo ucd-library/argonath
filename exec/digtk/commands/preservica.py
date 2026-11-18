@@ -288,6 +288,7 @@ def tree(
         utils.log(
             f"Patched tree for {group}/{collection}: +{len(result['added'])} added, "
             f"-{len(result['removed'])} removed, ~{len(result['moved'])} moved"
+            + (f", {len(result['purged'])} by-ref purged" if result.get("purged") else "")
             + (f", {len(result['unresolved'])} unresolved" if result["unresolved"] else "")
         )
         utils.result({"status": "success", "collection": collection, **result})

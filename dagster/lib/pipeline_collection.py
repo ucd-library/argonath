@@ -27,7 +27,7 @@ from dagster import AssetMaterialization, MetadataValue, OpExecutionContext, job
 from lib import collection_registry
 from lib.configs import ItemRunConfig, ProcessCollectionConfig, collections_partitions
 from lib.pipeline_item import normalize_item, gold_dcs_process_item
-from lib.utils import default_run_config, exec
+from lib.utils import default_run_config, exec, sensor_default_status, sensor_interval
 
 # Most gold_dcs_process_item runs (queued or running, from any trigger) the queue
 # sensor lets exist at once. It only submits more while there's room, so the
@@ -112,7 +112,8 @@ def _item_run_request(row):
 
 @dg.sensor(
     job=gold_dcs_process_item, 
-    minimum_interval_seconds=30, 
+    minimum_interval_seconds=sensor_interval(30),
+    default_status=sensor_default_status(),
     description=(
         "Listens to the Postgres `collection_registry.job_queue` table and launches `gold_dcs_process_item` runs for queued items, "
         "keeping at most MAX_ITEM_RUNS_IN_FLIGHT item runs queued or running. "
@@ -225,7 +226,8 @@ def gold_dcs_collection_rollup():
 
 @dg.sensor(
     job=gold_dcs_collection_rollup, 
-    minimum_interval_seconds=300, 
+    minimum_interval_seconds=sensor_interval(300),
+    default_status=sensor_default_status(),
     description=(
         "Listens for all items in a collection to finish processing, then indexes the collections' gold record and recalculates the item count. "
         "This runs as part of the `bronze_collection_cask_audit` sensor chain, after all item runs are complete and the queue is empty. "

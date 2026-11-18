@@ -383,8 +383,10 @@ class PreservicaClient:
             entities changed at or after this point are returned. A bare date
             or offset-less timestamp is treated as UTC.
         :param dict opts: 'page_size' (default CONFIG['preservica']['page_size']).
-        :returns: Every changed entity across all pages: [{'ref', 'type'}, ...]
-            ('type' is 'SO', 'IO', or 'CO').
+        :returns: Every changed entity across all pages: [{'ref', 'type',
+            'deleted'}, ...] ('type' is 'SO', 'IO', or 'CO'). A deleted entity
+            comes back as just `<Entity ref="..." deleted="true"/>`, so its
+            'type' is None and 'deleted' is True.
         :rtype: list[dict]
         :raises ValueError: `since` isn't a valid ISO-8601 date/timestamp.
         """
@@ -405,6 +407,7 @@ class PreservicaClient:
                 entities.append({
                     "ref": pxml.attr_of(entity, "ref"),
                     "type": pxml.attr_of(entity, "type"),
+                    "deleted": (pxml.attr_of(entity, "deleted") or "").lower() == "true",
                 })
 
             start += page_size

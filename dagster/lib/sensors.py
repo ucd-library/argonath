@@ -26,7 +26,7 @@ import dagster as dg
 from lib import collection_registry
 from lib.configs import CaskChangesConfig, collections_partitions
 from lib.pipeline_index import gold_dcs_apply_cask_changes
-from lib.utils import default_run_config, exec
+from lib.utils import default_run_config, exec, sensor_default_status, sensor_interval
 
 
 # Default lookback for a sensor's very first tick, before it has a cursor of
@@ -36,7 +36,8 @@ _INITIAL_LOOKBACK = datetime.timedelta(days=1)
 
 @dg.sensor(
     job_name="bronze_reconcile_collection", 
-    minimum_interval_seconds=300, 
+    minimum_interval_seconds=sensor_interval(300),
+    default_status=sensor_default_status(),
     description=(
         "Listens for changes in Preservica for registered collections and syncs changes to the collection's bronze item list, rebuilding the tree structure. "
         "This should trigger the `bronze_collection_cask_audit` sensor to process any changed items and update the showcase indexes."
@@ -93,7 +94,8 @@ def bronze_preservica_auto_sync(context: dg.SensorEvaluationContext):
 
 
 @dg.sensor(
-    minimum_interval_seconds=300, 
+    minimum_interval_seconds=sensor_interval(300),
+    default_status=sensor_default_status(),
     description=(
         "Listens for collections that have been added to the registry (Postgres) and adds a Dagster partition for each new collection. "
         "Collections are added to the registry during `digtk collection add` or the `bronze_preservica_auto_sync` sensor."
@@ -128,7 +130,8 @@ def bronze_collection_partition_sync(context: dg.SensorEvaluationContext):
 
 
 @dg.sensor(
-    minimum_interval_seconds=120, 
+    minimum_interval_seconds=sensor_interval(120),
+    default_status=sensor_default_status(),
     description=(
         "Listens for workspace folders staged under CaskFS's /workspace/<casId> and adds a Dagster partition for each new folder. "
         "Workspace folders are added via `digtk workspace add`."
@@ -217,7 +220,8 @@ def _ensure_partitions(context, keys):
 
 @dg.sensor(
     job=gold_dcs_apply_cask_changes,
-    minimum_interval_seconds=300,
+    minimum_interval_seconds=sensor_interval(300),
+    default_status=sensor_default_status(),
     description=(
         "Listens for changes to the CaskFS audit log and builds silver level derivatives and gold level "
         "metadata/binaries for each changed item, as well as the collection, and inserts into "

@@ -18,11 +18,13 @@ entity passed as `ref` to `digtk preservica import`.
 |----------|--------------------------------------------------------------------------|
 | `sync`   | Track this collection and sync it into argonath bronze. Implied by any other tag — `argonath=ai` behaves identically to `argonath=sync,ai`. |
 | `ai`     | Permit the AI metadata-draft stage (`generate_metadata`) to run for this collection's items. |
+| `public-showcase-prod`, `public-showcase-dev` | Send this collection to that dc-showcase deployment: the deployment whose `DIGTK_SHOWCASE_PUBLISH_TAG` matches builds silver/gold and indexes it into the showcase. Bronze sync alone does not. |
+| `e2e-testing` | Test collections created by the dc-showcase e2e suite. Only the e2e stack discovers and publishes these (to `digital-dev`); dev and prod ignore them. |
 
 The tag vocabulary is expected to grow as new optional pipeline stages come
 online — an unrecognized tag is stored verbatim rather than rejected.
 
-There is no visibility tag. Whether a collection is public is set only in the
+The `public-showcase*` tags name a deployment target, not visibility. There is no visibility tag. Whether a collection is public is set only in the
 dc-showcase admin (`dcf_edits.collection_edit.visibility`); a collection with
 no row there is private.
 
@@ -41,6 +43,23 @@ The `argonath` identifier only governs two things:
    checked by the sensor going forward, regardless of its tags.
 2. **Optional-stage gating** — `ai` permits that pipeline stage to run for
    the collection's items.
+
+## Per-deployment settings
+
+Prod and dev share one Preservica tenant, so two settings keep each
+deployment to its own collections:
+
+| Env var | Setting | Effect |
+|---|---|---|
+| `ARGONATH_DISCOVERY_TAGS` | `preservica.discovery_tags` | Comma-separated tags. A brand-new folder is auto-registered only if its `argonath` value names one of them. The implied `sync` never matches on its own, so list `sync` explicitly if plain `argonath=sync` folders should register. Unset: any labeled folder registers. |
+| `DIGTK_SHOWCASE_PUBLISH_TAG` | `showcase.publish_tag` | Only collections whose tags include this get gold/showcase work from the `bronze_collection_cask_audit` sensor. Unset: every registered collection does. |
+
+Local dev sets both to `public-showcase-dev`; the e2e stack sets both to `e2e-testing`; prod discovers `sync,ai,public-showcase-prod`.
+
+A change reported on a registered collection's own root folder re-reads its
+`argonath` identifier, so adding or removing a tag in Preservica updates
+`workflow_tags`. Removing the publish tag stops new showcase work but does not
+unpublish what is already indexed; use `gold_dcs_unpublish_collection` for that.
 
 ## Naming
 
