@@ -3,13 +3,15 @@ Turns CaskFS audit-log events under registered collections' bronze items
 into per-item work: process (derivatives and all), reindex (metadata only)
 or delete from the showcase index. Read by Dagster's bronze_collection_cask_audit.
 """
+import os
 from datetime import datetime, timezone
 
 from digtk.lib import cask_audit, fs, items
 from digtk.models import collection as collection_model
 from digtk.models.digital_website import item_record
 
-DEFAULT_SETTLE_SECONDS = 300
+# Quiet time before an item's changes are acted on. Shortened in test stacks.
+DEFAULT_SETTLE_SECONDS = int(os.environ.get("ARGONATH_CASK_AUDIT_SETTLE_SECONDS", "300"))
 
 # Files whose change needs no new derivatives.
 METADATA_FILES = {"metadata.json", "identifiers.json"}
@@ -30,13 +32,19 @@ def _cask_path(path):
 
 def watched_roots(opts={}):
     """Every active registered collection's items root and collection files.
+    Collections without this deployment's showcase publish tag are left out
+    (see digtk.models.collection.is_published()), so their bronze changes
+    never reach silver/gold or the showcase index.
 
-    :param dict opts: 'conn' (registry connection).
+    :param dict opts: 'conn' (registry connection), 'publish_tag' (overrides
+        the config setting).
     :returns: [{"key", "group", "name", "items_root", "collection_files"}].
     :rtype: list[dict]
     """
     roots = []
     for row in collection_model.list_active_collections(opts=opts):
+        if not collection_model.is_published(row, opts):
+            continue
         group, name = row["group_name"], row["name"]
         latest = f"/bronze/{group}/{name}/latest"
         roots.append({

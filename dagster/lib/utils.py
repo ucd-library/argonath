@@ -56,6 +56,32 @@ class DigtkCommandError(subprocess.CalledProcessError):
         return f"{base} {self.error}" if self.error else base
 
 
+def sensor_interval(default):
+    """A sensor's minimum interval, from ARGONATH_SENSOR_INTERVAL_SECONDS when set
+    (test stacks shorten it), else the sensor's own default.
+
+    :param int default: The sensor's normal interval in seconds.
+    :returns: Interval in seconds.
+    :rtype: int
+    """
+    raw = os.environ.get("ARGONATH_SENSOR_INTERVAL_SECONDS")
+    return int(raw) if raw else default
+
+
+def sensor_default_status():
+    """Sensor status on a fresh Dagster instance. Running when
+    ARGONATH_SENSORS_DEFAULT_RUNNING is true (test stacks), else stopped,
+    so production sensors stay off until switched on.
+
+    :returns: Dagster default sensor status.
+    :rtype: dg.DefaultSensorStatus
+    """
+    raw = os.environ.get("ARGONATH_SENSORS_DEFAULT_RUNNING", "")
+    if raw.strip().lower() in ("1", "true", "yes", "on"):
+        return dg.DefaultSensorStatus.RUNNING
+    return dg.DefaultSensorStatus.STOPPED
+
+
 def _digtk_error(last_line):
     """Pull digtk's 'error' message out of its last output line.
 

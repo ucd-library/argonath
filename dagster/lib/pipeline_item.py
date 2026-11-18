@@ -63,7 +63,7 @@ from lib.pipeline_fanout import (
     finalize_one_item,
     item_tasks,
 )
-from lib.utils import celery_job_executor, default_run_config, exec
+from lib.utils import celery_job_executor, default_run_config, exec, sensor_default_status
 
 
 def normalize_item(path):
@@ -277,7 +277,8 @@ def gold_dcs_process_item():
 
 
 @dg.run_failure_sensor(
-    monitored_jobs=[gold_dcs_process_item], 
+    monitored_jobs=[gold_dcs_process_item],
+    default_status=sensor_default_status(),
     description=(
         "Listens for failed item runs triggered by `gold_dcs_process_item`. That job does finalize and report success and failures, "
         "but if it failed unexpectedly (ie a crashed worker) and didn't record a result, "

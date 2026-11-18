@@ -253,6 +253,74 @@ async function listRuns(jobName, opts = {}) {
 }
 
 /**
+ * List runs carrying all the given tags, newest first.
+ *
+ * @param {Object} tags - Tags to match, as {key: value}, e.g. {'argonath/collection': 'bronze/preservica/foo'}.
+ * @param {Object} [opts={}] - Options, plus resolveConnection() options.
+ * @param {string[]} [opts.statuses] - Only these run statuses, e.g. ['FAILURE'].
+ * @param {number} [opts.limit=100] - Max runs to return.
+ * @returns {Promise<Object[]>} Runs with `runId`, `status`, `jobName`, `startTime` and `tags`.
+ */
+async function listRunsByTags(tags, opts = {}) {
+  const filter = { tags: Object.entries(tags).map(([key, value]) => ({ key, value })) };
+  if (opts.statuses) filter.statuses = opts.statuses;
+  const data = await graphql(`
+    query RunsByTags($filter: RunsFilter, $limit: Int) {
+      runsOrError(filter: $filter, limit: $limit) {
+        ... on Runs { results { runId status jobName startTime tags { key value } } }
+      }
+    }
+  `, { filter, limit: opts.limit || 100 }, opts);
+  return data?.runsOrError?.results || [];
+}
+
+/**
+ * List the repository's sensors and their current state.
+ *
+ * @param {Object} [opts={}] - resolveConnection() options.
+ * @returns {Promise<Object[]>} [{name, status, minIntervalSeconds}].
+ */
+async function listSensors(opts = {}) {
+  const data = await graphql(`
+    query Sensors($repo: RepositorySelector!) {
+      sensorsOrError(repositorySelector: $repo) {
+        __typename
+        ... on Sensors { results { name minIntervalSeconds sensorState { status } } }
+        ... on PythonError { message }
+      }
+    }
+  `, { repo: repositorySelector() }, opts);
+  const result = data?.sensorsOrError;
+  if (result?.__typename !== 'Sensors') throw new Error(`listing sensors failed: ${result?.message || result?.__typename}`);
+  return result.results.map(s => ({ name: s.name, status: s.sensorState?.status, minIntervalSeconds: s.minIntervalSeconds }));
+}
+
+/**
+ * Start a sensor. Starting one that is already running is a no-op.
+ *
+ * @param {string} name - Sensor name.
+ * @param {Object} [opts={}] - resolveConnection() options.
+ * @returns {Promise<string>} The sensor's status afterwards, e.g. 'RUNNING'.
+ * @throws {Error} If Dagster rejects the request.
+ */
+async function startSensor(name, opts = {}) {
+  const data = await graphql(`
+    mutation StartSensor($selector: SensorSelector!) {
+      startSensor(sensorSelector: $selector) {
+        __typename
+        ... on Sensor { sensorState { status } }
+        ... on PythonError { message }
+        ... on UnauthorizedError { message }
+        ... on SensorNotFoundError { message }
+      }
+    }
+  `, { selector: { ...repositorySelector(), sensorName: name } }, opts);
+  const result = data?.startSensor;
+  if (result?.__typename !== 'Sensor') throw new Error(`starting sensor ${name} failed: ${result?.message || result?.__typename}`);
+  return result.sensorState.status;
+}
+
+/**
  * Link to a run in the Dagster UI.
  *
  * @param {string} runId - Dagster run ID.
@@ -264,6 +332,6 @@ function runUrl(runId, opts = {}) {
 }
 
 export {
-  triggerJob, pollRun, listRuns, encodePartitionKey, listPartitions, waitForPartition,
+  triggerJob, pollRun, listRuns, listRunsByTags, listSensors, startSensor, encodePartitionKey, listPartitions, waitForPartition,
   resolveConnection, loadCredentials, runUrl,
 };

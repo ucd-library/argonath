@@ -50,6 +50,7 @@ def test_settings_summary_only_includes_preservica_dotpaths():
         "preservica.token_refresh_buffer_s",
         "preservica.max_retries",
         "preservica.retry_backoff_s",
+        "preservica.discovery_tags",
     }
 
 
@@ -713,8 +714,26 @@ def test_get_entities_updated_since_paginates_and_parses_entity_attrs():
     c = client(handler)
     entities = c.get_entities_updated_since("2026-09-01T00:00:00Z", {"page_size": 1})
     assert entities == [
-        {"ref": "r1", "type": "SO"},
-        {"ref": "r2", "type": "IO"},
+        {"ref": "r1", "type": "SO", "deleted": False},
+        {"ref": "r2", "type": "IO", "deleted": False},
+    ]
+
+
+def test_get_entities_updated_since_flags_deleted_stubs():
+    def handler(request):
+        if request.url.path == "/api/accesstoken/login":
+            return login_response()
+        return httpx.Response(200, text=(
+            "<EntitiesResponse><Paging><TotalResults>2</TotalResults></Paging><Entities>"
+            '<Entity ref="gone" deleted="true"/>'
+            '<Entity title="Kept" ref="kept" type="IO">u</Entity>'
+            "</Entities></EntitiesResponse>"
+        ))
+
+    entities = client(handler).get_entities_updated_since("2026-09-01T00:00:00Z")
+    assert entities == [
+        {"ref": "gone", "type": None, "deleted": True},
+        {"ref": "kept", "type": "IO", "deleted": False},
     ]
 
 

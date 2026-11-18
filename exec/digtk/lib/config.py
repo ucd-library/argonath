@@ -122,6 +122,7 @@ PRESERVICA_PAGE_SIZE_ENV = "DIGTK_PRESERVICA_PAGE_SIZE"
 PRESERVICA_TOKEN_REFRESH_BUFFER_S_ENV = "DIGTK_PRESERVICA_TOKEN_REFRESH_BUFFER_S"
 PRESERVICA_MAX_RETRIES_ENV = "DIGTK_PRESERVICA_MAX_RETRIES"
 PRESERVICA_RETRY_BACKOFF_S_ENV = "DIGTK_PRESERVICA_RETRY_BACKOFF_S"
+PRESERVICA_DISCOVERY_TAGS_ENV = "ARGONATH_DISCOVERY_TAGS"
 
 FS_CHUNK_SIZE_ENV = "DIGTK_FS_CHUNK_SIZE"
 
@@ -187,6 +188,7 @@ SHOWCASE_ES_HOST_ENV = "SHOWCASE_ES_HOST"
 SHOWCASE_ES_INDEX_ENV = "SHOWCASE_ES_INDEX"
 SHOWCASE_ES_PAGE_SEARCH_INDEX_ENV = "SHOWCASE_ES_PAGE_SEARCH_INDEX"
 SHOWCASE_ES_COLLECTION_INDEX_ENV = "SHOWCASE_ES_COLLECTION_INDEX"
+SHOWCASE_PUBLISH_TAG_ENV = "DIGTK_SHOWCASE_PUBLISH_TAG"
 
 # The shared postgres instance's default 'postgres' database — same one
 # cask/anduin-gateway connect to (distinct from CONFIG["postgres"]'s own
@@ -312,6 +314,7 @@ SETTINGS = [
     {"dotpath": "showcase.es_index", "env": SHOWCASE_ES_INDEX_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase.es_page_search_index", "env": SHOWCASE_ES_PAGE_SEARCH_INDEX_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase.es_collection_index", "env": SHOWCASE_ES_COLLECTION_INDEX_ENV, "cast": str, "secret": False},
+    {"dotpath": "showcase.publish_tag", "env": SHOWCASE_PUBLISH_TAG_ENV, "cast": str, "secret": False},
     {"dotpath": "ocr.orientation_word_count_threshold", "env": OCR_ORIENTATION_WORD_COUNT_THRESHOLD_ENV, "cast": int, "secret": False},
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_angle_threshold", "env": OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, "cast": float, "secret": False},
@@ -335,6 +338,7 @@ SETTINGS = [
     {"dotpath": "preservica.token_refresh_buffer_s", "env": PRESERVICA_TOKEN_REFRESH_BUFFER_S_ENV, "cast": float, "secret": False},
     {"dotpath": "preservica.max_retries", "env": PRESERVICA_MAX_RETRIES_ENV, "cast": int, "secret": False},
     {"dotpath": "preservica.retry_backoff_s", "env": PRESERVICA_RETRY_BACKOFF_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "preservica.discovery_tags", "env": PRESERVICA_DISCOVERY_TAGS_ENV, "cast": str, "secret": False},
 ]
 _SETTINGS_BY_DOTPATH = {setting["dotpath"]: setting for setting in SETTINGS}
 
@@ -626,6 +630,11 @@ CONFIG = {
         "es_page_search_index": _env(SHOWCASE_ES_PAGE_SEARCH_INDEX_ENV, "page-search-write"),
         # The website's collection index. Same "-write" alias convention.
         "es_collection_index": _env(SHOWCASE_ES_COLLECTION_INDEX_ENV, "collection-write"),
+        # Workflow tag (from a collection's 'argonath' Preservica identifier) that
+        # sends it to this showcase deployment, e.g. 'public-showcase-dev'. Only
+        # tagged collections get gold/showcase work from the cask-audit sensor.
+        # Empty (default) means no gate: every registered collection is processed.
+        "publish_tag": _env(SHOWCASE_PUBLISH_TAG_ENV, ""),
     },
     "postgres": {
         # argonath's own app-level schema (collection registry, etc.) — the shared
@@ -673,6 +682,11 @@ CONFIG = {
         # PreservicaClient.request() retries transient failures with backoff.
         "max_retries": _env(PRESERVICA_MAX_RETRIES_ENV, 4, int),
         "retry_backoff_s": _env(PRESERVICA_RETRY_BACKOFF_S_ENV, 1.0, float),
+        # Comma-separated workflow tags this deployment auto-registers new
+        # Preservica folders for, e.g. 'public-showcase-dev'. Matched against the
+        # folder's own 'argonath' tags (not the implied 'sync'). Empty (default)
+        # means any 'argonath'-labeled folder is auto-registered.
+        "discovery_tags": _env(PRESERVICA_DISCOVERY_TAGS_ENV, ""),
     },
     "reporting": {
         # host/port default to a local-dev port-forward target (e.g.
