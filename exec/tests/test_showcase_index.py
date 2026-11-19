@@ -1,5 +1,6 @@
 import json
 
+import httpx
 import pytest
 
 from digtk.lib import showcase_index
@@ -65,6 +66,7 @@ class _Response:
     def __init__(self, status_code, body=None):
         self.status_code = status_code
         self._body = body or {}
+        self.text = json.dumps(self._body)
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -1144,3 +1146,25 @@ def test_delete_collection_without_a_collection_doc(monkeypatch, bulk_posts):
     monkeypatch.setattr(showcase_index.httpx, "delete", lambda url: _Response(404))
 
     assert showcase_index.delete_collection("/collection/x")["collection"] is False
+
+
+def _es_response(status, body):
+    """An httpx.Response for a PUT to ES, with the given status and JSON body."""
+    request = httpx.Request("PUT", "http://es:9200/collection-write/_doc/x")
+    return httpx.Response(status, json=body, request=request)
+
+
+def test_raise_for_es_includes_the_es_error_body():
+    resp = _es_response(400, {"error": {"type": "illegal_argument_exception",
+                                        "reason": "no write index is defined for alias [collection-write]"}})
+
+    with pytest.raises(httpx.HTTPStatusError) as err:
+        showcase_index._raise_for_es(resp)
+
+    assert "400 Bad Request" in str(err.value)
+    assert "no write index is defined for alias [collection-write]" in str(err.value)
+    assert err.value.response is resp
+
+
+def test_raise_for_es_passes_on_success():
+    assert showcase_index._raise_for_es(_es_response(200, {"result": "created"})) is None

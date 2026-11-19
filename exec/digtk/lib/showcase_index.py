@@ -44,6 +44,25 @@ CASK_API_PREFIX = "/cask/api/fs/"
 IMAGE_LIST_TYPE = "http://digital.ucdavis.edu/schema#ImageList"
 
 
+def _raise_for_es(resp):
+    """Like resp.raise_for_status(), but keeps ES's response body (its
+    error type and reason) in the message. Without it a failed write only
+    says "400 Bad Request".
+
+    :param httpx.Response resp: An ES response.
+    :returns: None
+    :raises httpx.HTTPStatusError: If resp is a 4xx/5xx, with the body appended.
+    """
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        body = resp.text.strip()
+        if len(body) > 2000:
+            body = body[:2000] + "..."
+        e.args = (f"{e}\nES response: {body}",)
+        raise
+
+
 def _normalize_creator(creator):
     """Shapes an item record's creator value as the node(s) the showcase index
     expects.
@@ -824,7 +843,7 @@ def index_item(ark):
     url = f"{ES_HOST}/{ES_INDEX}/_doc/{urllib.parse.quote(es_id, safe='')}"
 
     resp = httpx.put(url, json=document)
-    resp.raise_for_status()
+    _raise_for_es(resp)
 
     pages = index_pages(document)
     return {"ark": ark, "esId": es_id, "index": ES_INDEX, "status": "indexed", "pages": pages}
@@ -863,7 +882,7 @@ def bulk(actions, opts={}):
             content="\n".join(lines) + "\n",
             headers={"Content-Type": "application/x-ndjson"},
         )
-        resp.raise_for_status()
+        _raise_for_es(resp)
         for entry in resp.json().get("items", []):
             op, outcome = next(iter(entry.items()))
             status = outcome.get("status", 500)
@@ -944,7 +963,7 @@ def list_collection_item_ids(collection_id, opts={}):
         resp = httpx.post(f"{ES_HOST}/{ES_INDEX}/_search", json=body)
         if resp.status_code == 404:
             return ids
-        resp.raise_for_status()
+        _raise_for_es(resp)
         hits = resp.json()["hits"]["hits"]
         ids.extend(hit["_id"] for hit in hits)
         if len(hits) < body["size"]:
@@ -979,7 +998,7 @@ def delete_collection(collection_id, opts={}):
     result = delete_items(list_collection_item_ids(collection_id, opts), opts)
     resp = httpx.delete(f"{ES_HOST}/{COLLECTION_INDEX}/_doc/{urllib.parse.quote(collection_id, safe='')}")
     if resp.status_code != 404:
-        resp.raise_for_status()
+        _raise_for_es(resp)
     return {"collection": resp.status_code != 404, **result}
 
 
@@ -1039,7 +1058,7 @@ def count_collection_items(collection_id):
     )
     if resp.status_code == 404:
         return 0
-    resp.raise_for_status()
+    _raise_for_es(resp)
     return resp.json()["count"]
 
 
@@ -1061,7 +1080,7 @@ def find_collection_image(collection_id, opts={}):
     })
     if resp.status_code == 404:
         return None
-    resp.raise_for_status()
+    _raise_for_es(resp)
     for hit in resp.json()["hits"]["hits"]:
         source = hit["_source"]
         root = next((n for n in source.get("@graph") or [] if n.get("@id") == source.get("@id")), {})
@@ -1092,7 +1111,7 @@ def index_collection(name, opts={}):
         root["image"] = image
 
     resp = httpx.put(f"{ES_HOST}/{COLLECTION_INDEX}/_doc/{urllib.parse.quote(es_id, safe='')}", json=document)
-    resp.raise_for_status()
+    _raise_for_es(resp)
     return {"collection": name, "esId": es_id, "index": COLLECTION_INDEX, "itemCount": count, "status": "indexed"}
 
 
@@ -1190,7 +1209,7 @@ def _delete_pages(item_ids, opts={}):
         )
         if resp.status_code == 404:
             return deleted
-        resp.raise_for_status()
+        _raise_for_es(resp)
         deleted += resp.json().get("deleted", 0)
     return deleted
 
@@ -1209,5 +1228,5 @@ def index_pages(document):
     for page in pages:
         page_id = page["@graph"][0]["@id"]
         resp = httpx.put(f"{ES_HOST}/{PAGE_SEARCH_INDEX}/_doc/{urllib.parse.quote(page_id, safe='')}", json=page)
-        resp.raise_for_status()
+        _raise_for_es(resp)
     return len(pages)
