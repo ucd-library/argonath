@@ -1,5 +1,5 @@
 # argonath
-Digital collections processing pipeline for UC Davis Library. Ingests archival materials into CaskFS, generates image derivatives, runs OCR, produces AI-assisted Schema.org metadata via Samwise/Qwen, and indexes for RAG search using LlamaIndex + pgvector. Orchestrated by Dagster.
+Digital collections processing pipeline for UC Davis Library. Ingests archival materials into CaskFS, generates image derivatives, runs OCR, produces AI-assisted Schema.org metadata via Samwise/Qwen. Orchestrated by Dagster.
 
 For local dev (docker compose) and prod (libk8s) deployment, see
 [argonath-deployment](https://github.com/ucd-library/argonath-deployment).
@@ -22,13 +22,6 @@ OpenAI-compatible API, Qwen models) from the item's image and OCR text, then mer
 into the canonical sidecar alongside any human-authored fields. All Samwise calls go
 through `digtk.lib.ai` — see `digtk config show` / `digtk ai --help` for model and
 endpoint configuration.
-
-### RAG pipeline
-
-`digtk search index|query` (LlamaIndex + pgvector) chunks and embeds item text via
-Samwise's embedding model and stores vectors in project-anduin's Postgres, scoped by
-`--space` and queried with ranked, ARK-referenced results. Indexing is triggered by
-the `index_for_rag` Dagster asset and can also be run ad hoc through the ops CLI.
 
 ## Local Development
 
@@ -55,10 +48,37 @@ like `ModuleNotFoundError: No module named 'bs4'` from a stale copy missing a de
 this project added later. `which digtk` should point inside `exec/.venv/bin/` — if it
 points anywhere else, that's the shadowing.
 
+### Standalone Install
+
+To run `digtk` as a global command — no `uv run` prefix, no project `.venv` — install
+it with [`uv tool install`](https://docs.astral.sh/uv/concepts/tools/) (uv's
+pipx-equivalent). This is the sanctioned way to get a bare `digtk` on PATH; it's
+different from the ad-hoc pip/pipx install the warning below cautions against,
+since it's a deliberate, uv-managed install rather than a stray leftover.
+
+For a released version, install straight from a git tag — no PyPI account or private
+package index needed, a pushed tag *is* the release:
+
+```sh
+pip install uv   # one-time per machine, if not already present
+
+uv tool install "git+https://github.com/ucd-library/argonath@v0.2.0#subdirectory=exec"
+
+digtk --help   # now available globally
+```
+
+For local dev, `uv tool install --editable ./exec` (run from the repo root) does the
+same but tracks your local checkout — changes under `exec/digtk/` take effect
+immediately, no reinstall.
+
+Either way: `uv tool uninstall digtk` / `uv tool upgrade digtk` / `uv tool list` manage
+the install afterward. If `digtk` isn't found on PATH right after installing, run
+`uv tool update-shell` once.
+
 Most subcommands talk to an external service and need credentials, set as environment
 variables (never as CLI flags — see `digtk.lib.auth`/`digtk.lib.config`):
 
-- **Samwise** (AI chat/embeddings — `digtk ai`, `digtk metadata`, ...):
+- **Samwise** (AI chat — `digtk ai`, `digtk metadata`, ...):
   `export SAMWISE_API_KEY=...` (`SAMWISE_API_URL` too, if not using the default).
 - **CaskFS** (file storage — `digtk ingest`, `digtk collection`, any `cask:/`-prefixed path):
   `digtk auth login` opens a browser to log in via the Anduin auth gateway and stores

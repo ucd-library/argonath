@@ -39,29 +39,18 @@ def respond(kwargs, response):
     return as_stream(response) if kwargs.get("stream") else response
 
 
-def make_embed_response(vectors):
-    return SimpleNamespace(data=[SimpleNamespace(embedding=v) for v in vectors])
-
-
 class FakeClient:
-    """Minimal stand-in for an openai.OpenAI client, used to test chat_completion()/embed()
+    """Minimal stand-in for an openai.OpenAI client, used to test chat_completion()
     without hitting the real Samwise API."""
 
-    def __init__(self, chat_response=None, embed_response=None):
+    def __init__(self, chat_response=None):
         self.chat_calls = []
-        self.embed_calls = []
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat))
-        self.embeddings = SimpleNamespace(create=self._create_embed)
         self._chat_response = chat_response
-        self._embed_response = embed_response
 
     def _create_chat(self, **kwargs):
         self.chat_calls.append(kwargs)
         return respond(kwargs, self._chat_response)
-
-    def _create_embed(self, **kwargs):
-        self.embed_calls.append(kwargs)
-        return self._embed_response
 
 
 # --- get_client ---------------------------------------------------------------
@@ -511,136 +500,3 @@ def test_wait_out_maintenance_sleeps_then_exits_once_outside_window(monkeypatch)
     ai._wait_out_maintenance()
 
     assert sleeps == [60]
-
-
-# --- embed ----------------------------------------------------------------------
-
-
-def test_embed_returns_vectors(monkeypatch):
-    fake = FakeClient(embed_response=make_embed_response([[0.1, 0.2], [0.3, 0.4]]))
-    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
-
-    vectors = ai.embed(["a", "b"])
-
-    assert vectors == [[0.1, 0.2], [0.3, 0.4]]
-    assert fake.embed_calls[0]["model"] == ai.EMBED_MODEL
-    assert fake.embed_calls[0]["input"] == ["a", "b"]
-
-
-def test_embed_model_override(monkeypatch):
-    fake = FakeClient(embed_response=make_embed_response([[0.1]]))
-    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
-
-    ai.embed(["a"], {"model": "custom-embed"})
-
-    assert fake.embed_calls[0]["model"] == "custom-embed"
-
-
-def test_embed_full_response_opt(monkeypatch):
-    response = make_embed_response([[0.1]])
-    fake = FakeClient(embed_response=response)
-    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
-
-    result = ai.embed(["a"], {"full_response": True})
-
-    assert result is response
-
-
-# --- chunk_text -------------------------------------------------------------------
-
-
-def test_chunk_text_tiles_without_gaps_or_overlap():
-    text = "0123456789"
-    chunks = ai.chunk_text(text, {"chunk_size": 4, "buffer": 0})
-
-    assert [(c["start"], c["end"]) for c in chunks] == [(0, 4), (4, 8), (8, 10)]
-    assert [c["text"] for c in chunks] == ["0123", "4567", "89"]
-
-
-def test_chunk_text_adds_buffer_before_and_after():
-    text = "0123456789"
-    chunks = ai.chunk_text(text, {"chunk_size": 4, "buffer": 2})
-
-    # Core spans (start/end) are unaffected by buffer; only `text`/buffer_* widen.
-    assert [(c["start"], c["end"]) for c in chunks] == [(0, 4), (4, 8), (8, 10)]
-    assert chunks[0] == {"text": "012345", "start": 0, "end": 4, "buffer_start": 0, "buffer_end": 6}
-    assert chunks[1] == {"text": "23456789", "start": 4, "end": 8, "buffer_start": 2, "buffer_end": 10}
-    assert chunks[2] == {"text": "6789", "start": 8, "end": 10, "buffer_start": 6, "buffer_end": 10}
-
-
-def test_chunk_text_clamps_buffer_at_string_bounds():
-    text = "01234"
-    chunks = ai.chunk_text(text, {"chunk_size": 5, "buffer": 100})
-
-    assert chunks == [{"text": "01234", "start": 0, "end": 5, "buffer_start": 0, "buffer_end": 5}]
-
-
-def test_chunk_text_empty_string_returns_no_chunks():
-    assert ai.chunk_text("", {"chunk_size": 4, "buffer": 0}) == []
-
-
-def test_chunk_text_uses_config_defaults():
-    chunks = ai.chunk_text("x" * (CONFIG["search"]["chunk_size"] + 1))
-    assert chunks[0]["end"] == CONFIG["search"]["chunk_size"]
-
-
-def test_chunk_text_rejects_non_positive_chunk_size():
-    with pytest.raises(ValueError, match="chunk_size"):
-        ai.chunk_text("hello", {"chunk_size": 0})
-
-
-def test_chunk_text_rejects_negative_buffer():
-    with pytest.raises(ValueError, match="buffer"):
-        ai.chunk_text("hello", {"chunk_size": 4, "buffer": -1})
-
-
-# --- chunk_and_embed --------------------------------------------------------------
-
-
-def test_chunk_and_embed_requires_exactly_one_of_text_or_path():
-    with pytest.raises(ValueError, match="exactly one"):
-        ai.chunk_and_embed()
-    with pytest.raises(ValueError, match="exactly one"):
-        ai.chunk_and_embed(text="hi", path="somewhere.txt")
-
-
-def test_chunk_and_embed_embeds_each_chunk(monkeypatch):
-    fake = FakeClient(embed_response=make_embed_response([[0.1], [0.2], [0.3]]))
-    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
-
-    result = ai.chunk_and_embed(text="0123456789", opts={"chunk_size": 4, "buffer": 0})
-
-    assert result["model"] == CONFIG["search"]["embed_model"]
-    assert [c["vector"] for c in result["chunks"]] == [[0.1], [0.2], [0.3]]
-    assert fake.embed_calls[0]["input"] == ["0123", "4567", "89"]
-    assert fake.embed_calls[0]["model"] == CONFIG["search"]["embed_model"]
-
-
-def test_chunk_and_embed_model_override(monkeypatch):
-    fake = FakeClient(embed_response=make_embed_response([[0.1]]))
-    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
-
-    ai.chunk_and_embed(text="hi", opts={"model": "custom-embed"})
-
-    assert fake.embed_calls[0]["model"] == "custom-embed"
-
-
-def test_chunk_and_embed_reads_path_via_fs_module(monkeypatch):
-    fake = FakeClient(embed_response=make_embed_response([[0.1]]))
-    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
-    monkeypatch.setattr(ai.fs, "read", lambda path: "hello".encode("utf-8"))
-
-    result = ai.chunk_and_embed(path="cask:/bronze/g/c/item/ocr.txt")
-
-    assert fake.embed_calls[0]["input"] == ["hello"]
-    assert len(result["chunks"]) == 1
-
-
-def test_chunk_and_embed_with_empty_text_makes_no_embed_call(monkeypatch):
-    fake = FakeClient(embed_response=make_embed_response([]))
-    monkeypatch.setattr(ai, "get_client", lambda opts: fake)
-
-    result = ai.chunk_and_embed(text="")
-
-    assert result["chunks"] == []
-    assert fake.embed_calls == []

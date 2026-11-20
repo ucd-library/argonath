@@ -11,6 +11,7 @@ Entity API's bitstream `/content` sub-resource instead, and thumbnails are treat
 as best-effort (see get_thumbnail()).
 """
 import datetime
+import re
 import threading
 import time
 import urllib.parse
@@ -26,6 +27,21 @@ _CONFIG = CONFIG["preservica"]
 # error like 401/403/404. Observed in practice on Preservica's Starter tier under
 # concurrent bitstream `/content` downloads (see PreservicaClient.request()).
 _RETRYABLE_STATUSES = {502, 503, 504}
+
+# Preservica entity refs are UUIDs — used to tell a real ref apart from a
+# human-readable folder path (see PreservicaClient.resolve_path()).
+_REF_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
+def looks_like_ref(value):
+    """Whether `value` looks like a Preservica entity ref (UUID) rather than a
+    human-readable folder path — see PreservicaClient.resolve_path().
+
+    :param str value: Candidate ref or path.
+    :returns: True if `value` matches Preservica's ref format.
+    :rtype: bool
+    """
+    return bool(_REF_RE.match(value))
 
 
 def _normalize_since(since):
@@ -305,10 +321,57 @@ class PreservicaClient:
                 break
         return children
 
+    def resolve_path(self, path):
+        """Resolve a '/'-separated path of folder titles into the final folder's
+        structural-object ref, walking down from the tenant root one level at a
+        time via get_children() — the Entity API has no direct path-to-ref lookup.
+
+        For `digtk preservica import`, so a path like 'haeger' or '/haeger/sub-
+        folder' (titles as seen via `digtk preservica list`, with no ref, to
+        browse the tenant root) can be passed instead of first having to look up
+        the folder's own ref by hand.
+
+        :param str path: '/'-separated folder titles, e.g. 'haeger' or
+            '/haeger/sub-folder'. Leading/trailing/duplicate slashes are ignored.
+        :returns: The final segment's structural-object ref.
+        :rtype: str
+        :raises ValueError: `path` has no segments (the tenant root itself isn't
+            a structural object and has no ref of its own), a segment doesn't
+            match any folder under its parent, or it matches more than one
+            (ambiguous title — pass the exact ref instead).
+        """
+        segments = [s for s in path.split("/") if s]
+        if not segments:
+            raise ValueError(
+                "Can't resolve the tenant root itself to a ref — it isn't a structural "
+                "object. Pass the ref or path of a folder under it (see `digtk preservica list`)."
+            )
+
+        ref = None
+        walked = ""
+        for segment in segments:
+            folders = [c for c in self.get_children(ref) if c["type"] == "SO"]
+            matches = [c for c in folders if c["title"] == segment]
+            if not matches:
+                available = ", ".join(sorted(f["title"] for f in folders)) or "(none)"
+                raise ValueError(
+                    f"No folder named {segment!r} found under {walked or '/'!r} "
+                    f"— available: {available}"
+                )
+            if len(matches) > 1:
+                raise ValueError(
+                    f"Ambiguous folder name {segment!r} under {walked or '/'!r} "
+                    f"({len(matches)} folders share that title) — pass the exact ref "
+                    f"instead ({', '.join(m['ref'] for m in matches)})."
+                )
+            ref = matches[0]["ref"]
+            walked = f"{walked}/{segment}"
+        return ref
+
     def get_entities_updated_since(self, since, opts={}):
         """List entities changed since a given timestamp (paged) — the basis for
         the Preservica auto-sync sensor's polling
-        (dagster/lib/sensors.py's preservica_auto_sync_sensor).
+        (dagster/lib/sensors.py's bronze_preservica_auto_sync).
 
         Unlike get_children(), this is tenant-wide, not scoped to one folder —
         resolving a changed ref to a registered collection (root-level match, or
@@ -320,8 +383,10 @@ class PreservicaClient:
             entities changed at or after this point are returned. A bare date
             or offset-less timestamp is treated as UTC.
         :param dict opts: 'page_size' (default CONFIG['preservica']['page_size']).
-        :returns: Every changed entity across all pages: [{'ref', 'type'}, ...]
-            ('type' is 'SO', 'IO', or 'CO').
+        :returns: Every changed entity across all pages: [{'ref', 'type',
+            'deleted'}, ...] ('type' is 'SO', 'IO', or 'CO'). A deleted entity
+            comes back as just `<Entity ref="..." deleted="true"/>`, so its
+            'type' is None and 'deleted' is True.
         :rtype: list[dict]
         :raises ValueError: `since` isn't a valid ISO-8601 date/timestamp.
         """
@@ -342,6 +407,7 @@ class PreservicaClient:
                 entities.append({
                     "ref": pxml.attr_of(entity, "ref"),
                     "type": pxml.attr_of(entity, "type"),
+                    "deleted": (pxml.attr_of(entity, "deleted") or "").lower() == "true",
                 })
 
             start += page_size

@@ -44,7 +44,6 @@ import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from pathlib import Path
 
 from digtk.lib import db, fs, items, preservica, utils
 from digtk.lib.config import CONFIG
@@ -288,27 +287,31 @@ def _resolve_identifier_key(identifiers, ref):
     return {"key": ref, "identifiers": values or [ref]}
 
 
-# --- Collection registry (Postgres) -----------------------------------------
+# --- Collection registration (Postgres) -------------------------------------
 #
 # Tracks which collections argonath knows about (source, name, workflow tags)
 # so Dagster's sensors know what to watch and what to do when a source changes
 # — see docs/preservica-identifiers.md and dagster/lib/sensors.py's
-# collection_partition_sync_sensor / preservica_auto_sync_sensor. Built on
-# digtk.lib.db (generic Postgres helper); tables live in the 'argonath' schema
-# (digtk.lib.db.SCHEMA) — see digtk/sql/collection_registry.sql for the schema
-# itself, and init_pg() below to apply it.
+# bronze_collection_partition_sync / bronze_preservica_auto_sync. Stored on
+# collection_registry.collection rows (name = "bronze/[group]/[slug]") and
+# collection_registry.collection_identifiers — see digtk/sql/collection_registry.sql,
+# applied by digtk.models.collection_registry.init_pg(). Rows with source_type
+# 'unknown' were never registered and are skipped by every lookup here.
 
-_SCHEMA_SQL_PATH = Path(__file__).parent.parent / "sql" / "collection_registry.sql"
+# Columns every registration lookup returns; 'name' is the slug.
+_REG_COLUMNS = "c.id, c.slug AS name, c.group_name, c.source_type, c.workflow_tags, c.status"
+_REGISTERED = "c.status = 'active' AND c.source_type <> 'unknown'"
 
 
-def init_pg(opts={}):
-    """Apply collection_registry.sql (schema + tables) to argonath's Postgres
-    database — safe to run repeatedly (every statement is CREATE ... IF NOT
-    EXISTS). See `digtk collection init-pg`.
+def _collection_key(name, group):
+    """The collection_registry key for a slug and group.
 
-    :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
+    :param str name: Collection slug.
+    :param str group: Bronze group namespace.
+    :returns: e.g. "bronze/preservica/haeger".
+    :rtype: str
     """
-    db.run_script(_SCHEMA_SQL_PATH.read_text(), opts)
+    return f"bronze/{group}/{name}"
 
 
 def _parse_workflow_tags(value):
@@ -322,16 +325,81 @@ def _parse_workflow_tags(value):
     :returns: Normalized, sorted tag list, always including 'sync'.
     :rtype: list[str]
     """
-    tags = {t.strip() for t in (value or "").split(",") if t.strip()}
+    tags = set(_raw_workflow_tags(value))
     tags.add("sync")
     return sorted(tags)
 
 
+def _raw_workflow_tags(value):
+    """Split an 'argonath' identifier's value into the tags it actually names,
+    without the implied 'sync' (see _parse_workflow_tags()).
+
+    :param str value: Raw identifier value, e.g. 'public-showcase-dev,ai'.
+    :returns: Sorted, deduped tag list.
+    :rtype: list[str]
+    """
+    return sorted({t.strip() for t in (value or "").split(",") if t.strip()})
+
+
+def _config_tags(value):
+    """Parse a comma-separated tag setting (see CONFIG['preservica']['discovery_tags']).
+
+    :param str value: Raw setting, e.g. 'sync,ai,public-showcase-prod'.
+    :returns: Tag set; empty if the setting is unset.
+    :rtype: set[str]
+    """
+    return set(_raw_workflow_tags(value))
+
+
+def discovery_allows(identifiers, opts={}):
+    """Whether this deployment may auto-register a Preservica folder with these
+    identifiers. The folder needs an 'argonath' identifier, and, when
+    CONFIG['preservica']['discovery_tags'] is set, one of the tags it names
+    (the implied 'sync' doesn't count) must be in that list. Keeps one
+    deployment (e.g. local dev) from registering another's (e.g. prod's)
+    folders, since they share a Preservica tenant.
+
+    :param list[dict] identifiers: [{'type', 'value'}, ...] for the folder.
+    :param dict opts: 'discovery_tags' (str, overrides the config setting).
+    :rtype: bool
+    """
+    values = [i.get("value") for i in identifiers if i.get("type") == "argonath" and i.get("value")]
+    if not values:
+        return False
+    allowed = _config_tags(opts.get("discovery_tags", CONFIG["preservica"].get("discovery_tags", "")))
+    if not allowed:
+        return True
+    return any(set(_raw_workflow_tags(v)) & allowed for v in values)
+
+
+def publish_tag(opts={}):
+    """The workflow tag that sends a collection to this showcase deployment
+    (CONFIG['showcase']['publish_tag']), or '' when there is no gate.
+
+    :param dict opts: 'publish_tag' (str, overrides the config setting).
+    :rtype: str
+    """
+    return (opts.get("publish_tag", CONFIG["showcase"].get("publish_tag", "")) or "").strip()
+
+
+def is_published(registration, opts={}):
+    """Whether a registered collection gets gold/showcase work in this
+    deployment: always when no publish tag is configured, else only when its
+    workflow_tags include it.
+
+    :param dict registration: Registry row with 'workflow_tags'.
+    :param dict opts: See publish_tag().
+    :rtype: bool
+    """
+    tag = publish_tag(opts)
+    return not tag or tag in (registration.get("workflow_tags") or [])
+
+
 def register_collection(name, group, source_type, identifiers=(), opts={}):
-    """Upsert a collection_registry row (+ its collection_identifiers) — argonath's
+    """Upsert a collection's registration (+ its collection_identifiers) — argonath's
     durable record that a collection is tracked, for Dagster's sensors to read
-    (dagster/lib/sensors.py's collection_partition_sync_sensor and
-    preservica_auto_sync_sensor).
+    (dagster/lib/sensors.py's bronze_collection_partition_sync and
+    bronze_preservica_auto_sync).
 
     Called unconditionally by both preservica_import() and the CLI's
     `collection add` path — registration never depends on whether an 'argonath'
@@ -360,7 +428,7 @@ def register_collection(name, group, source_type, identifiers=(), opts={}):
         identifier has type == 'argonath'.
     :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse —
         see digtk.lib.db).
-    :returns: {'id': int, 'name': str, 'workflow_tags': list[str]}.
+    :returns: {'id': str (uuid), 'name': str, 'workflow_tags': list[str]}.
     :rtype: dict
     :raises ValueError: If `name` collides with a different active registration.
     """
@@ -373,18 +441,17 @@ def register_collection(name, group, source_type, identifiers=(), opts={}):
             incoming_ref = identifier["value"]
 
     existing = db.query(
-        "SELECT id, group_name, source_type FROM argonath.collection_registry "
-        "WHERE name = %s AND status = 'active'",
+        f"SELECT {_REG_COLUMNS} FROM collection_registry.collection c "
+        f"WHERE c.slug = %s AND {_REGISTERED}",
         (name,), opts,
     )
 
-    collection_id = None
     if existing:
         row = existing[0]
         same_collection = False
         if source_type == "preservica" and row["source_type"] == "preservica" and incoming_ref:
             stored = db.query(
-                "SELECT id_value FROM argonath.collection_identifiers "
+                "SELECT id_value FROM collection_registry.collection_identifiers "
                 "WHERE collection_id = %s AND id_type = 'preservica_ref'",
                 (row["id"],), opts,
             )
@@ -399,29 +466,25 @@ def register_collection(name, group, source_type, identifiers=(), opts={}):
                 "source folder (or choose a different name) rather than reusing an "
                 "active collection's name."
             )
-        collection_id = row["id"]
 
-    if collection_id is None:
-        inserted = db.execute(
-            "INSERT INTO argonath.collection_registry (name, group_name, source_type, workflow_tags, last_synced_at) "
-            "VALUES (%s, %s, %s, %s, now()) RETURNING id",
-            (name, group, source_type, tags), {**opts, "returning": True},
-        )
-        collection_id = inserted[0]["id"]
-    else:
-        db.execute(
-            "UPDATE argonath.collection_registry SET source_type = %s, workflow_tags = %s, "
-            "last_synced_at = now(), updated_at = now() WHERE id = %s",
-            (source_type, tags, collection_id), opts,
-        )
+    # same key reactivates a disabled or 'unknown' row
+    upserted = db.execute(
+        "INSERT INTO collection_registry.collection (name, source_type, workflow_tags, status, last_synced_at) "
+        "VALUES (%s, %s, %s, 'active', now()) "
+        "ON CONFLICT (name) DO UPDATE SET source_type = EXCLUDED.source_type, "
+        "workflow_tags = EXCLUDED.workflow_tags, status = 'active', "
+        "last_synced_at = now(), last_updated_at = now() RETURNING id",
+        (_collection_key(name, group), source_type, tags), {**opts, "returning": True},
+    )
+    collection_id = upserted[0]["id"]
 
     db.execute(
-        "DELETE FROM argonath.collection_identifiers WHERE collection_id = %s", (collection_id,), opts,
+        "DELETE FROM collection_registry.collection_identifiers WHERE collection_id = %s", (collection_id,), opts,
     )
     for identifier in identifiers:
         if identifier.get("type") and identifier.get("value"):
             db.execute(
-                "INSERT INTO argonath.collection_identifiers (collection_id, id_type, id_value) "
+                "INSERT INTO collection_registry.collection_identifiers (collection_id, id_type, id_value) "
                 "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                 (collection_id, identifier["type"], identifier["value"]), opts,
             )
@@ -432,7 +495,7 @@ def register_collection(name, group, source_type, identifiers=(), opts={}):
 def get_registration(id_type, id_value, opts={}):
     """Look up a registered collection via any tracked identifier.
 
-    Used by preservica_auto_sync_sensor to resolve a changed Preservica entity
+    Used by bronze_preservica_auto_sync to resolve a changed Preservica entity
     ref to its owning registered collection.
 
     :param str id_type: Identifier type, e.g. 'preservica_ref'.
@@ -442,10 +505,9 @@ def get_registration(id_type, id_value, opts={}):
     :rtype: dict | None
     """
     rows = db.query(
-        "SELECT r.id, r.name, r.group_name, r.source_type, r.workflow_tags, r.status "
-        "FROM argonath.collection_registry r "
-        "JOIN argonath.collection_identifiers i ON i.collection_id = r.id "
-        "WHERE i.id_type = %s AND i.id_value = %s AND r.status = 'active'",
+        f"SELECT {_REG_COLUMNS} FROM collection_registry.collection c "
+        "JOIN collection_registry.collection_identifiers i ON i.collection_id = c.id "
+        f"WHERE i.id_type = %s AND i.id_value = %s AND {_REGISTERED}",
         (id_type, id_value), opts,
     )
     return rows[0] if rows else None
@@ -454,30 +516,27 @@ def get_registration(id_type, id_value, opts={}):
 def list_active_collections(source_type=None, opts={}):
     """List every active registered collection, optionally filtered by source type.
 
-    Used by both new Dagster sensors — collection_partition_sync_sensor (to
+    Used by both new Dagster sensors — bronze_collection_partition_sync (to
     ensure every active collection has a Dagster 'collections' partition) and
-    preservica_auto_sync_sensor (to scope which Preservica collections to watch).
+    bronze_preservica_auto_sync (to scope which Preservica collections to watch).
 
     :param str|None source_type: 'manual' or 'preservica', or None for all.
     :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
-    :returns: [{'id', 'name', 'group_name', 'source_type', 'workflow_tags'}, ...].
+    :returns: [{'id', 'name', 'group_name', 'source_type', 'workflow_tags', 'status'}, ...].
     :rtype: list[dict]
     """
-    sql = (
-        "SELECT id, name, group_name, source_type, workflow_tags FROM argonath.collection_registry "
-        "WHERE status = 'active'"
-    )
+    sql = f"SELECT {_REG_COLUMNS} FROM collection_registry.collection c WHERE {_REGISTERED}"
     params = ()
     if source_type:
-        sql += " AND source_type = %s"
+        sql += " AND c.source_type = %s"
         params = (source_type,)
     return db.query(sql, params, opts)
 
 
 def _group_for_collection(name, opts={}):
-    """Resolve a collection's bronze group from its name via the registry — collection
-    names are unique among active registrations (see register_collection()'s
-    collection_registry_active_name_uq), so no group needs to be given.
+    """Resolve a collection's bronze group from its name via its registration — slugs
+    are unique among active registrations (see collection_registry.sql's
+    collection_active_slug_uq), so no group needs to be given.
 
     :param str name: Collection name.
     :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
@@ -486,7 +545,7 @@ def _group_for_collection(name, opts={}):
     :raises ValueError: If there's no active registration for `name`.
     """
     rows = db.query(
-        "SELECT group_name FROM argonath.collection_registry WHERE name = %s AND status = 'active'",
+        f"SELECT c.group_name FROM collection_registry.collection c WHERE c.slug = %s AND {_REGISTERED}",
         (name,), opts,
     )
     if not rows:
@@ -578,14 +637,14 @@ def _get_active_registration_by_name(name, group, opts={}):
     :param str name: Collection name.
     :param str group: Bronze group namespace.
     :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
-    :returns: {'id', 'name', 'group_name', 'source_type', 'workflow_tags'}.
+    :returns: {'id', 'name', 'group_name', 'source_type', 'workflow_tags', 'status'}.
     :rtype: dict
     :raises ValueError: If no active collection is registered under name+group.
     """
     rows = db.query(
-        "SELECT id, name, group_name, source_type, workflow_tags FROM argonath.collection_registry "
-        "WHERE name = %s AND group_name = %s AND status = 'active'",
-        (name, group), opts,
+        f"SELECT {_REG_COLUMNS} FROM collection_registry.collection c "
+        f"WHERE c.name = %s AND {_REGISTERED}",
+        (_collection_key(name, group),), opts,
     )
     if not rows:
         raise ValueError(f"No active registered collection '{group}/{name}' — run `digtk preservica import` first.")
@@ -593,20 +652,70 @@ def _get_active_registration_by_name(name, group, opts={}):
 
 
 def _touch_last_synced(collection_id, opts={}):
-    """Update a collection_registry row's last_synced_at only, without
+    """Update a registered collection's last_synced_at only, without
     touching its identifiers — unlike register_collection() (which always
     deletes+re-inserts every identifier row from its `identifiers` param, so
     reusing it here with an empty list would silently wipe the collection's
     real identifiers). Used by preservica_sync_entities() after a targeted
     sync completes.
 
-    :param int collection_id: collection_registry.id.
+    :param str collection_id: collection_registry.collection.id (uuid).
     :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
     """
     db.execute(
-        "UPDATE argonath.collection_registry SET last_synced_at = now() WHERE id = %s",
+        "UPDATE collection_registry.collection SET last_synced_at = now() WHERE id = %s",
         (collection_id,), opts,
     )
+
+
+def refresh_workflow_tags(registration, identifiers, opts={}):
+    """Bring a registered collection's workflow_tags (and stored 'argonath'
+    identifier) in line with its root folder's current 'argonath' identifier,
+    so adding or removing a tag in Preservica takes effect. No-op when they
+    already match.
+
+    :param dict registration: Registry row ('id', 'workflow_tags').
+    :param list[dict] identifiers: The root folder's current [{'type', 'value'}, ...].
+    :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
+    :returns: The current tag list.
+    :rtype: list[str]
+    """
+    value = next((i.get("value") for i in identifiers if i.get("type") == "argonath" and i.get("value")), None)
+    tags = _parse_workflow_tags(value) if value else []
+    if sorted(registration.get("workflow_tags") or []) == tags:
+        return tags
+    db.execute(
+        "UPDATE collection_registry.collection SET workflow_tags = %s, last_updated_at = now() WHERE id = %s",
+        (tags, registration["id"]), opts,
+    )
+    db.execute(
+        "DELETE FROM collection_registry.collection_identifiers WHERE collection_id = %s AND id_type = 'argonath'",
+        (registration["id"],), opts,
+    )
+    if value:
+        db.execute(
+            "INSERT INTO collection_registry.collection_identifiers (collection_id, id_type, id_value) "
+            "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (registration["id"], "argonath", value), opts,
+        )
+    registration["workflow_tags"] = tags
+    return tags
+
+
+def _registered_root_ref(collection_id, opts={}):
+    """A registered collection's Preservica root ref, from collection_identifiers.
+
+    :param str collection_id: collection_registry.collection.id (uuid).
+    :param dict opts: 'conn' (injectable psycopg2 connection, for tests/reuse).
+    :returns: The ref, or None if none is stored.
+    :rtype: str | None
+    """
+    rows = db.query(
+        "SELECT id_value FROM collection_registry.collection_identifiers "
+        "WHERE collection_id = %s AND id_type = 'preservica_ref'",
+        (collection_id,), opts,
+    )
+    return rows[0]["id_value"] if rows else None
 
 
 def _parent_ref_of(client, ref, data_type):
@@ -616,7 +725,7 @@ def _parent_ref_of(client, ref, data_type):
     NOTE: unlike client.py's other EntityResponse field reads (Title, etc.),
     this field name has not been confirmed against a live Preservica tenant —
     verify it before relying on this in production (see
-    find_changed_preservica_collections()'s caller, preservica_auto_sync_sensor).
+    find_changed_preservica_collections()'s caller, bronze_preservica_auto_sync).
 
     :param PreservicaClient client: Client instance.
     :param str ref: Entity ref.
@@ -664,30 +773,84 @@ def _find_owning_collection(client, ref, entity_type):
     return None
 
 
+def _entity_gone(client, ref, entity_type):
+    """Whether Preservica says an entity no longer exists (404).
+
+    :param PreservicaClient client: Client instance.
+    :param str ref: Entity ref.
+    :param str entity_type: 'SO' or 'IO'.
+    :returns: True only on a 404; any other error counts as present.
+    :rtype: bool
+    """
+    data_type = "structural-objects" if entity_type == "SO" else "information-objects"
+    try:
+        client.get_entity(data_type, ref)
+    except preservica.PreservicaRequestError as e:
+        return e.status == 404
+    except Exception:
+        return False
+    return False
+
+
+def _find_deleted_in_bronze(ref, opts={}):
+    """Find the registered collection whose bronze by-ref/ still holds a
+    deleted entity, and the folder that listed it. Preservica's updated-since
+    reports a deleted entity but not its parent folder, and a deleted entity
+    can no longer be asked for its parent, so bronze is the only record of
+    where it lived.
+
+    :param str ref: The deleted entity's ref.
+    :param dict opts: 'dest_root' (see _bronze_collection_root()), 'conn'.
+    :returns: {'registration', 'root_ref', 'parent_ref'}, or None.
+    :rtype: dict | None
+    """
+    for row in list_active_collections("preservica", opts):
+        root = _bronze_latest_root(row["name"], row["group_name"], opts)
+        if not fs.exists(f"{root}/by-ref/{ref}/entity.json"):
+            continue
+        parent_ref = _find_parent_so_ref(root, ref, [])
+        if not parent_ref:
+            return None
+        return {"registration": row, "root_ref": _registered_root_ref(row["id"], opts), "parent_ref": parent_ref}
+    return None
+
+
 def find_changed_preservica_collections(since, opts={}):
     """Find every registered Preservica collection with any change reported by
     Preservica since `since` — the basis for the auto-sync sensor (see
-    dagster/lib/sensors.py's preservica_auto_sync_sensor).
+    dagster/lib/sensors.py's bronze_preservica_auto_sync).
 
     Also auto-registers a brand-new folder the first time its own 'argonath'
     identifier is seen — a folder with no 'argonath' identifier is never
     auto-registered, so it's simply absent from the result, per the "sensor
     ignores an unlabeled collection" rule. Once registered (by this or by a
     manual `digtk preservica import`), a collection is always checked here
-    going forward, regardless of its workflow tags.
+    going forward, regardless of its workflow tags. When
+    CONFIG['preservica']['discovery_tags'] is set, a new folder is only
+    auto-registered if its 'argonath' tags include one of them (see
+    discovery_allows()). A change to a registered collection's own root folder
+    also refreshes its workflow tags (see refresh_workflow_tags()).
+
+    A deleted entity is reported by Preservica as an untyped
+    `deleted="true"` stub, without its parent folder, and can't be asked for
+    its parent any more. For a deleted stub (or a typed entity that now 404s)
+    the collection whose bronze still holds it is found (see
+    _find_deleted_in_bronze()) and its parent folder is reported as changed
+    instead, so the sync's children diff records the removal.
 
     Each affected collection's own originally-reported changed entities are
     preserved verbatim in its 'changed' list (deduped by (ref, type)) — even
     when the entity was resolved to its owning collection via
     _find_owning_collection()'s parent-walk-up, the entity's own ref/type is
     kept, never the walked-up parent. This is what lets
-    preservica_auto_sync_sensor drive a targeted sync of just what changed
+    bronze_preservica_auto_sync drive a targeted sync of just what changed
     (see preservica_sync_entities()) instead of a full collection re-walk.
 
     :param str since: ISO-8601 timestamp/date, passed straight to
         PreservicaClient.get_entities_updated_since().
     :param dict opts: 'client' (injectable PreservicaClient, defaults to one
-        built from digtk.lib.auth.resolve_preservica()).
+        built from digtk.lib.auth.resolve_preservica()), 'discovery_tags'
+        (str, overrides the config setting).
     :returns: {'collections': [{'group', 'name', 'root_ref',
         'changed': [{'ref', 'type'}, ...]}, ...]} — deduped, one entry per
         affected registered collection.
@@ -699,20 +862,40 @@ def find_changed_preservica_collections(since, opts={}):
     affected = {}
     for entity in changed:
         ref, entity_type = entity["ref"], entity["type"]
+
+        # untyped "deleted" stub: re-sync the folder that listed it
+        if entity.get("deleted"):
+            located = _find_deleted_in_bronze(ref, opts)
+            if located:
+                _add_changed(affected, located["registration"], located["root_ref"],
+                             {"ref": located["parent_ref"], "type": "SO"})
+            continue
+
         if entity_type not in ("SO", "IO"):
             continue  # CO changes surface separately via their containing IO
 
         registration = get_registration("preservica_ref", ref)
         root_ref = ref
 
+        # the root folder itself changed, its tags may have too
+        if registration is not None and entity_type == "SO" and registration["source_type"] == "preservica":
+            refresh_workflow_tags(registration, client.get_identifiers("structural-objects", ref))
+
         if registration is None:
             found = _find_owning_collection(client, ref, entity_type)
             if found:
                 registration, root_ref = found["registration"], found["root_ref"]
 
+        # deleted: re-sync the folder that listed it
+        if registration is None and _entity_gone(client, ref, entity_type):
+            located = _find_deleted_in_bronze(ref, opts)
+            if located:
+                registration, root_ref = located["registration"], located["root_ref"]
+                ref, entity_type = located["parent_ref"], "SO"
+
         if registration is None and entity_type == "SO":
             identifiers = client.get_identifiers("structural-objects", ref)
-            if any(i.get("type") == "argonath" and i.get("value") for i in identifiers):
+            if discovery_allows(identifiers, opts):
                 title = (client.get_entity("structural-objects", ref).get("StructuralObject") or {}).get("Title")
                 name = _slugify(title or ref) or ref
                 registered = register_collection(
@@ -726,15 +909,25 @@ def find_changed_preservica_collections(since, opts={}):
                 root_ref = ref
 
         if registration and registration["source_type"] == "preservica":
-            bucket = affected.setdefault(registration["id"], {
-                "group": registration["group_name"], "name": registration["name"],
-                "root_ref": root_ref, "changed": [],
-            })
-            pair = {"ref": ref, "type": entity_type}
-            if pair not in bucket["changed"]:
-                bucket["changed"].append(pair)
+            _add_changed(affected, registration, root_ref, {"ref": ref, "type": entity_type})
 
     return {"collections": list(affected.values())}
+
+
+def _add_changed(affected, registration, root_ref, pair):
+    """Record one changed entity under its collection, once.
+
+    :param dict affected: find_changed_preservica_collections()'s accumulator, keyed by registry id.
+    :param dict registration: Registry row ('id', 'group_name', 'name').
+    :param str root_ref: The collection's root folder ref.
+    :param dict pair: {'ref', 'type'}.
+    """
+    bucket = affected.setdefault(registration["id"], {
+        "group": registration["group_name"], "name": registration["name"],
+        "root_ref": root_ref, "changed": [],
+    })
+    if pair not in bucket["changed"]:
+        bucket["changed"].append(pair)
 
 
 def _unique_tree_slug(title, key, used_slugs):
@@ -817,6 +1010,47 @@ def _copy_bronze_dir(root, src_rel, dest_rel):
                 opts={"replace": True},
             )
             _link_tree_source(root, f"{dest_rel}/{entry.name}", f"{src_rel}/{entry.name}")
+
+
+def _sync_bronze_dir(root, src_rel, dest_rel, opts={}):
+    """Like _copy_bronze_dir(), but only copies files that are missing from
+    `dest_rel` or whose hash differs, and removes files no longer in
+    `src_rel` (except the names in `opts['keep']`). Used to refresh an
+    existing tree/ item's media without
+    rewriting unchanged files (a rewrite would look like a content change to
+    the cask-audit sensor and trigger a full reprocess).
+
+    :param str root: fs-compatible bronze root common to both src and dest.
+    :param str src_rel: Source directory, relative to `root`.
+    :param str dest_rel: Destination directory, relative to `root`.
+    :param dict opts: 'keep' (set[str]) — names directly in `dest_rel` that
+        aren't media and must never be removed (a tree/ item's own
+        identifiers.json/metadata.json).
+    :returns: Number of files copied or removed.
+    :rtype: int
+    """
+    keep = opts.get("keep") or set()
+    src_path, dest_path = f"{root}/{src_rel}", f"{root}/{dest_rel}"
+    src = {e.name: e for e in fs.ls(src_path)} if fs.exists(src_path) else {}
+    dest = {e.name: e for e in fs.ls(dest_path)} if fs.exists(dest_path) else {}
+    changed = 0
+    for name, entry in src.items():
+        if entry.kind == "directory":
+            changed += _sync_bronze_dir(root, f"{src_rel}/{name}", f"{dest_rel}/{name}")
+            continue
+        if name.endswith(".fixity.json"):
+            continue
+        existing = dest.get(name)
+        if existing and existing.kind == "file" and entry.hash and existing.hash == entry.hash:
+            continue
+        fs.write(f"{dest_path}/{name}", src=f"{src_path}/{name}", opts={"replace": True})
+        _link_tree_source(root, f"{dest_rel}/{name}", f"{src_rel}/{name}")
+        changed += 1
+    for name, entry in dest.items():
+        if name not in src and name not in keep and not name.endswith(".fixity.json"):
+            fs.delete(f"{dest_path}/{name}", opts={"directory": entry.kind == "directory"})
+            changed += 1
+    return changed
 
 
 # --- Preservica import (phase 1: by-ref) -------------------------------------
@@ -933,9 +1167,10 @@ def _walk_preservica_item(client, io_ref, root, ctx):
         'on_progress' (callable(str), see preservica_import()), 'skip_unchanged'
         (bool — skip re-downloading a file whose Preservica fixity matches an
         already-written local copy, see _fixity_unchanged()).
-    :returns: {'entity': dict, 'identifiers': list[dict]}, or None if the
-        entity fetch itself failed (error already recorded in ctx) — used by
-        preservica_sync_entities() to resolve the synced item's key.
+    :returns: {'entity': dict, 'identifiers': list[dict], 'parent': str|None},
+        or None if the entity fetch itself failed (error already recorded in
+        ctx) — used by preservica_sync_entities() to resolve the synced item's
+        key and refresh its parent folder's children.json.
     :rtype: dict | None
     """
     entity_dir = f"by-ref/{io_ref}"
@@ -991,7 +1226,10 @@ def _walk_preservica_item(client, io_ref, root, ctx):
     if not any(_is_ark(i.get("value") or "") for i in identifiers):
         _record_warning(ctx, io_ref, "identifiers", "no ARK-shaped identifier found")
 
-    return {"entity": entity, "identifiers": identifiers}
+    return {
+        "entity": entity, "identifiers": identifiers,
+        "parent": (raw.get("InformationObject") or {}).get("Parent"),
+    }
 
 
 def _sync_folder_self(client, so_ref, root, ctx, raw=None):
@@ -1090,7 +1328,11 @@ def preservica_import(ref, collection=None, group="preservica", opts={}):
     manifest rather than aborting the whole walk, so one bad item doesn't block
     the rest of the collection.
 
-    :param str ref: Root Preservica structural object ref to walk.
+    :param str ref: Root Preservica structural object ref to walk. If this
+        doesn't look like a ref (see digtk.lib.preservica.looks_like_ref()) and
+        no `opts['client']` was injected, it's instead treated as a '/'-separated
+        path of folder titles under the tenant root and resolved to a ref via
+        PreservicaClient.resolve_path() before anything else happens.
     :param str|None collection: Collection name. Defaults to a slugified version
         of the root entity's own Preservica title (mirrors preservica-etl's
         resolveSlug()) — this fetches the root entity to read its title, so no
@@ -1119,6 +1361,10 @@ def preservica_import(ref, collection=None, group="preservica", opts={}):
     max_depth = float("inf") if max_depth is None else max_depth
     on_progress = opts.get("on_progress") or (lambda message: None)
     skip_unchanged = bool(opts.get("skip_unchanged"))
+
+    if not opts.get("client") and not preservica.looks_like_ref(ref):
+        on_progress(f"Resolving path {ref!r} to a ref...")
+        ref = client.resolve_path(ref)
 
     root_raw = None
     if not collection:
@@ -1155,12 +1401,7 @@ def preservica_import(ref, collection=None, group="preservica", opts={}):
         f"({len(manifest['errors'])} error(s), {len(manifest['warnings'])} warning(s))"
     )
 
-    _write_bronze_json(_bronze_collection_root(collection, group, opts), "manifest.json", {
-        "sourceType": "preservica",
-        "timeFormat": "latest",
-        "preservicaRootRef": ref,
-        "itemsRoot": "tree",
-    })
+    _write_collection_manifest(collection, group, ref, opts)
     _write_bronze_json(root, "manifest.json", {
         "walkedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "items": manifest["items"],
@@ -1170,12 +1411,30 @@ def preservica_import(ref, collection=None, group="preservica", opts={}):
     return manifest
 
 
+def _write_collection_manifest(collection, group, ref, opts={}):
+    """Write a Preservica collection's root manifest.json, which tells
+    items_root() its items live under tree/ and preservica_tree_partial()
+    where its root folder is.
+
+    :param str collection: Collection name.
+    :param str group: Bronze group namespace.
+    :param str ref: Root Preservica structural object ref.
+    :param dict opts: 'dest_root' (see _bronze_collection_root()).
+    """
+    _write_bronze_json(_bronze_collection_root(collection, group, opts), "manifest.json", {
+        "sourceType": "preservica",
+        "timeFormat": "latest",
+        "preservicaRootRef": ref,
+        "itemsRoot": "tree",
+    })
+
+
 def preservica_sync_entities(collection, group, entities, opts={}):
     """Sync only the specific Preservica entities that changed for one
     already-registered collection — never a full recursive re-walk of the
     collection (see preservica_import() for that). This is the targeted
     counterpart driven by dagster/lib/assets.py's reconcile_collection_items
-    when triggered by preservica_auto_sync_sensor's per-collection 'changed'
+    when triggered by bronze_preservica_auto_sync's per-collection 'changed'
     list (see find_changed_preservica_collections()).
 
     An IO entity is leaf-fetched via _walk_preservica_item() (entity,
@@ -1187,17 +1446,22 @@ def preservica_sync_entities(collection, group, entities, opts={}):
     the previously-stored version, to catch newly-added/removed *immediate*
     children — an existing subfolder is never recursed into, and an existing,
     unchanged direct child item is never re-fetched just because its parent
-    changed. A newly-appeared child IO gets a full leaf-fetch (reported in
-    'added'). A newly-appeared child SO gets only its own entity/identifiers/
-    metadata written (no children.json fetch, no cascade — that subfolder's
-    own contents are discovered later, either when Preservica itself reports
-    it as changed, or as its individual items surface independently in a
-    later updated-since batch) and is not itself partition-reportable
-    (folders aren't Dagster 'items' partitions). A child IO that disappears
-    from children.json has its key reported in 'removed'; its bronze files
-    are left in place (never deleted), matching preservica_import()'s
-    existing never-delete-stale-bronze behavior. A removed child SO is
-    logged only — no partition action, since folders were never partitioned.
+    changed. A newly-added IO reported on its own (Preservica often reports a
+    new item without its folder) also gets its parent folder's children.json
+    refreshed, so preservica_tree_partial() can place it. A newly-appeared child IO gets a full leaf-fetch (reported in
+    'added'). A newly-appeared child SO is walked in full (its own files,
+    children.json and everything under it, see _walk_preservica_folder()),
+    and every item found inside it is reported in 'added'; the folder itself
+    is not partition-reportable (folders aren't Dagster 'items' partitions).
+
+    A collection with no root manifest.json yet (one auto-registered by
+    find_changed_preservica_collections(), which never runs
+    preservica_import()) gets one written, see _write_collection_manifest(). A child IO that disappears
+    from children.json has its key reported in 'removed'. Its by-ref/ files
+    are not deleted here: the tree step (preservica_tree_partial()) needs
+    them to recognize the tree/ entry as Preservica-owned, and purges them
+    after removing that entry. A removed child SO is logged only — no
+    partition action, since folders were never partitioned.
 
     :param str collection: Registered collection name.
     :param str group: Bronze group namespace.
@@ -1225,8 +1489,16 @@ def preservica_sync_entities(collection, group, entities, opts={}):
     registration = _get_active_registration_by_name(collection, group, opts)
     root = _bronze_latest_root(collection, group, opts)
 
+    collection_root = _bronze_collection_root(collection, group, opts)
+    if not fs.exists(f"{collection_root}/manifest.json"):
+        root_ref = _registered_root_ref(registration["id"], opts)
+        if root_ref:
+            _write_collection_manifest(collection, group, root_ref, opts)
+
     manifest = {"items": [], "errors": [], "warnings": []}
     ctx = {
+        "max_depth": float("inf"),
+        "depth": 0,
         "manifest": manifest,
         "concurrency": opts.get("concurrency", CONFIG["preservica"]["concurrency"]),
         "on_progress": opts.get("on_progress") or (lambda message: None),
@@ -1235,13 +1507,40 @@ def preservica_sync_entities(collection, group, entities, opts={}):
 
     added, removed, changed_out = [], [], []
 
-    def _sync_io(io_ref):
+    refreshed_parents = set()
+
+    def _refresh_parent_children(parent_ref):
+        # a new item is often reported without its folder; refresh the
+        # folder's children.json so the tree rebuild can place the item
+        if not parent_ref or parent_ref in refreshed_parents:
+            return
+        refreshed_parents.add(parent_ref)
+        if not fs.exists(f"{root}/by-ref/{parent_ref}/entity.json"):
+            _record_warning(ctx, parent_ref, "children", "new item's folder is not in bronze yet")
+            return
+        try:
+            _write_bronze_json(root, f"by-ref/{parent_ref}/children.json", client.get_children(parent_ref))
+        except Exception as e:
+            _record_error(ctx, parent_ref, "children", str(e))
+
+    def _sync_io(io_ref, opts={}):
         existed = fs.exists(f"{root}/by-ref/{io_ref}/entity.json")
         result = _walk_preservica_item(client, io_ref, root, ctx)
         if result is None:
             return
         key = _resolve_identifier_key(result["identifiers"], io_ref)["key"]
         (changed_out if existed else added).append(key)
+        if not existed and not opts.get("parent_synced"):
+            _refresh_parent_children(result.get("parent"))
+
+    def _walk_new_folder(so_ref):
+        start = len(manifest["items"])
+        _walk_preservica_folder(client, so_ref, root, ctx)
+        for entry in manifest["items"][start:]:
+            if entry["type"] != "IO":
+                continue
+            identifiers = _read_bronze_json(root, f"by-ref/{entry['ref']}/identifiers.json", [])
+            added.append(_resolve_identifier_key(identifiers, entry["ref"])["key"])
 
     def _sync_so(so_ref):
         before_children = _read_bronze_json(root, f"by-ref/{so_ref}/children.json", [])
@@ -1262,9 +1561,9 @@ def preservica_sync_entities(collection, group, entities, opts={}):
             if ref in before_by_ref:
                 continue
             if child["type"] == "IO":
-                _sync_io(ref)
+                _sync_io(ref, {"parent_synced": True})
             elif child["type"] == "SO":
-                _sync_folder_self(client, ref, root, ctx)
+                _walk_new_folder(ref)
 
         for ref, child in before_by_ref.items():
             if ref in after_by_ref:
@@ -1273,7 +1572,7 @@ def preservica_sync_entities(collection, group, entities, opts={}):
                 identifiers = _read_bronze_json(root, f"by-ref/{ref}/identifiers.json", [])
                 removed.append(_resolve_identifier_key(identifiers, ref)["key"])
             else:
-                ctx["on_progress"](f"folder  {ref}  removed from parent {so_ref} (bronze left in place)")
+                ctx["on_progress"](f"folder  {ref}  removed from parent {so_ref} (by-ref purged by tree step)")
 
     seen = set()
     for entity in entities:
@@ -1314,7 +1613,7 @@ def _tree_partition_keys(ref, collection):
     return ["medallion-bronze", f"collection-{collection}", f"ref-{ref}"]
 
 
-def _copy_metadata_to_tree(root, entity_dir, dest_rel, ref, collection):
+def _copy_metadata_to_tree(root, entity_dir, dest_rel, ref, collection, opts={}):
     """Build one entity's tree/ metadata.json: its own Preservica entity
     properties (ref/title/description/type — everything in by-ref/'s
     entity.json except the internal metadataFragmentRefs list) under a
@@ -1342,6 +1641,8 @@ def _copy_metadata_to_tree(root, entity_dir, dest_rel, ref, collection):
     :param str dest_rel: Destination tree/ directory, relative to `root`.
     :param str ref: Preservica entity ref this tree/ entry represents.
     :param str collection: Collection name (see _tree_partition_keys()).
+    :param dict opts: 'only_if_changed' (bool) — skip the write when the
+        existing metadata.json already has this content.
     :raises ValueError: If the entity has more than one metadata fragment.
     """
     content = {}
@@ -1368,6 +1669,8 @@ def _copy_metadata_to_tree(root, entity_dir, dest_rel, ref, collection):
             sources.append(fragment_rel)
 
     if not content:
+        return
+    if opts.get("only_if_changed") and _read_bronze_json(root, f"{dest_rel}/metadata.json") == content:
         return
     write_opts = {"partition_keys": _tree_partition_keys(ref, collection)} if root.startswith("cask:") else {}
     _write_bronze_json(root, f"{dest_rel}/metadata.json", content, write_opts)
@@ -1436,6 +1739,31 @@ def _write_tree_child(child, child_identifiers, root, dest_rel, collection):
         count += 1
 
     return count
+
+
+def _refresh_tree_entry(entity, root, tree_rel, collection):
+    """Bring an existing tree/ entry's own files up to date with by-ref/:
+    identifiers.json and metadata.json, plus media for an item. Only files
+    whose content changed are written (see _sync_bronze_dir()), so an
+    unchanged file isn't rewritten into a new CaskFS audit event. A folder's children are not
+    touched; they are placed or removed by preservica_tree_partial() itself.
+
+    :param dict entity: {'ref', 'type'}.
+    :param str root: fs-compatible bronze 'latest' root.
+    :param str tree_rel: The entry's tree/ directory, relative to `root`.
+    :param str collection: Collection name (see _tree_partition_keys()).
+    """
+    ref = entity["ref"]
+    entity_dir = f"by-ref/{ref}"
+    identifiers = _read_bronze_json(root, f"{entity_dir}/identifiers.json", [])
+    current = _read_bronze_json(root, f"{tree_rel}/identifiers.json")
+    if (identifiers or entity["type"] == "IO") and current != identifiers:
+        _write_bronze_json(root, f"{tree_rel}/identifiers.json", identifiers)
+        if identifiers:
+            _link_tree_source(root, f"{tree_rel}/identifiers.json", f"{entity_dir}/identifiers.json")
+    _copy_metadata_to_tree(root, entity_dir, tree_rel, ref, collection, {"only_if_changed": True})
+    if entity["type"] == "IO":
+        _sync_bronze_dir(root, f"{entity_dir}/media", tree_rel, {"keep": {"identifiers.json", "metadata.json"}})
 
 
 def _build_tree_from_by_ref(so_ref, root, dest_rel, collection):
@@ -1613,26 +1941,85 @@ def _tree_siblings(root, tree_dir_rel, exclude_slug=None):
     return used
 
 
-def _reconcile_tree_children(root, collection, so_ref, root_so_ref):
+def _listed_refs(root):
+    """Map every ref listed in a by-ref/ children.json to the folders that
+    list it. Used to tell a deleted entity from one that moved elsewhere.
+
+    :param str root: fs-compatible bronze 'latest' root.
+    :returns: {ref: set of parent SO refs}.
+    :rtype: dict[str, set[str]]
+    """
+    listed = {}
+    try:
+        entries = fs.ls(f"{root}/by-ref")
+    except FileNotFoundError:
+        return listed
+    for entry in entries:
+        if entry.kind != "directory":
+            continue
+        for child in _read_bronze_json(root, f"by-ref/{entry.name}/children.json", []):
+            listed.setdefault(child["ref"], set()).add(entry.name)
+    return listed
+
+
+def _purge_by_ref(root, ref, listed):
+    """Delete a removed entity's by-ref/ folder and, for a folder, every
+    descendant's. A descendant still listed by a folder outside the removed
+    subtree (moved out) is kept.
+
+    :param str root: fs-compatible bronze 'latest' root.
+    :param str ref: The removed entity's ref.
+    :param dict listed: _listed_refs() index, from before the purge.
+    :returns: The refs whose by-ref/ folders were deleted.
+    :rtype: list[str]
+    """
+    subtree, pending = [], [ref]
+    while pending:
+        current = pending.pop()
+        if current in subtree:
+            continue
+        subtree.append(current)
+        for child in _read_bronze_json(root, f"by-ref/{current}/children.json", []):
+            pending.append(child["ref"])
+
+    inside = set(subtree)
+    purged = []
+    for current in subtree:
+        # moved out of the removed subtree
+        if current != ref and listed.get(current, set()) - inside:
+            continue
+        if not fs.exists(f"{root}/by-ref/{current}"):
+            continue
+        fs.delete(f"{root}/by-ref/{current}", opts={"directory": True})
+        purged.append(current)
+    return purged
+
+
+def _reconcile_tree_children(root, collection, so_ref, root_so_ref, opts={}):
     """Match one synced SO's tree/ entries to its by-ref/ children.json.
-    Entries Preservica knew (a by-ref/ entry) but no longer lists are deleted;
+    Entries Preservica knew (a by-ref/ entry) but no longer lists are deleted,
+    along with their by-ref/ folders unless another folder lists them (moved);
     entries added directly in bronze are kept.
 
     :param str root: fs-compatible bronze 'latest' root.
     :param str collection: Collection name (see _tree_partition_keys()).
     :param str so_ref: The synced SO's ref.
     :param str root_so_ref: The collection root SO's ref (its entry is 'tree').
-    :returns: (removed [{'ref', 'ark'}], missing [{'ref', 'type'}]).
-    :rtype: tuple[list[dict], list[dict]]
+    :param dict opts: 'listed_cache' (dict, shared across calls; holds the
+        _listed_refs() index once built).
+    :returns: (removed [{'ref', 'ark'}], missing [{'ref', 'type'}], purged [ref]).
+    :rtype: tuple[list[dict], list[dict], list[str]]
     """
     children = _read_bronze_json(root, f"by-ref/{so_ref}/children.json")
     tree_rel = "tree" if so_ref == root_so_ref else _find_tree_path_for_ref(so_ref, collection, root)
     if children is None or not tree_rel:
-        return [], []
+        return [], [], []
 
+    cache = opts.get("listed_cache") if opts.get("listed_cache") is not None else {}
     listed = {c["ref"]: c for c in children}
     present = set()
     removed = []
+    purged = []
     try:
         entries = fs.ls(f"{root}/{tree_rel}")
     except FileNotFoundError:
@@ -1656,9 +2043,15 @@ def _reconcile_tree_children(root, collection, so_ref, root_so_ref):
         ark = next((i.get("value") for i in identifiers if _is_ark(i.get("value") or "")), None)
         fs.delete(f"{root}/{tree_rel}/{entry.name}", opts={"directory": True})
         removed.append({"ref": ref, "ark": ark})
+        # built once, only when something is removed
+        if "index" not in cache:
+            cache["index"] = _listed_refs(root)
+        # listed elsewhere means moved, keep it
+        if not cache["index"].get(ref):
+            purged.extend(_purge_by_ref(root, ref, cache["index"]))
 
     missing = [{"ref": ref, "type": c["type"]} for ref, c in listed.items() if ref not in present]
-    return removed, missing
+    return removed, missing, purged
 
 
 def preservica_tree_partial(collection, group, changed_entities, opts={}):
@@ -1666,7 +2059,7 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
     Preservica entities, instead of preservica_tree()'s full delete-and-rebuild
     — the steady-state path for ongoing syncs (see dagster/lib/assets.py's
     rebuild_collection_tree, wired to fire this whenever
-    preservica_auto_sync_sensor's per-collection 'changed' list is non-empty).
+    bronze_preservica_auto_sync's per-collection 'changed' list is non-empty).
 
     Each entity's current tree/ location, if it has one, is found via the
     ref-identity partition key tagged on its metadata.json (see
@@ -1678,16 +2071,19 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
       the tree/ entry is deleted.
     - **Changed** (both by-ref/ and a tree/ entry exist): the correct slug is
       recomputed from the live title (see _build_tree_from_by_ref()) against
-      the entry's current siblings; if the slug is unchanged this is a no-op,
-      otherwise the entry (and, for a folder, everything under it) is moved
-      via fs.move() in one call — cheap regardless of subtree size, and
-      preserves lineage/partition keys so every descendant's own tag-based
-      lookup stays valid afterward.
+      the entry's current siblings; if it differs, the entry (and, for a
+      folder, everything under it) is moved via fs.move() in one call — cheap
+      regardless of subtree size, and preserves lineage/partition keys so
+      every descendant's own tag-based lookup stays valid afterward. Either
+      way the entry's own identifiers.json/metadata.json (and an item's
+      changed media) are then refreshed from by-ref/, see
+      _refresh_tree_entry().
     - **Folder children**: for each changed SO, tree/ entries whose ref has
-      left its children.json are deleted first, and listed children with no
-      entry under it are handled like any other entity (see
-      _reconcile_tree_children()). An item moved between two synced folders
-      is therefore re-placed, not lost.
+      left its children.json are deleted first, along with their by-ref/
+      folders (a folder's whole by-ref/ subtree) when no other folder lists
+      them, and listed children with no entry under it are handled like any
+      other entity (see _reconcile_tree_children()). An item moved between
+      two synced folders is therefore re-placed, not lost or purged.
     - **Added** (by-ref/ exists, no tree/ entry yet): the entity's parent SO
       is found via _find_parent_so_ref(), the entry is placed under that
       parent's current tree/ location (or directly under 'tree' if the
@@ -1708,7 +2104,8 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
         type) pairs are processed only once.
     :param dict opts: 'dest_root' (str, optional — see _bronze_collection_root()).
     :returns: {'moved': [...], 'added': [...], 'removed': [...],
-        'unresolved': [...]} — each a list of Preservica refs — plus
+        'unresolved': [...], 'refreshed': [...], 'purged': [...]} — each a list
+        of Preservica refs ('purged': by-ref/ folders deleted) — plus
         'removedArks', the ARKs of removed items that weren't re-placed.
     :rtype: dict
     :raises FileNotFoundError: If preservica_import() has not been run yet for
@@ -1723,16 +2120,26 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
         )
 
     root = _bronze_latest_root(collection, group, opts)
-    result = {"moved": [], "added": [], "removed": [], "unresolved": []}
+    result = {"moved": [], "added": [], "removed": [], "unresolved": [], "refreshed": [], "purged": []}
+
+    # never built (e.g. auto-registered), nothing to patch
+    if not fs.exists(f"{root}/tree/metadata.json"):
+        result["rebuilt"] = preservica_tree(collection, group, opts)
+        result["removedArks"] = []
+        return result
 
     # drop removed children before placing
     work = list(changed_entities)
     relisted = set()
     removed_arks = {}
+    listed_cache = {}
     for entity in changed_entities:
         if entity["type"] != "SO" or not fs.exists(f"{root}/by-ref/{entity['ref']}/entity.json"):
             continue
-        removed, missing = _reconcile_tree_children(root, collection, entity["ref"], root_so_ref)
+        removed, missing, purged = _reconcile_tree_children(
+            root, collection, entity["ref"], root_so_ref, {"listed_cache": listed_cache},
+        )
+        result["purged"].extend(purged)
         result["removed"].extend(r["ref"] for r in removed)
         removed_arks.update((r["ref"], r["ark"]) for r in removed)
         work.extend(missing)
@@ -1778,6 +2185,9 @@ def preservica_tree_partial(collection, group, changed_entities, opts={}):
             if new_tree_rel != old_tree_rel:
                 fs.move(f"{root}/{old_tree_rel}", f"{root}/{new_tree_rel}")
                 result["moved"].append(ref)
+            # title, metadata, identifiers or media may have changed too
+            _refresh_tree_entry({"ref": ref, "type": entity_type}, root, new_tree_rel, collection)
+            result["refreshed"].append(ref)
             continue
 
         parent_ref = _find_parent_so_ref(root, ref, changed_entities)

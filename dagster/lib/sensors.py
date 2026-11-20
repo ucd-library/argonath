@@ -1,32 +1,32 @@
 """
 Dagster sensor definitions — chain pipeline phases on job completion, plus two
-source-polling sensors for the collection registry (see
+source-polling sensors for registered collections (see
 digtk.models.collection.register_collection/find_changed_preservica_collections
-and exec/digtk/sql/collection_registry.sql, applied via `digtk collection init-pg`):
+and exec/digtk/sql/collection_registry.sql, applied via `digtk state init-pg`):
 
-  preservica_auto_sync_sensor      — polls Preservica's /entities/updated-since
+  bronze_preservica_auto_sync      — polls Preservica's /entities/updated-since
                                       and reconciles only the registered
                                       collections that actually changed.
-  collection_partition_sync_sensor — keeps Dagster's 'collections' dynamic
+  bronze_collection_partition_sync — keeps Dagster's 'collections' dynamic
                                       partition in sync with the registry, so a
                                       collection registered via CLI (before its
                                       first successful reconcile run) is
                                       immediately visible as a partition.
 
-Plus bronze_cask_audit_sensor, which reads CaskFS's audit log for bronze item
-changes (see digtk.models.cask_changes), and workspace_partition_sync_sensor, which keeps the 'workspace' dynamic
+Plus bronze_collection_cask_audit, which reads CaskFS's audit log for bronze item
+changes (see digtk.models.cask_changes), and workspace_partition_sync, which keeps the 'workspace' dynamic
 partition in sync with the collections staged under CaskFS's /workspace (see
-digtk.models.workspace) for lib.pipeline_workspace.workspace_process_job.
+digtk.models.workspace) for lib.pipeline_workspace.workspace_process.
 """
 import datetime
 import json
 
 import dagster as dg
 
-from lib import collection_state
+from lib import collection_registry
 from lib.configs import CaskChangesConfig, collections_partitions
-from lib.pipeline_index import showcase_apply_cask_changes_job
-from lib.utils import default_run_config, exec
+from lib.pipeline_index import gold_dcs_apply_cask_changes
+from lib.utils import default_run_config, exec, sensor_default_status, sensor_interval
 
 
 # Default lookback for a sensor's very first tick, before it has a cursor of
@@ -34,8 +34,16 @@ from lib.utils import default_run_config, exec
 _INITIAL_LOOKBACK = datetime.timedelta(days=1)
 
 
-@dg.sensor(job_name="reconcile_collection_job", minimum_interval_seconds=300)
-def preservica_auto_sync_sensor(context: dg.SensorEvaluationContext):
+@dg.sensor(
+    job_name="bronze_reconcile_collection", 
+    minimum_interval_seconds=sensor_interval(300),
+    default_status=sensor_default_status(),
+    description=(
+        "Listens for changes in Preservica for registered collections and syncs changes to the collection's bronze item list, rebuilding the tree structure. "
+        "This should trigger the `bronze_collection_cask_audit` sensor to process any changed items and update the showcase indexes."
+    ),
+)
+def bronze_preservica_auto_sync(context: dg.SensorEvaluationContext):
     """Poll Preservica for changes since the last tick and sync only the
     specific entities that changed, for only the registered collections
     actually affected — untouched collections are skipped entirely, and an
@@ -85,8 +93,15 @@ def preservica_auto_sync_sensor(context: dg.SensorEvaluationContext):
     ]
 
 
-@dg.sensor(minimum_interval_seconds=300)
-def collection_partition_sync_sensor(context: dg.SensorEvaluationContext):
+@dg.sensor(
+    minimum_interval_seconds=sensor_interval(300),
+    default_status=sensor_default_status(),
+    description=(
+        "Listens for collections that have been added to the registry (Postgres) and adds a Dagster partition for each new collection. "
+        "Collections are added to the registry during `digtk collection add` or the `bronze_preservica_auto_sync` sensor."
+    ),
+)
+def bronze_collection_partition_sync(context: dg.SensorEvaluationContext):
     """Add a Dagster 'collections' dynamic partition for every active
     registered collection that doesn't already have one — the bridge between
     `digtk collection add`/`digtk preservica import` (which always register,
@@ -114,14 +129,21 @@ def collection_partition_sync_sensor(context: dg.SensorEvaluationContext):
     )
 
 
-@dg.sensor(minimum_interval_seconds=120)
-def workspace_partition_sync_sensor(context: dg.SensorEvaluationContext):
+@dg.sensor(
+    minimum_interval_seconds=sensor_interval(120),
+    default_status=sensor_default_status(),
+    description=(
+        "Listens for workspace folders staged under CaskFS's /workspace/<casId> and adds a Dagster partition for each new folder. "
+        "Workspace folders are added via `digtk workspace add`."
+    ),
+)
+def workspace_partition_sync(context: dg.SensorEvaluationContext):
     """Keep the 'workspace' dynamic partition in sync with every workspace
     folder (anything under /workspace/[username]/[folder] with a
     source/ directory — see `digtk workspace ls`), so a folder staged with
     `digtk workspace add` shows up as a pickable partition in the launchpad.
 
-    Unlike collection_partition_sync_sensor, this also removes partitions whose
+    Unlike bronze_collection_partition_sync, this also removes partitions whose
     workspace folder is gone: workspace is scratch space, so a deleted
     folder has no run history worth keeping a partition around for.
 
@@ -141,55 +163,6 @@ def workspace_partition_sync_sensor(context: dg.SensorEvaluationContext):
     return dg.SkipReason(
         f"{len(missing)} partition(s) added, {len(stale)} removed, {len(current)} workspace folder(s) total"
     )
-
-
-@dg.sensor(job_name="showcase_derivatives_job")
-def derivatives_on_ingest(context: dg.SensorEvaluationContext):
-    """Trigger showcase_derivatives_job when ingest_collection_job completes successfully.
-
-    :param context: Dagster sensor evaluation context.
-    """
-    raise NotImplementedError("phase 0.4")
-
-
-@dg.sensor(job_name="bronze_ocr_job")
-def ocr_on_derivatives(context: dg.SensorEvaluationContext):
-    """Trigger bronze_ocr_job when showcase_derivatives_job completes successfully.
-
-    :param context: Dagster sensor evaluation context.
-    """
-    raise NotImplementedError("phase 0.5")
-
-
-@dg.sensor(job_name="metadata_job")
-def metadata_on_ocr(context: dg.SensorEvaluationContext):
-    """Trigger metadata_job when bronze_ocr_job completes successfully.
-
-    :param context: Dagster sensor evaluation context.
-    """
-    raise NotImplementedError("phase 0.6")
-
-
-@dg.sensor(job_name="search_index_job")
-def rag_on_metadata(context: dg.SensorEvaluationContext):
-    """Trigger search_index_job when metadata_job completes successfully.
-
-    :param context: Dagster sensor evaluation context.
-    """
-    raise NotImplementedError("phase 0.7")
-
-
-@dg.sensor(job_name="showcase_search_index_job")
-def showcase_search_on_derivatives(context: dg.SensorEvaluationContext):
-    """Trigger showcase_search_index_job when showcase_derivatives_job completes successfully.
-
-    Fires off showcase_derivatives_job, not metadata_job like rag_on_metadata does -
-    see index_for_showcase_search's docstring in lib/assets.py for why the showcase
-    search index deliberately doesn't wait on the AI metadata draft step.
-
-    :param context: Dagster sensor evaluation context.
-    """
-    raise NotImplementedError("not yet wired - new asset, added alongside the fin/argonath migration's dams-router work, not part of the original phased buildout")
 
 
 # Longest folder list shown in one tag.
@@ -227,35 +200,67 @@ def _change_tags(reindex, cleanup):
     return tags
 
 
-@dg.sensor(job=showcase_apply_cask_changes_job, minimum_interval_seconds=300)
-def bronze_cask_audit_sensor(context: dg.SensorEvaluationContext):
+def _ensure_partitions(context, keys):
+    """Add 'collections' partitions for keys that lack one.
+
+    :param context: Dagster sensor evaluation context.
+    :param iterable[str] keys: Collection keys, e.g. "bronze/preservica/haeger".
+    :returns: Keys that were added.
+    :rtype: list[str]
+    """
+    missing = sorted(
+        k for k in set(keys)
+        if not context.instance.has_dynamic_partition(collections_partitions.name, k)
+    )
+    if missing:
+        context.instance.add_dynamic_partitions(collections_partitions.name, missing)
+        context.log.info(f"Added collection partition(s): {', '.join(missing)}")
+    return missing
+
+
+@dg.sensor(
+    job=gold_dcs_apply_cask_changes,
+    minimum_interval_seconds=sensor_interval(300),
+    default_status=sensor_default_status(),
+    description=(
+        "Listens for changes to the CaskFS audit log and builds silver level derivatives and gold level "
+        "metadata/binaries for each changed item, as well as the collection, and inserts into "
+        "elastic for the showcase app (defaulting to private). To process a whole collection manually, run "
+        "`gold_dcs_process_collection`."
+    ),
+)
+def bronze_collection_cask_audit(context: dg.SensorEvaluationContext):
     """Act on settled bronze item changes from the CaskFS audit log.
-    Items to process are queued for item_queue_sensor's showcase_process_item_job runs.
-    Other changes get one showcase_apply_cask_changes_job run per collection.
+    Items to process are queued for item_queue's gold_dcs_process_item runs.
+    Other changes get one gold_dcs_apply_cask_changes run per collection.
+    Missing collection partitions are created for both.
 
     :param context: Dagster sensor evaluation context.
     """
     cursor = json.loads(context.cursor) if context.cursor else None
-    result = collection_state.cask_changes(cursor)
+    result = collection_registry.cask_changes(cursor)
     if cursor is None:
         context.update_cursor(json.dumps(result["cursor"]))
         return dg.SkipReason(f"Starting at audit event {result['cursor']['after']}")
 
     for skipped in result["skipped"]:
         context.log.info(f"[{skipped['folder']}] skipped: {skipped['reason']}")
+    for key in result.get("removed", []):
+        context.log.info(f"[{key}] skipped: collection removed from bronze")
 
     # Before the cursor moves, so failures retry.
     queued = 0
     if result["process"]:
-        queued = collection_state.enqueue_items(result["process"], {"trigger": "cask-audit"})["enqueued"]
-        context.log.info(f"{queued} item(s) queued for showcase_process_item_job")
+        enqueued = collection_registry.enqueue_items(result["process"], {"trigger": "cask-audit"})
+        queued = enqueued["enqueued"]
+        context.log.info(f"{queued} item(s) queued for gold_dcs_process_item")
+        _ensure_partitions(context, enqueued.get("collections", []))
 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     requests = []
     keys = set(result["reindex"]) | set(result["delete"]) | set(result["cleanup"]) | set(result["collections"])
+    _ensure_partitions(context, keys)
     for key in sorted(keys):
-        if not context.instance.has_dynamic_partition(collections_partitions.name, key):
-            context.instance.add_dynamic_partitions(collections_partitions.name, [key])
         run_config = default_run_config({"plan_cask_changes": CaskChangesConfig})
         changes = {
             "reindex": result["reindex"].get(key, []),

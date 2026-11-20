@@ -8,7 +8,8 @@
  *   status <run-id>            — poll a Dagster run until terminal state
  *   list collections           — list collections in a group
  *   list items <collection>    — list items in a collection
- *   publish <collection>       — promote a collection into a gold app
+ *   publish <collection>       — publish a collection into this deployment's gold project
+ *   unpublish <collection>     — remove a collection's gold folder and ES documents (optionally silver)
  *   index collection <key>     — bulk-reindex a collection into ES (no derivatives)
  *   index delete-collection <key> — delete a collection from ES
  *   index delete-item <ark>    — delete one item from ES
@@ -17,7 +18,7 @@
 import fs from 'node:fs';
 import { Command } from 'commander';
 import { triggerJob, pollRun, encodePartitionKey, listPartitions, waitForPartition, resolveConnection, runUrl } from '../lib/dagster.js';
-import { listCollections, listItems, publishCollection } from '../lib/collections.js';
+import { listCollections, listItems, publishCollection, unpublishCollection } from '../lib/collections.js';
 import { STEP_FIELDS, OPTION_FIELDS, workspaceLaunch } from '../lib/workspace.js';
 
 const program = new Command();
@@ -38,18 +39,17 @@ processCmd
   .command('collection <name>')
   .description('Trigger a pipeline job for an entire collection.')
   .option('--space <space>', 'App space.', 'digital-dev')
-  .option('--job <job>', 'Job name: full, derivatives, ocr, metadata, alt, tag-pdf, split-detect, split-apply, rag.', 'full')
+  .option('--job <job>', 'Job name: full, derivatives, ocr, metadata, alt, tag-pdf, split-detect, split-apply.', 'full')
   .action(async (name, opts) => {
     const jobMap = {
-      full:          'full_pipeline_job',
-      derivatives:   'showcase_derivatives_job',
-      ocr:           'bronze_ocr_job',
-      metadata:      'metadata_job',
-      alt:           'bronze_alt_text_job',
-      'tag-pdf':     'bronze_tag_pdf_job',
-      'split-detect': 'bronze_detect_spreads_job',
-      'split-apply':  'bronze_apply_spreads_job',
-      rag:           'search_index_job',
+      full:          'silver_full_pipeline',
+      derivatives:   'gold_dcs_derivatives',
+      ocr:           'silver_ocr',
+      metadata:      'silver_metadata',
+      alt:           'silver_alt_text',
+      'tag-pdf':     'silver_tag_pdf',
+      'split-detect': 'silver_detect_spreads',
+      'split-apply':  'silver_apply_spreads',
     };
     const jobName = jobMap[opts.job] || opts.job;
     try {
@@ -65,18 +65,17 @@ processCmd
   .command('item <ark>')
   .description('Trigger a pipeline job for a single item by ARK.')
   .requiredOption('--collection <collection>', 'Collection key, format "[group]/[collection]".')
-  .option('--job <job>', 'Job name: full, derivatives, ocr, metadata, alt, tag-pdf, split-detect, split-apply, rag.', 'full')
+  .option('--job <job>', 'Job name: full, derivatives, ocr, metadata, alt, tag-pdf, split-detect, split-apply.', 'full')
   .action(async (ark, opts) => {
     const jobMap = {
-      full:          'full_pipeline_job',
-      derivatives:   'showcase_derivatives_job',
-      ocr:           'bronze_ocr_job',
-      metadata:      'metadata_job',
-      alt:           'bronze_alt_text_job',
-      'tag-pdf':     'bronze_tag_pdf_job',
-      'split-detect': 'bronze_detect_spreads_job',
-      'split-apply':  'bronze_apply_spreads_job',
-      rag:           'search_index_job',
+      full:          'silver_full_pipeline',
+      derivatives:   'gold_dcs_derivatives',
+      ocr:           'silver_ocr',
+      metadata:      'silver_metadata',
+      alt:           'silver_alt_text',
+      'tag-pdf':     'silver_tag_pdf',
+      'split-detect': 'silver_detect_spreads',
+      'split-apply':  'silver_apply_spreads',
     };
     const jobName = jobMap[opts.job] || opts.job;
     try {
@@ -129,7 +128,7 @@ indexCmd
   .option('--wait', 'Wait for the run to finish.', false)
   .action(async (key, opts) => {
     try {
-      await launch('showcase_reindex_collection_job', {
+      await launch('gold_dcs_reindex_collection', {
         partitionKey: key,
         wait: opts.wait,
         config: {
@@ -157,7 +156,7 @@ indexCmd
   .option('--wait', 'Wait for the run to finish.', false)
   .action(async (key, opts) => {
     try {
-      await launch('showcase_delete_collection_index_job', { partitionKey: key, wait: opts.wait });
+      await launch('gold_dcs_delete_collection_index', { partitionKey: key, wait: opts.wait });
     } catch (err) {
       console.error(`Error: ${err.message}`);
       process.exit(1);
@@ -171,7 +170,7 @@ indexCmd
   .option('--wait', 'Wait for the run to finish.', false)
   .action(async (ark, opts) => {
     try {
-      await launch('showcase_delete_item_index_job', {
+      await launch('gold_dcs_delete_item_index', {
         wait: opts.wait,
         config: { ops: { delete_item_index: { config: { ark, collection: opts.collection } } } },
       });
@@ -190,7 +189,7 @@ const workspaceCmd = program.command('workspace').description('Workspace folder 
 
 workspaceCmd
   .command('run <folder>')
-  .description('Run the pike tools on a workspace folder in Dagster (workspace_process_job). '
+  .description('Run the pike tools on a workspace folder in Dagster (workspace_process). '
     + 'Folder: cask:/workspace/<user>/<folder>.')
   .option('--steps <steps>', `Steps to run (comma-separated): ${Object.keys(STEP_FIELDS).join(', ')}, or all. `
     + `Also turns on options listed here: ${Object.keys(OPTION_FIELDS).join(', ')}. Required: every step defaults to off.`)
@@ -212,9 +211,9 @@ workspaceCmd
       // sensor registers new folders (~2 min)
       await waitForPartition(plan.jobName, plan.partitionKey, {
         ...conn,
-        onWait: () => console.log(`Waiting for workspace_partition_sync_sensor to register ${plan.partitionKey}...`),
+        onWait: () => console.log(`Waiting for workspace_partition_sync to register ${plan.partitionKey}...`),
       }).catch((err) => {
-        throw new Error(`${err.message}. Check workspace_partition_sync_sensor is on and the folder has a source/ directory.`);
+        throw new Error(`${err.message}. Check workspace_partition_sync is on and the folder has a source/ directory.`);
       });
       console.log(`Partition ${plan.partitionKey}`);
       await launch(plan.jobName, {
@@ -275,7 +274,7 @@ listCmd
 
 listCmd
   .command('items <collection>')
-  .description("List all items in a bronze collection's latest (or most recent) snapshot.")
+  .description("List the item folders in a bronze collection's latest snapshot.")
   .requiredOption('--group <group>', 'Group namespace the collection belongs to.')
   .option('--format <format>', 'Output format: table or json.', 'table')
   .action(async (collection, opts) => {
@@ -294,18 +293,53 @@ listCmd
 
 
 // ---------------------------------------------------------------------------
-// argonath publish
+// argonath publish / unpublish
 // ---------------------------------------------------------------------------
+
+/**
+ * Print a launched run's id and link, and optionally wait for it to finish.
+ *
+ * @param {{runId: string, url: string}} run - Launched run.
+ * @param {Object} [opts={}] - Options.
+ * @param {boolean} [opts.wait] - Poll until the run finishes; exits 1 if it fails.
+ * @returns {Promise<void>}
+ */
+async function reportRun(run, opts = {}) {
+  console.log(`Run started: ${run.runId}`);
+  console.log(run.url);
+  if (!opts.wait) return;
+  const done = await pollRun(run.runId);
+  console.log(`Run ${done.runId}: ${done.status}`);
+  if (done.status !== 'SUCCESS') process.exit(1);
+}
 
 program
   .command('publish <collection>')
-  .description('Promote a bronze/silver collection into a gold app.')
+  .description("Publish a collection into this deployment's gold project: rebuild item records "
+    + '(promoting download files), reindex, prune and rebuild the collection record. '
+    + 'Items missing silver derivatives are queued for full item runs.')
   .requiredOption('--group <group>', 'Group namespace the collection belongs to.')
-  .requiredOption('--to <app>',      'Destination gold app (e.g. digital-dev, digital-prod, arda).')
+  .option('--wait', 'Wait for the run to finish.', false)
   .action(async (collection, opts) => {
     try {
-      const result = await publishCollection(collection, opts.group, opts.to);
-      console.log(`Published ${collection}: ${result.itemCount} items promoted from ${opts.group}/${collection} → gold/${opts.to}`);
+      await reportRun(await publishCollection(collection, opts.group), opts);
+    } catch (err) {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('unpublish <collection>')
+  .description("Remove a collection from this deployment's ES indexes and gold project. "
+    + 'Bronze and the collection registry are left alone.')
+  .requiredOption('--group <group>', 'Group namespace the collection belongs to.')
+  .option('--purge-silver', 'Also delete silver website derivatives (refused while another gold project '
+    + 'has the collection). Publishing again regenerates them.', false)
+  .option('--wait', 'Wait for the run to finish.', false)
+  .action(async (collection, opts) => {
+    try {
+      await reportRun(await unpublishCollection(collection, opts.group, { purgeSilver: opts.purgeSilver }), opts);
     } catch (err) {
       console.error(`Error: ${err.message}`);
       process.exit(1);

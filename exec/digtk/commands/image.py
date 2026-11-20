@@ -9,7 +9,7 @@ Subcommands:
   derivatives  — generate the full derivative set with orientation auto-detection
                  (thumbnails, deskew, OCR-prep, a tiled pyramid TIFF for future
                  IIIF-style deep-zoom serving, all sharing one OCR-driven
-                 orientation decision) — this is what Dagster's showcase_derivatives_job
+                 orientation decision) — this is what Dagster's gold_dcs_derivatives
                  actually calls; the others above are deterministic single-recipe
                  commands for ad-hoc/manual use.
 """
@@ -20,6 +20,7 @@ import typer
 from digtk.lib import reporting, utils
 from digtk.lib.config import (
     CONFIG,
+    ForceOption,
     ImageConvertFormatOption,
     ImageDeskewThresholdOption,
     ImageDpiOption,
@@ -104,6 +105,7 @@ def derivatives(
                        "one Dagster step per file. Skips the item-level outputs; run "
                        "`digtk showcase finalize` once every file is done.",
     )] = None,
+    force: ForceOption = False,
     reporting_job_id: ReportingJobIdOption = None,
     reporting_collection: ReportingCollectionOption = None,
 ):
@@ -112,7 +114,7 @@ def derivatives(
     Runs a real Tesseract comparison between a deskewed and non-deskewed
     candidate to decide the correct orientation once, then applies that
     decision to every thumbnail width and the published OCR-prep image. This
-    is the command both showcase_derivatives_job (per-item Dagster partition) and the
+    is the command both gold_dcs_derivatives (per-item Dagster partition) and the
     collection-level fan-out job (dagster/lib/pipeline_fanout.py) call — the
     latter passing its own run id as --reporting-job-id.
     """
@@ -121,13 +123,14 @@ def derivatives(
         item_label = f"{target}#{','.join(file)}" if file else target
         with reporting.track(
             reporting_job_id, stage="derivatives", item_id=item_label, collection=reporting_collection,
-            options={"widths": widths, "deskew_threshold": deskew_threshold, "fuzz_threshold": fuzz_threshold},
+            options={"widths": widths, "deskew_threshold": deskew_threshold, "fuzz_threshold": fuzz_threshold, "force": force},
         ):
             result = image.generate(target, opts={
                 "widths": widths,
                 "threshold": deskew_threshold,
                 "fuzz": fuzz_threshold,
                 "files": file or None,
+                "force": force,
             })
         for stem, orientation in result["orientation"].items():
             utils.log(f"  {stem}: {'deskewed' if orientation['deskew'] else 'original'}")

@@ -1,19 +1,20 @@
 """
-Collection-level orchestration of item runs, through the collection_state
-queue (see lib.collection_state and digtk.models.collection_state).
-bronze_cask_audit_sensor queues changed items, item_queue_sensor runs them
-as showcase_process_item_job, and collection_rollup_sensor rolls each collection up.
+Collection-level orchestration of item runs, through the collection_registry
+queue (see lib.collection_registry and digtk.models.collection_registry).
+bronze_collection_cask_audit (changed items) and gold_dcs_process_collection
+(every item, launched by hand) queue items, item_queue runs them as
+gold_dcs_process_item, and gold_dcs_collection_rollup_trigger rolls each collection up.
 
-  collection_launch_job (collection partition, not registered)
+  gold_dcs_process_collection (collection partition)
       -> `digtk state enqueue-collection`: one job_queue row per item
-  item_queue_sensor
-      -> one showcase_process_item_job run per queued row, at most
+  item_queue
+      -> one gold_dcs_process_item run per queued row, at most
          MAX_ITEM_RUNS_IN_FLIGHT item runs at a time
-  collection_rollup_sensor (queue empty, no item runs in flight)
-      -> showcase_collection_rollup_job: `digtk state rollup`, then the collection's
+  gold_dcs_collection_rollup_trigger (queue empty, no item runs in flight)
+      -> gold_dcs_collection_rollup: `digtk state rollup`, then the collection's
          gold record and ES doc; fails if any item failed
 
-The queue is read without being claimed: item_queue_sensor stores submitted
+The queue is read without being claimed: item_queue stores submitted
 row ids in its cursor and the next tick deletes them (`digtk state ack`).
 A row submitted twice is dropped by Dagster's run_key ("job_queue-<id>").
 """
@@ -23,14 +24,14 @@ import os
 import dagster as dg
 from dagster import AssetMaterialization, MetadataValue, OpExecutionContext, job, op
 
-from lib import collection_state
-from lib.configs import ItemRunConfig, collections_partitions
-from lib.pipeline_item import normalize_item, showcase_process_item_job
-from lib.utils import default_run_config, exec
+from lib import collection_registry
+from lib.configs import ItemRunConfig, ProcessCollectionConfig, collections_partitions
+from lib.pipeline_item import normalize_item, gold_dcs_process_item
+from lib.utils import default_run_config, exec, sensor_default_status, sensor_interval
 
-# Most showcase_process_item_job runs (queued or running, from any trigger) the queue
+# Most gold_dcs_process_item runs (queued or running, from any trigger) the queue
 # sensor lets exist at once. It only submits more while there's room, so the
-# rest wait in collection_state.job_queue rather than in Dagster's run queue.
+# rest wait in collection_registry.job_queue rather than in Dagster's run queue.
 MAX_ITEM_RUNS_IN_FLIGHT = int(os.getenv("ARGONATH_MAX_ITEM_RUNS_IN_FLIGHT", "20"))
 
 # Most rows one queue sensor tick submits, whatever the free capacity.
@@ -45,21 +46,23 @@ _IN_FLIGHT = [
 
 
 @op
-def enqueue_collection_items(context: OpExecutionContext):
-    """Queue a showcase_process_item_job run for every item in the partition's
-    collection. Items that have left its bronze tree/ are left alone here;
-    showcase_reindex_collection_job prunes their ES docs.
+def enqueue_collection_items(context: OpExecutionContext, config: ProcessCollectionConfig):
+    """Queue a gold_dcs_process_item run for every item in the partition's
+    collection, tagged with this run's id as its batch. Items that have left
+    its bronze tree/ are left alone; gold_dcs_reindex_collection prunes their ES docs.
 
     :param context: Dagster op execution context; partitioned by collection.
+    :param ProcessCollectionConfig config: 'force' regenerates existing derivatives.
     """
     key = context.partition_key
-    result = collection_state.enqueue_collection(key, {"batch": context.run_id})
+    result = collection_registry.enqueue_collection(key, {"batch": context.run_id, "force": config.force})
     context.log.info(
         f"{key}: {result['items']} item(s) in bronze tree/ ({result['added']} new), "
-        f"{result['enqueued']} run(s) queued"
+        f"{result['enqueued']} run(s) queued{' (force)' if config.force else ''}"
     )
+    context.log.info("Items processing will be queued as new dagster runs per-item, followed by a collection rollup job to index the collection and update the item count.")
     context.log_event(AssetMaterialization(
-        asset_key="argonath_collection_launch",
+        asset_key="argonath_process_collection",
         partition=key,
         metadata={
             "items": MetadataValue.int(result["items"]),
@@ -69,19 +72,25 @@ def enqueue_collection_items(context: OpExecutionContext):
     ))
 
 
-@job(partitions_def=collections_partitions, tags={"argonath/kind": "collection-launch"})
-def collection_launch_job():
-    """Queue one showcase_process_item_job run per item of a collection;
-    item_queue_sensor launches them. Processing always replaces existing derivatives for now. See this
-    module's docstring.
+@job(
+    partitions_def=collections_partitions,
+    tags={"argonath/kind": "collection-launch"},
+    config=default_run_config({"enqueue_collection_items": ProcessCollectionConfig}),
+)
+def gold_dcs_process_collection():
+    """Manually rebuilds derivatives and indexes all items and the collection in elastic, 
+    then updates the item count by triggering the `gold_dcs_collection_rollup` job.
+    Derivatives that already exist are skipped unless `force` is set on the launchpad.
+    This is equivalent to what the `bronze_collection_cask_audit` sensor does automatically for changes in bronze cask.
+    If you just need to reindex a collection, use `gold_dcs_reindex_collection` instead.
     """
     enqueue_collection_items()
 
 
 def _item_run_request(row):
-    """A showcase_process_item_job RunRequest for one job_queue row.
+    """A gold_dcs_process_item RunRequest for one job_queue row.
 
-    :param dict row: collection_state.pending() row ({"id", "item", "config"}).
+    :param dict row: collection_registry.pending() row ({"id", "item", "config"}).
     :returns: RunRequest keyed "job_queue-<id>".
     :rtype: dagster.RunRequest
     """
@@ -101,9 +110,17 @@ def _item_run_request(row):
     return dg.RunRequest(run_key=f"job_queue-{row['id']}", run_config=run_config, tags=tags)
 
 
-@dg.sensor(job=showcase_process_item_job, minimum_interval_seconds=30)
-def item_queue_sensor(context: dg.SensorEvaluationContext):
-    """Launch showcase_process_item_job runs from collection_state's queue, keeping at
+@dg.sensor(
+    job=gold_dcs_process_item, 
+    minimum_interval_seconds=sensor_interval(30),
+    default_status=sensor_default_status(),
+    description=(
+        "Listens to the Postgres `collection_registry.job_queue` table and launches `gold_dcs_process_item` runs for queued items, "
+        "keeping at most MAX_ITEM_RUNS_IN_FLIGHT item runs queued or running. "
+    ),
+)
+def item_queue(context: dg.SensorEvaluationContext):
+    """Launch gold_dcs_process_item runs from collection_registry's queue, keeping at
     most MAX_ITEM_RUNS_IN_FLIGHT item runs queued or running. Rows submitted by
     one tick are removed from the queue by the next (see this module's docstring).
 
@@ -111,7 +128,7 @@ def item_queue_sensor(context: dg.SensorEvaluationContext):
     """
     submitted = json.loads(context.cursor)["submitted"] if context.cursor else []
     if submitted:
-        collection_state.ack(submitted)
+        collection_registry.ack(submitted)
         context.update_cursor(json.dumps({"submitted": []}))
 
     in_flight = context.instance.get_runs_count(
@@ -121,7 +138,7 @@ def item_queue_sensor(context: dg.SensorEvaluationContext):
     if capacity <= 0:
         return dg.SkipReason(f"{in_flight} item run(s) in flight (max {MAX_ITEM_RUNS_IN_FLIGHT})")
 
-    rows = collection_state.pending(collection_state.ITEM_JOB, capacity)
+    rows = collection_registry.pending(collection_registry.ITEM_JOB, capacity)
     if not rows:
         return dg.SkipReason(f"queue empty ({in_flight} item run(s) in flight)")
 
@@ -140,14 +157,14 @@ def item_queue_sensor(context: dg.SensorEvaluationContext):
 @op
 def rollup_collection(context: OpExecutionContext) -> dict:
     """Recompute the partition's collection item count and failed items, and
-    record them in collection_state.
+    record them in collection_registry.
 
     :param context: Dagster op execution context; partitioned by collection.
-    :returns: collection_state.rollup()'s summary.
+    :returns: collection_registry.rollup()'s summary.
     :rtype: dict
     """
     key = context.partition_key
-    summary = collection_state.rollup(key)
+    summary = collection_registry.rollup(key)
     context.log.info(
         f"{key}: {summary['item_count']} item(s): {summary['succeeded']} succeeded, "
         f"{summary['failed']} failed, {summary['never_run']} not run"
@@ -200,17 +217,24 @@ def check_rollup_failures(summary: dict):
 
 
 @job(partitions_def=collections_partitions, tags={"argonath/kind": "collection-rollup"})
-def showcase_collection_rollup_job():
-    """A collection's rollup after its item runs: item count and failed items,
-    recorded in collection_state, then the collection's ES document. Launched
-    by collection_rollup_sensor.
+def gold_dcs_collection_rollup():
+    """Called by the `gold_dcs_collection_rollup_trigger` sensor after all items for a collection have finished processing.
+    Updates elastic with the collection gold document, and updates the item count.
     """
     check_rollup_failures(pdc_index_collection(rollup_collection()))
 
 
-@dg.sensor(job=showcase_collection_rollup_job, minimum_interval_seconds=300)
-def collection_rollup_sensor(context: dg.SensorEvaluationContext):
-    """Launch showcase_collection_rollup_job for every collection whose items have
+@dg.sensor(
+    job=gold_dcs_collection_rollup, 
+    minimum_interval_seconds=sensor_interval(300),
+    default_status=sensor_default_status(),
+    description=(
+        "Listens for all items in a collection to finish processing, then indexes the collections' gold record and recalculates the item count. "
+        "This runs as part of the `bronze_collection_cask_audit` sensor chain, after all item runs are complete and the queue is empty. "
+    ),
+)
+def gold_dcs_collection_rollup_trigger(context: dg.SensorEvaluationContext):
+    """Launch gold_dcs_collection_rollup for every collection whose items have
     results newer than its last rollup, once nothing is queued for it and none
     of its item runs are queued or running. Keyed by the newest item result, so
     the same results never roll up twice.
@@ -218,7 +242,7 @@ def collection_rollup_sensor(context: dg.SensorEvaluationContext):
     :param context: Dagster sensor evaluation context.
     """
     requests = []
-    for due in collection_state.rollups_due():
+    for due in collection_registry.rollups_due():
         key = due["collection"]
         in_flight = context.instance.get_runs_count(
             dg.RunsFilter(tags={"argonath/kind": "item", "argonath/collection": key}, statuses=_IN_FLIGHT),

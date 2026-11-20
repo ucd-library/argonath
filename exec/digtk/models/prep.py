@@ -46,6 +46,41 @@ FORMAT_BY_EXTENSION = {
 }
 
 
+# Preservica tree/ items can hold the same page twice: an access copy (e.g.
+# Access/page_001.jpg) and its preservation master (Preservation/page_001.tif).
+# Showcase and the root-level tools both use the master.
+ACCESS_DIR = "Access"
+PRESERVATION_DIR = "Preservation"
+
+
+def drop_access_duplicates(bronze_binary_paths):
+    """Drop access copies that have a preservation master: a file in an item's
+    Access/ folder is left out when the same item's Preservation/ folder has a
+    file with the same name stem (page_001.jpg vs page_001.tif). Access files
+    without a master (e.g. a compiled PDF only supplied as an access copy) are
+    kept, as is everything outside those two folders.
+
+    :param list[str] bronze_binary_paths: CaskFS paths ('cask:/'-prefixed).
+    :returns: The paths to use, in original order.
+    :rtype: list[str]
+    """
+    masters = set()
+    for path in bronze_binary_paths:
+        parent, _, filename = path.rpartition("/")
+        item_dir, _, folder = parent.rpartition("/")
+        if folder == PRESERVATION_DIR:
+            masters.add((item_dir, os.path.splitext(filename)[0]))
+
+    kept = []
+    for path in bronze_binary_paths:
+        parent, _, filename = path.rpartition("/")
+        item_dir, _, folder = parent.rpartition("/")
+        if folder == ACCESS_DIR and (item_dir, os.path.splitext(filename)[0]) in masters:
+            continue
+        kept.append(path)
+    return kept
+
+
 def partition_by_format(bronze_binary_paths):
     """Split an item's bronze binaries into image and PDF subsets.
 
@@ -56,13 +91,15 @@ def partition_by_format(bronze_binary_paths):
     enforcing every binary be a recognized format. Shared by
     digtk.models.accessibility (alt-text/tagging, image or PDF) and
     digtk.models.ocr (Tesseract + vision OCR, same either-or shape).
+    Access copies that have a preservation master are left out first (see
+    drop_access_duplicates()), so a tree/ item's pages are processed once.
 
     :param list[str] bronze_binary_paths: CaskFS paths ('cask:/'-prefixed).
     :returns: (image_paths, pdf_paths), each a subset of bronze_binary_paths, in order.
     :rtype: tuple[list[str], list[str]]
     """
     image_paths, pdf_paths = [], []
-    for path in bronze_binary_paths:
+    for path in drop_access_duplicates(bronze_binary_paths):
         ext = os.path.splitext(path)[1].lower()
         fmt = FORMAT_BY_EXTENSION.get(ext)
         if fmt == "image":

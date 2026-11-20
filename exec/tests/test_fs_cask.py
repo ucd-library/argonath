@@ -389,7 +389,7 @@ def test_find_by_graph_sends_graph_and_default_predicate_but_no_subject():
         seen["params"] = dict(request.url.params)
         return httpx.Response(200, json={
             "totalCount": 1,
-            "results": [{"filepath": "/gold/digital-dev/c/item/item.jsonld.json"}],
+            "results": [{"filepath": "/gold/digital-dev/collections/c/item/item.jsonld.json"}],
             "offset": 0,
             "limit": 100,
         })
@@ -401,7 +401,7 @@ def test_find_by_graph_sends_graph_and_default_predicate_but_no_subject():
     assert seen["params"]["predicate"] == "https://schema.org/ark"
     assert seen["params"]["partitionKeys"] == "medallion-gold"
     assert "subject" not in seen["params"]
-    assert result == ["/gold/digital-dev/c/item/item.jsonld.json"]
+    assert result == ["/gold/digital-dev/collections/c/item/item.jsonld.json"]
 
 
 def test_find_by_partition_keys_sends_no_subject_or_predicate():
@@ -538,6 +538,53 @@ def test_move_existing_destination_raises_file_exists():
     b = backend(handler)
     with pytest.raises(FileExistsError):
         b.move("/tree/old-name", "/tree/already-there")
+
+
+def test_copy_posts_src_and_dest_path():
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.read())
+        return httpx.Response(200, json={"filepath": "/gold/a.tif"})
+
+    b = backend(handler)
+    result = b.copy("/bronze/a.tif", "/gold/a.tif")
+    assert seen["method"] == "POST"
+    assert seen["url"] == f"{BASE_URL}/fs/copy"
+    assert seen["body"] == {"srcPath": "/bronze/a.tif", "destPath": "/gold/a.tif"}
+    assert result == {"filepath": "/gold/a.tif"}
+
+
+def test_copy_sends_replace():
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.read())
+        return httpx.Response(200, json={})
+
+    b = backend(handler)
+    b.copy("/bronze/a.tif", "/gold/a.tif", opts={"replace": True})
+    assert seen["body"] == {"srcPath": "/bronze/a.tif", "destPath": "/gold/a.tif", "replace": True}
+
+
+def test_copy_missing_source_raises_file_not_found():
+    def handler(request):
+        return httpx.Response(404, json={"error": "not found"})
+
+    b = backend(handler)
+    with pytest.raises(FileNotFoundError):
+        b.copy("/bronze/nope.tif", "/gold/nope.tif")
+
+
+def test_copy_existing_destination_raises_file_exists():
+    def handler(request):
+        return httpx.Response(409, json={"error": "conflict"})
+
+    b = backend(handler)
+    with pytest.raises(FileExistsError):
+        b.copy("/bronze/a.tif", "/gold/a.tif")
 
 
 def test_add_derivative_link_posts_from_and_source_path():

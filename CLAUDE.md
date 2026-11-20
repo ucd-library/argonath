@@ -11,7 +11,8 @@ around it by calling a lower-level API directly.
   A `cask:/`-prefixed path routes to CaskFS (`fs/cask.py`'s `CaskBackend`, over the
   CaskFS HTTP API); anything else is local disk (`fs/local.py`). Both backends raise
   the same builtin exceptions, so calling code never branches on which backend it hit.
-  Key functions: `read`, `write`, `ls`, `exists`, `delete`, `add_derivative_link`
+  Key functions: `read`, `write`, `ls`, `exists`, `delete`, `copy` (server-side for
+  CaskFS), `add_derivative_link`
   (CaskFS lineage links). Don't shell out to the `cask` CLI or hit the CaskFS HTTP API
   directly from new code — the one existing exception is `digtk.models.collection`,
   which intentionally shells out to `cask cp` for its own documented reasons (rsync-style
@@ -19,7 +20,7 @@ around it by calling a lower-level API directly.
 
 - **`digtk.lib.derivative`** (`exec/digtk/lib/derivative.py`) — built on `fs`, for
   writing any silver/gold/workspace derivative artifact (thumbnails, OCR output, AI
-  metadata, RAG chunks, etc.) and recording its CaskFS lineage back to source files.
+  metadata, etc.) and recording its CaskFS lineage back to source files.
   `write()` is the single entry point: it builds the destination path from
   `type`/`collection`/`rel_path`/`opts` and dispatches to `write_cask()` (real CaskFS
   write + lineage, requires non-empty `source_files`) or, with `path`+`local=True`,
@@ -28,8 +29,7 @@ around it by calling a lower-level API directly.
   `fs.write`/`fs.add_derivative_link` directly for pipeline outputs.
 
 - **`digtk.lib.ai`** (`exec/digtk/lib/ai.py`) — the Samwise (Qwen, OpenAI-compatible)
-  client. `chat_completion()` (text + optional vision input) for metadata generation,
-  `embed()` for embeddings, `chunk_text()`/`chunk_and_embed()` for RAG chunking. Use
+  client. `chat_completion()` (text + optional vision input) for metadata generation. Use
   this instead of calling the `openai` SDK or Samwise's API directly.
 
 ## Library vs. Model Code

@@ -1,12 +1,12 @@
 /**
- * Workspace folder runs: turn CLI input into a workspace_process_job launch.
+ * Workspace folder runs: turn CLI input into a workspace_process launch.
  * A workspace folder is cask:/workspace/<user>/<folder> with a source/ dir.
  *
  * @module workspace
  */
 
 const PARTITIONS_DEF = 'workspace';
-const JOB_NAME = 'workspace_process_job';
+const JOB_NAME = 'workspace_process';
 const FAN_OUT_OP = 'fan_out_workspace';
 
 // option names --steps also accepts

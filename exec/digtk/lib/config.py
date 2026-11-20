@@ -74,7 +74,6 @@ OCR_ORIENTATION_ANGLE_THRESHOLD_ENV = "DIGTK_OCR_ORIENTATION_ANGLE_THRESHOLD"
 SAMWISE_API_URL_ENV = "SAMWISE_API_URL"
 SAMWISE_API_KEY_ENV = "SAMWISE_API_KEY"
 SAMWISE_LLM_MODEL_ENV = "DIGTK_SAMWISE_LLM_MODEL"
-SAMWISE_EMBED_MODEL_ENV = "DIGTK_SAMWISE_EMBED_MODEL"
 
 # Transport hardening, tuned values ported from the standalone digitization
 # toolkit's vllm_client.py — proven against real samwise flakiness (backend
@@ -123,14 +122,9 @@ PRESERVICA_PAGE_SIZE_ENV = "DIGTK_PRESERVICA_PAGE_SIZE"
 PRESERVICA_TOKEN_REFRESH_BUFFER_S_ENV = "DIGTK_PRESERVICA_TOKEN_REFRESH_BUFFER_S"
 PRESERVICA_MAX_RETRIES_ENV = "DIGTK_PRESERVICA_MAX_RETRIES"
 PRESERVICA_RETRY_BACKOFF_S_ENV = "DIGTK_PRESERVICA_RETRY_BACKOFF_S"
+PRESERVICA_DISCOVERY_TAGS_ENV = "ARGONATH_DISCOVERY_TAGS"
 
 FS_CHUNK_SIZE_ENV = "DIGTK_FS_CHUNK_SIZE"
-
-SEARCH_SPACE_ENV = "DIGTK_SEARCH_SPACE"
-SEARCH_TOP_K_ENV = "DIGTK_SEARCH_TOP_K"
-SEARCH_CHUNK_SIZE_ENV = "DIGTK_SEARCH_CHUNK_SIZE"
-SEARCH_CHUNK_BUFFER_ENV = "DIGTK_SEARCH_CHUNK_BUFFER"
-SEARCH_EMBED_MODEL_ENV = "DIGTK_SEARCH_EMBED_MODEL"
 
 PDF_TARGET_PIXEL_WIDTH_ENV = "DIGTK_PDF_TARGET_PIXEL_WIDTH"
 PDF_DEFAULT_DENSITY_ENV = "DIGTK_PDF_DEFAULT_DENSITY"
@@ -184,12 +178,17 @@ CAPTIONS_LANGUAGE_ENV = "DIGTK_CAPTIONS_LANGUAGE"
 CAPTIONS_MODEL_ENV = "DIGTK_CAPTIONS_MODEL"
 CAPTIONS_WHISPER_BIN_ENV = "DIGTK_CAPTIONS_WHISPER_BIN"
 CAPTIONS_TIMEOUT_S_ENV = "DIGTK_CAPTIONS_TIMEOUT_S"
+CAPTIONS_TIMEOUT_FACTOR_ENV = "DIGTK_CAPTIONS_TIMEOUT_FACTOR"
+
+# Replaces (not extends) the default list
+IGNORED_FILES_ENV = "DIGTK_IGNORED_FILES"
 
 SHOWCASE_GOLD_PROJECT_ENV = "DIGTK_SHOWCASE_GOLD_PROJECT"
 SHOWCASE_ES_HOST_ENV = "SHOWCASE_ES_HOST"
 SHOWCASE_ES_INDEX_ENV = "SHOWCASE_ES_INDEX"
 SHOWCASE_ES_PAGE_SEARCH_INDEX_ENV = "SHOWCASE_ES_PAGE_SEARCH_INDEX"
 SHOWCASE_ES_COLLECTION_INDEX_ENV = "SHOWCASE_ES_COLLECTION_INDEX"
+SHOWCASE_PUBLISH_TAG_ENV = "DIGTK_SHOWCASE_PUBLISH_TAG"
 
 # The shared postgres instance's default 'postgres' database — same one
 # cask/anduin-gateway connect to (distinct from CONFIG["postgres"]'s own
@@ -219,8 +218,6 @@ SHOWCASE_PG_PORT_ENV = "DIGTK_SHOWCASE_PG_PORT"
 SHOWCASE_PG_DATABASE_ENV = "DIGTK_SHOWCASE_PG_DATABASE"
 SHOWCASE_PG_USER_ENV = "DIGTK_SHOWCASE_PG_USER"
 SHOWCASE_PG_PASSWORD_ENV = "DIGTK_SHOWCASE_PG_PASSWORD"
-SHOWCASE_PG_INIT_DIR_ENV = "DIGTK_SHOWCASE_PG_INIT_DIR"
-SHOWCASE_CASK_INIT_DIR_ENV = "DIGTK_SHOWCASE_CASK_INIT_DIR"
 
 # argonath's own app-level Postgres schema (collection registry, etc.) — a
 # distinct database/credentials from Dagster's own run/event-log storage (see
@@ -250,7 +247,6 @@ SETTINGS = [
     {"dotpath": "samwise.api_url", "env": SAMWISE_API_URL_ENV, "cast": str, "secret": False},
     {"dotpath": "samwise.api_key", "env": SAMWISE_API_KEY_ENV, "cast": str, "secret": True},
     {"dotpath": "samwise.llm_model", "env": SAMWISE_LLM_MODEL_ENV, "cast": str, "secret": False},
-    {"dotpath": "samwise.embed_model", "env": SAMWISE_EMBED_MODEL_ENV, "cast": str, "secret": False},
     {"dotpath": "samwise.connect_timeout_s", "env": SAMWISE_CONNECT_TIMEOUT_S_ENV, "cast": float, "secret": False},
     {"dotpath": "samwise.read_timeout_s", "env": SAMWISE_READ_TIMEOUT_S_ENV, "cast": float, "secret": False},
     {"dotpath": "samwise.retries", "env": SAMWISE_RETRIES_ENV, "cast": int, "secret": False},
@@ -265,11 +261,6 @@ SETTINGS = [
     {"dotpath": "gateway.url", "env": GATEWAY_URL_ENV, "cast": str, "secret": False},
     {"dotpath": "auth.login_timeout_s", "env": AUTH_LOGIN_TIMEOUT_ENV, "cast": float, "secret": False},
     {"dotpath": "fs.chunk_size", "env": FS_CHUNK_SIZE_ENV, "cast": int, "secret": False},
-    {"dotpath": "search.space", "env": SEARCH_SPACE_ENV, "cast": str, "secret": False},
-    {"dotpath": "search.top_k", "env": SEARCH_TOP_K_ENV, "cast": int, "secret": False},
-    {"dotpath": "search.chunk_size", "env": SEARCH_CHUNK_SIZE_ENV, "cast": int, "secret": False},
-    {"dotpath": "search.chunk_buffer", "env": SEARCH_CHUNK_BUFFER_ENV, "cast": int, "secret": False},
-    {"dotpath": "search.embed_model", "env": SEARCH_EMBED_MODEL_ENV, "cast": str, "secret": False},
     {"dotpath": "pdf.target_pixel_width", "env": PDF_TARGET_PIXEL_WIDTH_ENV, "cast": int, "secret": False},
     {"dotpath": "pdf.default_density", "env": PDF_DEFAULT_DENSITY_ENV, "cast": int, "secret": False},
     {"dotpath": "pdf.raster_format", "env": PDF_RASTER_FORMAT_ENV, "cast": str, "secret": False},
@@ -316,11 +307,14 @@ SETTINGS = [
     {"dotpath": "captions.model", "env": CAPTIONS_MODEL_ENV, "cast": str, "secret": False},
     {"dotpath": "captions.whisper_bin", "env": CAPTIONS_WHISPER_BIN_ENV, "cast": str, "secret": False},
     {"dotpath": "captions.timeout_s", "env": CAPTIONS_TIMEOUT_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "captions.timeout_factor", "env": CAPTIONS_TIMEOUT_FACTOR_ENV, "cast": float, "secret": False},
+    {"dotpath": "items.ignored_files", "env": IGNORED_FILES_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase.gold_project", "env": SHOWCASE_GOLD_PROJECT_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase.es_host", "env": SHOWCASE_ES_HOST_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase.es_index", "env": SHOWCASE_ES_INDEX_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase.es_page_search_index", "env": SHOWCASE_ES_PAGE_SEARCH_INDEX_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase.es_collection_index", "env": SHOWCASE_ES_COLLECTION_INDEX_ENV, "cast": str, "secret": False},
+    {"dotpath": "showcase.publish_tag", "env": SHOWCASE_PUBLISH_TAG_ENV, "cast": str, "secret": False},
     {"dotpath": "ocr.orientation_word_count_threshold", "env": OCR_ORIENTATION_WORD_COUNT_THRESHOLD_ENV, "cast": int, "secret": False},
     {"dotpath": "ocr.orientation_word_confidence_threshold", "env": OCR_ORIENTATION_WORD_CONFIDENCE_THRESHOLD_ENV, "cast": float, "secret": False},
     {"dotpath": "ocr.orientation_angle_threshold", "env": OCR_ORIENTATION_ANGLE_THRESHOLD_ENV, "cast": float, "secret": False},
@@ -334,8 +328,6 @@ SETTINGS = [
     {"dotpath": "showcase_db.database", "env": SHOWCASE_PG_DATABASE_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase_db.user", "env": SHOWCASE_PG_USER_ENV, "cast": str, "secret": False},
     {"dotpath": "showcase_db.password", "env": SHOWCASE_PG_PASSWORD_ENV, "cast": str, "secret": True},
-    {"dotpath": "showcase_db.init_dir", "env": SHOWCASE_PG_INIT_DIR_ENV, "cast": str, "secret": False},
-    {"dotpath": "showcase_cask.init_dir", "env": SHOWCASE_CASK_INIT_DIR_ENV, "cast": str, "secret": False},
     {"dotpath": "preservica.tenant", "env": PRESERVICA_TENANT_ENV, "cast": str, "secret": False},
     {"dotpath": "preservica.username", "env": PRESERVICA_USERNAME_ENV, "cast": str, "secret": False},
     {"dotpath": "preservica.password", "env": PRESERVICA_PASSWORD_ENV, "cast": str, "secret": True},
@@ -346,6 +338,7 @@ SETTINGS = [
     {"dotpath": "preservica.token_refresh_buffer_s", "env": PRESERVICA_TOKEN_REFRESH_BUFFER_S_ENV, "cast": float, "secret": False},
     {"dotpath": "preservica.max_retries", "env": PRESERVICA_MAX_RETRIES_ENV, "cast": int, "secret": False},
     {"dotpath": "preservica.retry_backoff_s", "env": PRESERVICA_RETRY_BACKOFF_S_ENV, "cast": float, "secret": False},
+    {"dotpath": "preservica.discovery_tags", "env": PRESERVICA_DISCOVERY_TAGS_ENV, "cast": str, "secret": False},
 ]
 _SETTINGS_BY_DOTPATH = {setting["dotpath"]: setting for setting in SETTINGS}
 
@@ -488,7 +481,6 @@ CONFIG = {
         "api_url": _env(SAMWISE_API_URL_ENV, "http://samwise.library.ucdavis.edu/api"),
         "api_key_env": SAMWISE_API_KEY_ENV,
         "llm_model": _env(SAMWISE_LLM_MODEL_ENV, "qwen3.8-fp8-fast:27b"),
-        "embed_model": _env(SAMWISE_EMBED_MODEL_ENV, "qwen3-embed:4b"),
         # Proven values from the standalone digitization toolkit's vllm_client.py.
         "connect_timeout_s": _env(SAMWISE_CONNECT_TIMEOUT_S_ENV, 15.0, float),
         "read_timeout_s": _env(SAMWISE_READ_TIMEOUT_S_ENV, 180.0, float),
@@ -524,17 +516,6 @@ CONFIG = {
     },
     "fs": {
         "chunk_size": _env(FS_CHUNK_SIZE_ENV, 65536, int),
-    },
-    "search": {
-        "space": _env(SEARCH_SPACE_ENV, "arda"),
-        "top_k": _env(SEARCH_TOP_K_ENV, 10, int),
-        # Chunk size/buffer are in characters. 1000/200 (20% buffer) are common RAG
-        # chunking defaults (e.g. LangChain's RecursiveCharacterTextSplitter default).
-        "chunk_size": _env(SEARCH_CHUNK_SIZE_ENV, 1000, int),
-        "chunk_buffer": _env(SEARCH_CHUNK_BUFFER_ENV, 200, int),
-        # Distinct from samwise.embed_model (ad hoc `digtk ai embed` default) — RAG
-        # chunking favors the larger/more accurate embedding model.
-        "embed_model": _env(SEARCH_EMBED_MODEL_ENV, _env(SAMWISE_EMBED_MODEL_ENV, "qwen3-embed:4b")),
     },
     "pdf": {
         # target_pixel_width/default_density/raster_format match the reference
@@ -621,11 +602,17 @@ CONFIG = {
         "waveform_color": _env(AUDIO_WAVEFORM_COLOR_ENV, "0x3b82f6"),
         "timeout_s": _env(AUDIO_TIMEOUT_S_ENV, 600.0, float),
     },
+    "items": {
+        # Comma-separated, case-insensitive filename globs
+        "ignored_files": _env(IGNORED_FILES_ENV, ".DS_Store,Thumbs.db,desktop.ini,*.lnk,._*"),
+    },
     "captions": {
         "language": _env(CAPTIONS_LANGUAGE_ENV, "en"),
         "model": _env(CAPTIONS_MODEL_ENV, "small"),
         "whisper_bin": _env(CAPTIONS_WHISPER_BIN_ENV, "whisper"),
         "timeout_s": _env(CAPTIONS_TIMEOUT_S_ENV, 3600.0, float),
+        # Whisper timeout per second of media; timeout_s is the floor
+        "timeout_factor": _env(CAPTIONS_TIMEOUT_FACTOR_ENV, 3.0, float),
     },
     "showcase": {
         "gold_project": _env(SHOWCASE_GOLD_PROJECT_ENV, "digital-dev"),
@@ -643,6 +630,11 @@ CONFIG = {
         "es_page_search_index": _env(SHOWCASE_ES_PAGE_SEARCH_INDEX_ENV, "page-search-write"),
         # The website's collection index. Same "-write" alias convention.
         "es_collection_index": _env(SHOWCASE_ES_COLLECTION_INDEX_ENV, "collection-write"),
+        # Workflow tag (from a collection's 'argonath' Preservica identifier) that
+        # sends it to this showcase deployment, e.g. 'public-showcase-dev'. Only
+        # tagged collections get gold/showcase work from the cask-audit sensor.
+        # Empty (default) means no gate: every registered collection is processed.
+        "publish_tag": _env(SHOWCASE_PUBLISH_TAG_ENV, ""),
     },
     "postgres": {
         # argonath's own app-level schema (collection registry, etc.) — the shared
@@ -690,6 +682,11 @@ CONFIG = {
         # PreservicaClient.request() retries transient failures with backoff.
         "max_retries": _env(PRESERVICA_MAX_RETRIES_ENV, 4, int),
         "retry_backoff_s": _env(PRESERVICA_RETRY_BACKOFF_S_ENV, 1.0, float),
+        # Comma-separated workflow tags this deployment auto-registers new
+        # Preservica folders for, e.g. 'public-showcase-dev'. Matched against the
+        # folder's own 'argonath' tags (not the implied 'sync'). Empty (default)
+        # means any 'argonath'-labeled folder is auto-registered.
+        "discovery_tags": _env(PRESERVICA_DISCOVERY_TAGS_ENV, ""),
     },
     "reporting": {
         # host/port default to a local-dev port-forward target (e.g.
@@ -718,12 +715,6 @@ CONFIG = {
         "database": _env(SHOWCASE_PG_DATABASE_ENV, "dcf"),
         "user": _env(SHOWCASE_PG_USER_ENV, "postgres"),
         "password_env": SHOWCASE_PG_PASSWORD_ENV,
-        # dc-showcase's init sql, mounted from its repo
-        "init_dir": _env(SHOWCASE_PG_INIT_DIR_ENV, "/opt/dc-showcase/init/postgres"),
-    },
-    "showcase_cask": {
-        # dc-showcase's gold seed files, mounted from its repo
-        "init_dir": _env(SHOWCASE_CASK_INIT_DIR_ENV, "/opt/dc-showcase/init/caskfs"),
     },
 }
 
@@ -843,6 +834,11 @@ SkipExistingOption = Annotated[bool, typer.Option(
     help="Skip work whose outputs already exist (resume an interrupted run).",
 )]
 
+ForceOption = Annotated[bool, typer.Option(
+    "--force",
+    help="Regenerate derivatives that already exist (default: skip them).",
+)]
+
 VideoResolutionsOption = Annotated[str, typer.Option(
     "--resolutions", envvar=VIDEO_RESOLUTIONS_ENV,
     help=f"Comma-separated HLS resolution rungs (e.g. 360p,720p). Env: {VIDEO_RESOLUTIONS_ENV}.",
@@ -882,30 +878,6 @@ ShowcaseGoldProjectOption = Annotated[str, typer.Option(
     "--project", envvar=SHOWCASE_GOLD_PROJECT_ENV,
     help=f"Gold 'app' segment to promote this item's record under (e.g. digital-dev, "
          f"digital-prod). Env: {SHOWCASE_GOLD_PROJECT_ENV}.",
-)]
-
-SearchSpaceOption = Annotated[str, typer.Option(
-    "--space", envvar=SEARCH_SPACE_ENV, help=f"App space to search. Env: {SEARCH_SPACE_ENV}.",
-)]
-
-SearchTopKOption = Annotated[int, typer.Option(
-    "--top-k", envvar=SEARCH_TOP_K_ENV,
-    help=f"Number of results to return. Env: {SEARCH_TOP_K_ENV}.",
-)]
-
-SearchChunkSizeOption = Annotated[int, typer.Option(
-    "--chunk-size", envvar=SEARCH_CHUNK_SIZE_ENV,
-    help=f"Characters per chunk. Env: {SEARCH_CHUNK_SIZE_ENV}.",
-)]
-
-SearchChunkBufferOption = Annotated[int, typer.Option(
-    "--chunk-buffer", envvar=SEARCH_CHUNK_BUFFER_ENV,
-    help=f"Context characters added before/after each chunk. Env: {SEARCH_CHUNK_BUFFER_ENV}.",
-)]
-
-SearchEmbedModelOption = Annotated[str | None, typer.Option(
-    "--model", envvar=SEARCH_EMBED_MODEL_ENV,
-    help=f"Embedding model to chunk with. Env: {SEARCH_EMBED_MODEL_ENV}.",
 )]
 
 # Positional target for every root-level tool command (see

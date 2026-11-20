@@ -85,4 +85,4 @@ def test_build_requires_a_collection_ark(bronze, writes):
 
 def test_record_path_is_under_the_gold_collection():
     path = collection_record.record_path("c", {"project": "digital-dev"})
-    assert path == "cask:/gold/digital-dev/c/collection.jsonld.json"
+    assert path == "cask:/gold/digital-dev/collections/c/collection.jsonld.json"

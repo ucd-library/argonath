@@ -1,6 +1,7 @@
 """
 Showcase index jobs: a bulk collection reindex, the audit sensor's
-non-processing changes, a collection delete and an item delete. Each op
+non-processing changes, a collection delete, a collection unpublish and an
+item delete. Each op
 shells out to digtk through lib.utils.exec().
 """
 import json
@@ -9,24 +10,34 @@ from dagster import (
     AssetMaterialization, DynamicOut, DynamicOutput, In, MetadataValue, OpExecutionContext, Out, Output, job, op,
 )
 
-from lib.configs import CaskChangesConfig, DeleteItemIndexConfig, ReindexCollectionConfig, collections_partitions
+from lib.configs import (
+    CaskChangesConfig, DeleteItemIndexConfig, ReindexCollectionConfig, UnpublishCollectionConfig, collections_partitions,
+)
+from lib import collection_registry
 from lib.fanout_batching import emit, log_batch, relative_id, step_key
 from lib.pipeline_collection import pdc_index_collection
-from lib.pipeline_fanout import fetch_items_for_collection
 from lib.utils import celery_job_executor, default_run_config, exec
 
 
 @op(out={"batches": DynamicOut(dict, is_required=False), "settings": Out(dict)})
 def fan_out_reindex_tasks(context: OpExecutionContext, config: ReindexCollectionConfig):
     """Split the partition's gold item records (bronze item folders with
-    rebuild) into batches of config.batch_size, one bulk request each.
+    rebuild) into batches of config.batch_size, one bulk request each. With
+    rebuild, items with no silver derivatives are queued for
+    gold_dcs_process_item instead, and the rollup refreshes the collection
+    doc once they finish.
 
     :param context: Dagster op execution context; partitioned by collection.
     :param config: ReindexCollectionConfig.
     """
     key = context.partition_key
     if config.rebuild:
-        folders = fetch_items_for_collection(key)
+        silver = exec(["digtk", "showcase", "es", "missing-silver", key])
+        missing = set(silver["missing"])
+        folders = [f for f in silver["items"] if f not in missing]
+        if missing:
+            queued = collection_registry.enqueue_items(sorted(missing), {"trigger": "publish"})["enqueued"]
+            context.log.info(f"{key}: {len(missing)} item(s) missing silver derivatives, {queued} queued for item runs")
     else:
         folders = exec(["digtk", "showcase", "es", "gold-items", key])["items"]
     size = max(config.batch_size, 1)
@@ -161,10 +172,10 @@ def check_reindex_failures(summary: dict):
     executor_def=celery_job_executor(),
     config=default_run_config({"fan_out_reindex_tasks": ReindexCollectionConfig}),
 )
-def showcase_reindex_collection_job():
-    """Bulk-reindex a collection's items into the showcase ES index without
-    making derivatives, prune orphans, then refresh the collection document
-    the same way showcase_collection_rollup_job does.
+def gold_dcs_reindex_collection():
+    """Reindex a collection and its items into the showcase elastic indexes.
+    If you need to rebuild derivatives, use `gold_dcs_process_collection` instead, which 
+    also reindexes the items and collection.
     """
     batches, settings = fan_out_reindex_tasks()
     results = batches.map(reindex_batch).collect()
@@ -198,7 +209,7 @@ def _log_changes(context, key, config):
 @op(out=Out(dict))
 def plan_cask_changes(context: OpExecutionContext, config: CaskChangesConfig) -> dict:
     """Log the collection's reindex, delete and cleanup changes.
-    Items to process run as showcase_process_item_job instead.
+    Items to process run as gold_dcs_process_item instead.
 
     :param context: Dagster op execution context; partitioned by collection.
     :param config: CaskChangesConfig.
@@ -308,10 +319,11 @@ def clean_cask_removed(context: OpExecutionContext, summary: dict, settings: dic
     executor_def=celery_job_executor(),
     config=default_run_config({"plan_cask_changes": CaskChangesConfig}),
 )
-def showcase_apply_cask_changes_job():
-    """Apply bronze_cask_audit_sensor's non-processing changes for one collection.
-    Reindexes metadata edits, deletes removed items from ES and silver/gold,
-    then refreshes the collection doc.
+def gold_dcs_apply_cask_changes():
+    """
+    Called by the `bronze_collection_cask_audit` sensor for each collection.
+    Reindexes metadata, deletes removed items from elastic and silver/gold cask,
+    and refreshes the collection elastic document.
     """
     settings = plan_cask_changes()
     summary = index_cask_items(settings)
@@ -319,12 +331,14 @@ def showcase_apply_cask_changes_job():
     check_reindex_failures(pdc_index_collection(summary))
 
 
-@op
-def delete_collection_index(context: OpExecutionContext):
+@op(out=Out(dict))
+def delete_collection_index(context: OpExecutionContext) -> dict:
     """Delete the partition's collection, items and pages from ES
     (`digtk showcase es delete-collection`).
 
     :param context: Dagster op execution context; partitioned by collection.
+    :returns: The delete's counts.
+    :rtype: dict
     """
     key = context.partition_key
     result = exec(["digtk", "showcase", "es", "delete-collection", key])
@@ -334,14 +348,57 @@ def delete_collection_index(context: OpExecutionContext):
     )
     if result.get("errors"):
         raise RuntimeError(f"{len(result['errors'])} document(s) failed to delete: {result['errors']}")
+    return result
+
+
+@op
+def remove_collection_gold(context: OpExecutionContext, deleted: dict, config: UnpublishCollectionConfig):
+    """Delete the partition's gold folder for this deployment's project, and
+    with purge_silver its silver website derivatives (`digtk showcase
+    unpublish-collection`). Runs after the ES delete, which reads the gold
+    collection record.
+
+    :param context: Dagster op execution context; partitioned by collection.
+    :param dict deleted: delete_collection_index's counts (orders this op after it).
+    :param config: UnpublishCollectionConfig.
+    :raises RuntimeError: If silver was asked for but kept (another project has the collection).
+    """
+    key = context.partition_key
+    cmd = ["digtk", "showcase", "unpublish-collection", key]
+    if config.purge_silver:
+        cmd.append("--purge-silver")
+    result = exec(cmd)
+    context.log.info(f"{key}: removed {result.get('path')} ({result.get('files', 0)} file(s))")
+    silver = result.get("silver")
+    if not silver:
+        return
+    if silver.get("skipped"):
+        raise RuntimeError(f"{key}: gold removed, but silver kept: {silver['skipped']}")
+    context.log.info(
+        f"{key}: removed {len(silver['removed'])} silver folder(s) ({silver['files']} file(s)), "
+        f"pruned {len(silver.get('pruned', []))} empty folder(s)"
+    )
 
 
 @job(partitions_def=collections_partitions, tags={"argonath/kind": "collection-delete"})
-def showcase_delete_collection_index_job():
-    """Remove a collection and everything in it from the showcase ES indexes.
-    Cask and Postgres are left alone.
+def gold_dcs_delete_collection_index():
+    """Remove a collection and everything in it from the showcase elastic indexes.
+    Cask and Postgres are left alone. If you want to remove the silver/gold cask folders, use `gold_dcs_unpublish_collection` instead.
     """
     delete_collection_index()
+
+
+@job(
+    partitions_def=collections_partitions,
+    tags={"argonath/kind": "collection-unpublish"},
+    config=default_run_config({"remove_collection_gold": UnpublishCollectionConfig}),
+)
+def gold_dcs_unpublish_collection():
+    """Delete a collection from showcase elastic indexes and remove its gold folder. With purge_silver,
+    also delete its silver website derivatives and any silver folders left empty. Bronze is left alone,
+    and the collection can be reprocessed later, retaining its visibility settings from Postgres.
+    """
+    remove_collection_gold(delete_collection_index())
 
 
 @op
@@ -382,8 +439,8 @@ def refresh_collection_index(context: OpExecutionContext, collection_key: str):
     tags={"argonath/kind": "item-delete"},
     config=default_run_config({"delete_item_index": DeleteItemIndexConfig}),
 )
-def showcase_delete_item_index_job():
-    """Remove one item from the showcase ES indexes and refresh its collection
-    doc. The item returns on the next reindex if it's still in bronze.
+def gold_dcs_delete_item_index():
+    """Remove an item from the showcase elastic indexes and refresh its collection
+    doc. The item returns on the next reindex if it's still in bronze cask.
     """
     refresh_collection_index(delete_item_index())

@@ -6,7 +6,7 @@
 /
 ├── bronze/         # Raw, immutable, append-only captures
 ├── silver/         # Derived products: final derivatives (thumbnails, tiles, HLS,
-│                   # captions) plus intermediate work product (OCR, AI metadata, RAG)
+│                   # captions) plus intermediate work product (OCR, AI metadata)
 ├── gold/           # Access-controlled preservation/download products
 └── workspace/      # Per-user staging (formerly user/)
     └── [username]/
@@ -69,6 +69,26 @@ manifest to find:
 - **removed** ARKs — no longer present in the batch — delete downstream (see below)
 - **changed** ARKs — same ARK, different content hash — reprocess
 
+### Ignored Files
+
+Bronze keeps whatever the source delivered, but every pipeline skips OS clutter
+in an item: it's never treated as a binary (no derivatives, no item record, no
+"unrecognized media extension" failure), and the `bronze_collection_cask_audit`
+sensor ignores it appearing or disappearing, so no item is reprocessed.
+
+The list is `items.ignored_files`: comma-separated, case-insensitive filename
+globs matched against the file's basename (see `digtk.lib.items.is_ignored_file()`).
+Default:
+
+```
+.DS_Store,Thumbs.db,desktop.ini,*.lnk,._*
+```
+
+To change it, set `DIGTK_IGNORED_FILES` (in the compose `.env` or kustomize
+`app.env`) or run `digtk config set items.ignored_files "<list>"`. The new value
+**replaces** the default list, so include the defaults you still want, e.g.
+`.DS_Store,Thumbs.db,desktop.ini,*.lnk,._*,*.tmp`.
+
 ## Silver Layout
 
 Mirrors the bronze path exactly (`[group]/[collection]/[time]/[item]/`) but holds only
@@ -97,13 +117,10 @@ silver/[group]/[collection]/[time]/[item]/
 │   └── ocr-result.json
 ├── accessibility/              # digtk accessibility alt-text / tag-pdf
 ├── split-spreads/              # digtk split-spreads detect / apply
-├── metadata/
-│   ├── manifest.json
-│   ├── ai-metadata.jsonld.json    # AI-generated draft
-│   └── human-metadata.jsonld.json # Human input (partial — only touched fields)
-└── rag/
+└── metadata/
     ├── manifest.json
-    └── chunks.json                # text chunks + embedding IDs
+    ├── ai-metadata.jsonld.json    # AI-generated draft
+    └── human-metadata.jsonld.json # Human input (partial — only touched fields)
 ```
 
 Silver holds two kinds of output side by side:
@@ -118,7 +135,7 @@ Silver holds two kinds of output side by side:
   `/cask/api/fs/<path>` prefix (e.g. `/cask/api/fs/silver/preservica/haeger/latest/tree/<item>/public-frontend-derivatives/...`).
   Whether the public can see them is decided per collection/item, not per
   environment, so a public item is equally visible from dev and prod.
-- **Intermediate work product** — `ocr/`, `text/`, `metadata/`, `rag/`, and the other
+- **Intermediate work product** — `ocr/`, `text/`, `metadata/`, and the other
   tool outputs: inputs to later steps (OCR text feeds the AI-metadata step) rather
   than something the webapp renders directly.
 
@@ -129,13 +146,13 @@ Every source image gets its own nested directory under silver's
 `public-frontend-derivatives/images/`, named after its own bronze filename — this
 holds regardless of whether the item has one source image or several, so there's no
 filename-prefixing scheme to disambiguate a multi-image item; each source's
-small/medium/large set and manifest just live in their own directory instead. `ocr/`,
-`metadata/`, and `rag/` are unaffected by this and remain flat, shared silver
+small/medium/large set and manifest just live in their own directory instead. `ocr/`
+and `metadata/` are unaffected by this and remain flat, shared silver
 directories.
 
 ### Scan Orientation
 
-`digtk showcase image derivatives` (the command `showcase_derivatives_job` runs) decides an item's
+`digtk showcase image derivatives` (the command `gold_dcs_process_item` runs per image file) decides an item's
 scan orientation once, using a real OCR comparison rather than a fixed rule: it
 generates both a deskewed and non-deskewed OCR-prep candidate, runs Tesseract
 against each, and keeps whichever has both a higher word count and a higher (or
@@ -511,17 +528,38 @@ the consuming app/environment (`[app]`, e.g. `digital-dev`, `digital-prod` — m
 environment's records are promoted independently.
 
 ```
-gold/[app]/[collection]/
+gold/[app]/
+├── collections/             # pipeline-written collection imports
+│   └── [collection]/        # see below
+├── static-assets/           # app-owned site config, seeded by dc-showcase
+│   ├── hero-banner.json     # (services/client/bin/init-cask.js)
+│   ├── hero-banner/
+│   ├── browse-by.json
+│   └── browse-by/
+└── edits/                   # app-owned admin edits
+    ├── featured-collections.json
+    └── collections/
+        └── [collection]/
+            └── featured-image.jpg       # set from dc-showcase's collection page
+
+gold/[app]/collections/[collection]/
 ├── collection.jsonld.json   # domain: the collection's canonical record (no hasPart)
 └── [item]/
     └── ...                  # see below
 
-gold/[app]/[collection]/[item]/
-├── manifest.json        # structural: which bronze/silver snapshot this was promoted from
+gold/[app]/collections/[collection]/[item]/
+├── manifest.json        # structural: which bronze snapshot this was promoted from
 ├── item.jsonld.json     # domain: the item's canonical record — DC fields + associatedMedia
-└── ...                  # preservation/download products (layout set by the
-                         # "land preservation/download products" follow-up work)
+├── Preservation/        # preservation/download products: every bronze binary,
+│   └── page_001.tif     # at the same path it has under the bronze item folder
+└── Access/
+    └── page_001.jpg
 ```
+
+Every bronze binary of the item is promoted next to its record, keeping its
+path under the bronze item folder (for Preservica, the `Access/`/`Preservation/`
+representation folders). Sidecars and Preservica JSON files are not promoted.
+These gold copies are what the website offers as downloads.
 
 `item.jsonld.json` is written only here, only by `digtk showcase build-item`
 (`digtk.models.digital_website.item_record`, Dagster's `pdc_generate_item_record`
@@ -532,7 +570,8 @@ descriptive fields from the item's bronze `<binary>.jsonld.json` sidecar, or map
 from the bronze folder's `metadata.json` Dublin Core (see `digtk.lib.dc_mapping`);
 identifiers from `identifiers.json`, the Preservica entity ref and the record's own
 gold path; `isPartOf` its collection's ark; and one bare `{@id, contentUrl}` node
-per bronze preservation master (an ImageList for a multi-image item). Silver's
+per preservation master, pointing at its gold copy (an ImageList for a
+multi-image item). Silver's
 renditions/streams are not carried in the record — the search index
 (`digtk.lib.showcase_index`) reads those from silver directly. Its `manifest.json`
 records the bronze folder it was built from (`"bronze"`), which is how
@@ -541,22 +580,22 @@ location (preferring the configured `[app]` when several hold a record).
 
 `collection.jsonld.json` is written only by `digtk showcase build-collection`
 (`digtk.models.digital_website.collection_record`, run by Dagster's
-`showcase_collection_rollup_job`). It is built from the bronze collection root's
+`gold_dcs_collection_rollup`). It is built from the bronze collection root's
 `tree/metadata.json` (Dublin Core, falling back to the Preservica title/description)
 and `tree/identifiers.json` (the collection ark plus any call number). Its root node's
 `@id` is the same `https://digital.ucdavis.edu/collection/<ark>` URI items point at via
 `isPartOf`. The link is one way: the collection record has no `hasPart` back to items.
 `digtk showcase es upsert-collection` indexes it into the showcase collection index.
 
-`[collection]` mirrors bronze and silver, minus the time segment. As everywhere
-else, gold entries reference the underlying blobs via `cask://` (CaskFS is
-content-addressed), so a preservation master "in" gold is the same blob as its bronze
-original, not a copy.
+`[collection]` mirrors bronze and silver, minus the time segment. CaskFS is
+content-addressed, and promotion uses its server-side copy (`digtk.lib.fs.copy()`),
+so a preservation master in gold is the same blob as its bronze original, not a
+second copy on disk.
 
 **Dev vs. prod.** Silver is shared: derivatives live once in silver and both
 environments render the same files, and a publicly accessible collection/item is
 equally visible from dev and prod. Gold is per environment: each `[app]` holds its
-own promoted item records.
+own promoted item records and download binaries.
 
 ### How content arrives
 
@@ -567,13 +606,15 @@ Content reaches silver and gold by one of two paths, depending on the content ty
   silver — these are final derivative products with no review gate.
   `manifest.json` in each process directory records the run/command that produced
   it (see "manifest.json" below).
-- **Built → gold.** The item record (`item.jsonld.json`, see above) is built from
-  bronze once the derivative steps are done.
-- **Promoted → gold.** Preservation/download products are promoted into gold from a
-  specific bronze/silver group/time snapshot (gold promotion ops are not implemented
-  yet). Because gold has no time dimension, its `manifest.json` is the only durable
-  record of which snapshot a given entry was promoted from — promotion, not
-  reprocessing, is what updates a gold entry.
+- **Built and promoted → gold.** Once the derivative steps are done,
+  `digtk showcase build-item` promotes the item's bronze binaries into gold (see
+  above) and builds the item record (`item.jsonld.json`) pointing at them. Because
+  gold has no time dimension, its `manifest.json` is the only durable record of
+  which bronze snapshot a given entry was promoted from. `argonath publish` re-runs this
+  for a whole collection, and `argonath unpublish` deletes the collection's
+  `gold/[app]/collections/[collection]/` folder (including its `collection.jsonld.json`;
+  the featured image under `edits/` stays) and its ES documents; `--purge-silver` also deletes
+  its silver website derivatives, unless another `[app]` still has the collection.
 
 ## Workspace Layout
 
@@ -593,10 +634,7 @@ workspace/[username]/[folder]/
 ```
 
 No time dimension and no sidecars. Outputs follow "Root-Level Tool Outputs" above.
-Once an item is ingested to bronze under an ARK, `digtk workspace promote <item-dir>
---ark <ark>` copies its outputs into the ARK's silver location unchanged (no
-OCR/vision re-run), re-pointing lineage at the same-named bronze binaries. Workspace
-folders are what Dagster's `workspace` partitions list (`workspace/[username]/[folder]`).
+Workspace folders are what Dagster's `workspace` partitions list (`workspace/[username]/[folder]`).
 A workspace folder isn't necessarily a collection: it can be part of one, or span several.
 
 ## Multi-Part Items
@@ -614,7 +652,7 @@ bronze item's pages are `public-frontend-derivatives/<pdf-filename>/images/<n>`/
 `ocr/page-NNN` subdirectories under one ARK, with no per-page ARK and no `parts/` —
 a lighter-weight model for pages that don't need independent identity. Use this
 `parts/` convention instead when individual pages/parts genuinely need their own
-ARK (independently citable, searchable, or RAG-indexable).
+ARK (independently citable or searchable).
 
 ## Structural vs. Domain Metadata
 
@@ -625,8 +663,8 @@ kinds of file, never merged into one:
 |---|---|---|
 | `manifest.json` | Structural/system: CaskFS layout facts, pipeline run records, item lists + hashes, promotion status | schema.org / descriptive fields |
 | `metadata.jsonld.json` / `<item>.jsonld.json` | Domain: schema.org descriptive metadata about the collection or item | Pipeline state, run history, promotion status |
-| `gold/[app]/[collection]/collection.jsonld.json` | Domain: the collection's canonical record — one collection node (descriptive fields, identifiers), no `hasPart` | Pipeline state, run history, item lists |
-| `gold/[app]/[collection]/[item]/item.jsonld.json` | Domain: the item's canonical record — an `@graph` of the item node (descriptive fields, identifiers, `isPartOf`) and one node per bronze preservation master (referenced via `cask://` rather than copied — see "Gold Layout" above) | Pipeline state, run history, promotion status |
+| `gold/[app]/collections/[collection]/collection.jsonld.json` | Domain: the collection's canonical record — one collection node (descriptive fields, identifiers), no `hasPart` | Pipeline state, run history, item lists |
+| `gold/[app]/collections/[collection]/[item]/item.jsonld.json` | Domain: the item's canonical record — an `@graph` of the item node (descriptive fields, identifiers, `isPartOf`) and one node per preservation master (referencing its gold copy via `cask://` — see "Gold Layout" above) | Pipeline state, run history, promotion status |
 
 This is a deliberate reaction against LDP's convention of mixing container/structural
 triples with a resource's own descriptive triples in one graph — CaskFS keeps them as

@@ -5,7 +5,7 @@ Builds on digtk.lib.showcase_index.
 """
 import json
 
-from digtk.lib import fs, items, showcase_index, utils
+from digtk.lib import derivative, fs, items, showcase_index, utils
 from digtk.models import collection as collection_model
 from digtk.models.digital_website import collection_record, item_record
 
@@ -98,8 +98,182 @@ def gold_item_folders(key, opts={}):
             if entry.kind == "directory":
                 walk(f"cask:{entry.path}")
 
-    walk(f"cask:/gold/{item_record._project(opts)}/{name}")
+    walk("cask:" + derivative.gold_collection_dir(app=item_record._project(opts), collection=name))
     return sorted(folders)
+
+
+def remove_collection_gold(key, opts={}):
+    """Deletes a collection's gold folder for one project: its collection
+    record, item records and promoted binaries. The featured image under
+    edits/, bronze, silver, ES and Postgres are left alone.
+
+    :param str key: Collection key, [bronze/]<group>/<collection>.
+    :param dict opts: 'project' (see item_record._project()), 'dry_run' (bool — report only).
+    :returns: {"collection": key, "path", "files": int, "removed": bool, "dryRun": bool}.
+    :rtype: dict
+    """
+    _, name = collection_record.parse_key(key)
+    dry_run = bool(opts.get("dry_run"))
+    verb = "would remove" if dry_run else "removed"
+    path = "cask:" + derivative.gold_collection_dir(app=item_record._project(opts), collection=name)
+    result = {"collection": key, "path": path, "files": 0, "removed": False, "dryRun": dry_run}
+
+    if not fs.exists(path):
+        utils.log(f"{key}: no gold folder at {path}")
+        return result
+    count = _count_files(path)
+    result["files"] = count
+    if not dry_run:
+        fs.delete(path, opts={"directory": True})
+        result["removed"] = True
+    utils.log(f"{key}: {verb} {path} ({count} file(s))")
+    return result
+
+
+# Website derivative folders under a silver item.
+SILVER_WEBSITE_DIRS = ("public-frontend-derivatives", "captions", "ocr")
+
+
+def other_gold_projects(key, opts={}):
+    """Gold projects other than this one that still hold the collection.
+
+    :param str key: Collection key, [bronze/]<group>/<collection>.
+    :param dict opts: 'project' (see item_record._project()).
+    :returns: Project names, sorted.
+    :rtype: list[str]
+    """
+    _, name = collection_record.parse_key(key)
+    current = item_record._project(opts)
+    try:
+        projects = [e.name for e in fs.ls("cask:/gold") if e.kind == "directory"]
+    except FileNotFoundError:
+        return []
+    return sorted(
+        p for p in projects
+        if p != current and fs.exists("cask:" + derivative.gold_collection_dir(app=p, collection=name))
+    )
+
+
+def _website_dirs(path):
+    """SILVER_WEBSITE_DIRS folders anywhere under a silver item folder.
+
+    :param str path: fs-compatible silver item folder.
+    :returns: fs-compatible folder paths.
+    :rtype: list[str]
+    """
+    found = []
+    try:
+        entries = fs.ls(path)
+    except FileNotFoundError:
+        return found
+    for entry in entries:
+        if entry.kind != "directory":
+            continue
+        child = f"cask:{entry.path}"
+        if entry.name in SILVER_WEBSITE_DIRS:
+            found.append(child)
+        else:
+            found += _website_dirs(child)
+    return found
+
+
+def _empty_dirs(path):
+    """Whether a directory holds no files, and if not, its topmost
+    subfolders that hold none.
+
+    :param str path: fs-compatible directory path.
+    :returns: (empty, paths) — paths is [] when empty is True.
+    :rtype: tuple[bool, list[str]]
+    """
+    try:
+        entries = fs.ls(path)
+    except FileNotFoundError:
+        return True, []
+    empty, empty_children, nested = True, [], []
+    for entry in entries:
+        if entry.kind != "directory":
+            empty = False
+            continue
+        child = f"cask:{entry.path}"
+        child_empty, child_paths = _empty_dirs(child)
+        if child_empty:
+            empty_children.append(child)
+        else:
+            empty = False
+            nested += child_paths
+    if empty:
+        return True, []
+    return False, empty_children + nested
+
+
+def _prune_empty_dirs(path):
+    """Deletes every directory under path (and path itself) whose subtree
+    holds no files.
+
+    :param str path: fs-compatible directory path.
+    :returns: Deleted directory paths, topmost only.
+    :rtype: list[str]
+    """
+    if not fs.exists(path):
+        return []
+    empty, paths = _empty_dirs(path)
+    if empty:
+        paths = [path]
+    for p in paths:
+        fs.delete(p, opts={"directory": True})
+    return paths
+
+
+def remove_collection_silver(key, opts={}):
+    """Deletes the website derivatives (SILVER_WEBSITE_DIRS) of every item in
+    a collection's bronze, then any silver folders left with no files. Other
+    silver work is kept. Skipped while another gold project still has the collection.
+
+    :param str key: Collection key, [bronze/]<group>/<collection>.
+    :param dict opts: 'project' (see item_record._project()), 'dry_run' (bool — report only).
+    :returns: {"removed": [{"path", "files"}], "files": int, "pruned": [path], "skipped": str|None, "dryRun": bool}.
+    :rtype: dict
+    """
+    group, name = collection_record.parse_key(key)
+    result = {"removed": [], "files": 0, "pruned": [], "skipped": None, "dryRun": bool(opts.get("dry_run"))}
+    others = other_gold_projects(key, opts)
+    if others:
+        result["skipped"] = f"still published in {', '.join(others)}"
+        utils.warn(f"{key}: silver kept, {result['skipped']}")
+        return result
+
+    for folder in collection_model.list_item_folders(name, {"group": group}):
+        silver = item_output_dirs(folder)[0]
+        for path in _website_dirs(silver):
+            files = _count_files(path)
+            if not opts.get("dry_run"):
+                fs.delete(path, opts={"directory": True})
+            result["removed"].append({"path": path, "files": files})
+            result["files"] += files
+    if not opts.get("dry_run"):
+        result["pruned"] = _prune_empty_dirs(f"cask:/silver/{group}/{name}")
+    utils.log(
+        f"{key}: {'would remove' if opts.get('dry_run') else 'removed'} "
+        f"{len(result['removed'])} silver folder(s), {result['files']} file(s), "
+        f"pruned {len(result['pruned'])} empty folder(s)"
+    )
+    return result
+
+
+def missing_silver(key, opts={}):
+    """The collection's bronze item folders, and which of them have no silver
+    website derivatives (no public-frontend-derivatives/ folder), e.g. after
+    an unpublish with purge_silver or for items never processed.
+
+    :param str key: Collection key, [bronze/]<group>/<collection>.
+    :param dict opts: Unused, for a consistent signature.
+    :returns: {"items": [folder], "missing": [folder]}, both sorted.
+    :rtype: dict
+    """
+    group, name = collection_record.parse_key(key)
+    folders = collection_model.list_item_folders(name, {"group": group})
+    missing = [f for f in folders if not fs.exists(f"{item_output_dirs(f)[0]}/{SILVER_WEBSITE_DIRS[0]}")]
+    return {"items": sorted(folders), "missing": sorted(missing)}
 
 
 def reindex_items(folders, opts={}):
@@ -286,7 +460,7 @@ def item_output_dirs(folder):
     item folder.
 
     :param str folder: Bronze item folder, e.g. '/bronze/g/c/latest/tree/foo'.
-    :returns: CaskFS paths, e.g. ['cask:/silver/g/c/latest/tree/foo', 'cask:/gold/digital-dev/c/tree/foo'].
+    :returns: CaskFS paths, e.g. ['cask:/silver/g/c/latest/tree/foo', 'cask:/gold/digital-dev/collections/c/tree/foo'].
     :rtype: list[str]
     :raises ValueError: If the folder has no item path below its time segment.
     """
@@ -298,7 +472,7 @@ def item_output_dirs(folder):
         projects = [e.name for e in fs.ls("cask:/gold") if e.kind == "directory"]
     except FileNotFoundError:
         projects = []
-    dirs += [f"cask:/gold/{project}/{collection}/{item_path}" for project in sorted(projects)]
+    dirs += [f"cask:{derivative.gold_collection_dir(app=p, collection=collection)}/{item_path}" for p in sorted(projects)]
     return dirs
 
 

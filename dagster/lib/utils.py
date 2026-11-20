@@ -34,6 +34,70 @@ conn = psycopg2.connect(
 # Subprocess helper
 # ---------------------------------------------------------------------------
 
+class DigtkCommandError(subprocess.CalledProcessError):
+    """A failed digtk command, carrying digtk's own error message.
+
+    Still a CalledProcessError, so existing handlers keep working; str() now
+    ends with digtk's reason (e.g. 'whisper command timed out') instead of
+    only the exit status.
+
+    :param int returncode: The command's exit status.
+    :param list cmd: The command that ran.
+    :param str|None error: digtk's 'error' message, if its last line had one.
+    :param str output: The command's last output line.
+    """
+
+    def __init__(self, returncode, cmd, error=None, output=None):
+        super().__init__(returncode, cmd, output=output)
+        self.error = error
+
+    def __str__(self):
+        base = super().__str__()
+        return f"{base} {self.error}" if self.error else base
+
+
+def sensor_interval(default):
+    """A sensor's minimum interval, from ARGONATH_SENSOR_INTERVAL_SECONDS when set
+    (test stacks shorten it), else the sensor's own default.
+
+    :param int default: The sensor's normal interval in seconds.
+    :returns: Interval in seconds.
+    :rtype: int
+    """
+    raw = os.environ.get("ARGONATH_SENSOR_INTERVAL_SECONDS")
+    return int(raw) if raw else default
+
+
+def sensor_default_status():
+    """Sensor status on a fresh Dagster instance. Running when
+    ARGONATH_SENSORS_DEFAULT_RUNNING is true (test stacks), else stopped,
+    so production sensors stay off until switched on.
+
+    :returns: Dagster default sensor status.
+    :rtype: dg.DefaultSensorStatus
+    """
+    raw = os.environ.get("ARGONATH_SENSORS_DEFAULT_RUNNING", "")
+    if raw.strip().lower() in ("1", "true", "yes", "on"):
+        return dg.DefaultSensorStatus.RUNNING
+    return dg.DefaultSensorStatus.STOPPED
+
+
+def _digtk_error(last_line):
+    """Pull digtk's 'error' message out of its last output line.
+
+    :param str last_line: The command's last stdout line.
+    :returns: The error message, or None if the line isn't digtk error JSON.
+    :rtype: str|None
+    """
+    try:
+        data = json.loads(last_line)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if isinstance(data, dict) and data.get("error"):
+        return str(data["error"]).strip()
+    return None
+
+
 def exec(cmd, opts={}):
     """Run a digtk CLI command, stream output to stdout, and return the last line as JSON.
 
@@ -49,7 +113,8 @@ def exec(cmd, opts={}):
     :param dict opts: Options: check (bool, default True), no_json_parse (bool).
     :returns: Parsed JSON result dict, or the raw last line string if no_json_parse=True.
     :rtype: dict | str
-    :raises subprocess.CalledProcessError: If the command exits non-zero and check=True.
+    :raises DigtkCommandError: (a subprocess.CalledProcessError) If the command
+        exits non-zero and check=True; its message includes digtk's error.
     """
     check = opts.get("check", True)
     no_json_parse = opts.get("no_json_parse", False)
@@ -88,7 +153,7 @@ def exec(cmd, opts={}):
 
         rc = process.wait()
         if check and rc != 0:
-            raise subprocess.CalledProcessError(rc, cmd)
+            raise DigtkCommandError(rc, cmd, error=_digtk_error(last_line), output=last_line.strip())
 
         if no_json_parse:
             return last_line.strip()

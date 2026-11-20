@@ -181,6 +181,29 @@ def move(path, dest_path, opts={}):
     return _backend_for(ref).move(ref.path, dest_ref.path, opts)
 
 
+def copy(path, dest_path, opts={}):
+    """Copy a file, on either the local filesystem or CaskFS.
+
+    A CaskFS copy is server-side and references the source's hash, so nothing
+    is streamed or duplicated. CaskFS can also copy a whole directory.
+
+    :param str path: Source path. A 'cask:/' prefix routes to CaskFS.
+    :param str dest_path: Destination path — must resolve to the same backend as `path`.
+    :param dict opts: 'replace' (bool, default False — overwrite vs. fail if the
+        destination exists).
+    :returns: The CaskFS copy response if the destination is CaskFS, else None.
+    :rtype: dict|None
+    :raises ValueError: If `path` and `dest_path` resolve to different backends.
+    :raises FileNotFoundError: If `path` does not exist.
+    :raises FileExistsError: If `dest_path` exists and 'replace' isn't set.
+    """
+    ref = _paths.parse(path)
+    dest_ref = _paths.parse(dest_path)
+    if ref.is_cask != dest_ref.is_cask:
+        raise ValueError(f"copy() requires both paths on the same backend: {path!r} -> {dest_path!r}")
+    return _backend_for(ref).copy(ref.path, dest_ref.path, opts)
+
+
 def add_derivative_link(path, source_path, opts={}):
     """Record CaskFS derivative-link lineage: `path` was derived from `source_path`.
 

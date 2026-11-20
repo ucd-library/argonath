@@ -8,6 +8,7 @@ NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
 OLD = NOW - timedelta(minutes=10)
 FRESH = NOW - timedelta(minutes=1)
 KEY = "bronze/preservica/haeger"
+COLLECTION_ROOT = "cask:/bronze/preservica/haeger"
 TREE = "/bronze/preservica/haeger/latest/tree"
 
 
@@ -21,7 +22,7 @@ def _event(eid, path, created=OLD, operation="file.write", resource_type="file",
 @pytest.fixture
 def cask(monkeypatch):
     """Fake registry, audit log, CaskFS and gold records."""
-    state = {"events": [], "exists": set(), "gold": {}, "arks": set(), "reads": []}
+    state = {"events": [], "exists": {COLLECTION_ROOT}, "gold": {}, "arks": set(), "reads": []}
     monkeypatch.setattr(
         cask_changes.collection_model, "list_active_collections",
         lambda source_type=None, opts={}: [{"name": "haeger", "group_name": "preservica"}],
@@ -44,7 +45,7 @@ def cask(monkeypatch):
 
 
 def _gold_path(item_path):
-    return f"cask:/gold/digital-dev/haeger/{item_path}/item.jsonld.json"
+    return f"cask:/gold/digital-dev/collections/haeger/{item_path}/item.jsonld.json"
 
 
 def _changes(cursor={"after": 0, "done": {}}, **opts):
@@ -61,6 +62,15 @@ def test_target_for_maps_paths_to_items_and_collection_files():
     assert cask_changes.target_for(f"{TREE}/metadata.json", "file", roots) == {"kind": "collection", "key": KEY}
     assert cask_changes.target_for(f"{TREE}/stray.txt", "file", roots) is None
     assert cask_changes.target_for("/bronze/preservica/haeger/latest/by-ref/x/entity.json", "file", roots) is None
+
+
+def test_target_for_ignores_os_clutter_files():
+    roots = [{"key": KEY, "items_root": TREE, "collection_files": []}]
+
+    assert cask_changes.target_for(f"{TREE}/foo/Access/Thumbs.db", "file", roots) is None
+    assert cask_changes.target_for(f"{TREE}/foo/Access/.DS_Store", "file", roots) is None
+    assert cask_changes.target_for(f"{TREE}/foo/Access/foo.lnk", "file", roots) is None
+    assert cask_changes.target_for(f"{TREE}/foo/Access/page.tif", "file", roots)["folder"] == f"{TREE}/foo"
 
 
 def test_reads_with_items_root_and_collection_file_prefixes(cask):
@@ -151,6 +161,45 @@ def test_a_collection_file_edit_marks_the_collection(cask):
 
     assert result["collections"] == [KEY]
     assert result["process"] == []
+
+
+def test_a_deleted_collection_is_removed_not_cleaned_up(cask):
+    cask["events"] = [
+        _event(7, f"{TREE}/a/p1.tif", operation="file.delete"),
+        _event(8, f"{TREE}/b", operation="directory.delete", resource_type="directory"),
+    ]
+    cask["exists"].discard(COLLECTION_ROOT)
+    cask["gold"]["tree/a"] = "ark:/87293/a"
+
+    result = _changes()
+
+    assert result["removed"] == [KEY]
+    for name in ("process", "skipped", "collections"):
+        assert result[name] == []
+    for name in ("reindex", "delete", "cleanup"):
+        assert result[name] == {}
+    assert result["cursor"] == {"after": 8, "done": {}}
+
+
+def test_a_deleted_collection_file_edit_does_not_mark_the_collection(cask):
+    cask["events"] = [_event(3, f"{TREE}/metadata.json", operation="file.delete")]
+    cask["exists"].discard(COLLECTION_ROOT)
+
+    result = _changes()
+
+    assert result["collections"] == []
+    assert result["removed"] == [KEY]
+
+
+def test_a_removed_collection_is_reported_once(cask):
+    cask["events"] = [_event(7, f"{TREE}/a", operation="directory.delete", resource_type="directory")]
+    cask["exists"].discard(COLLECTION_ROOT)
+
+    first = _changes()
+    second = _changes(first["cursor"])
+
+    assert first["removed"] == [KEY]
+    assert second["removed"] == []
 
 
 def test_a_recent_item_is_deferred_and_holds_the_cursor(cask):

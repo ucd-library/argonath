@@ -28,7 +28,10 @@ from digtk.lib.config import CONFIG
 # their original names so every showcase orchestrator (and test) that already
 # reaches them as pipeline.X keeps working unchanged.
 from digtk.models.prep import (  # noqa: F401
+    ACCESS_DIR,
     FORMAT_BY_EXTENSION,
+    PRESERVATION_DIR,
+    drop_access_duplicates,
     output_name,
     page_tag,
     parse_widths,
@@ -82,41 +85,6 @@ def parse_sequence_number(filename):
     stem = os.path.splitext(filename)[0]
     match = _TRAILING_SEQUENCE_RE.search(stem)
     return int(match.group(1)) if match else None
-
-
-# Preservica tree/ items can hold the same page twice: an access copy (e.g.
-# Access/page_001.jpg) and its preservation master (Preservation/page_001.tif).
-# The showcase uses the master — see drop_access_duplicates().
-ACCESS_DIR = "Access"
-PRESERVATION_DIR = "Preservation"
-
-
-def drop_access_duplicates(bronze_binary_paths):
-    """Drop access copies that have a preservation master: a file in an item's
-    Access/ folder is left out when the same item's Preservation/ folder has a
-    file with the same name stem (page_001.jpg vs page_001.tif). Access files
-    without a master (e.g. a compiled PDF only supplied as an access copy) are
-    kept, as is everything outside those two folders.
-
-    :param list[str] bronze_binary_paths: CaskFS paths ('cask:/'-prefixed).
-    :returns: The paths to use, in original order.
-    :rtype: list[str]
-    """
-    masters = set()
-    for path in bronze_binary_paths:
-        parent, _, filename = path.rpartition("/")
-        item_dir, _, folder = parent.rpartition("/")
-        if folder == PRESERVATION_DIR:
-            masters.add((item_dir, os.path.splitext(filename)[0]))
-
-    kept = []
-    for path in bronze_binary_paths:
-        parent, _, filename = path.rpartition("/")
-        item_dir, _, folder = parent.rpartition("/")
-        if folder == ACCESS_DIR and (item_dir, os.path.splitext(filename)[0]) in masters:
-            continue
-        kept.append(path)
-    return kept
 
 
 def filter_binaries_by_format(bronze_binary_paths, media_types):
@@ -225,6 +193,9 @@ def publish(item, subdir, local_outputs, command, params, *, type="silver", type
         (and the manifest's) destination opts, merged with the link/manifest
         opts below.
     :param dict opts: 'manifest_opts' forwarded to utils.write_manifest (e.g. duration_s).
+        'kept_outputs' (list of (filename, source_bronze_path) pairs, optional) —
+        outputs already published in this directory and skipped this run (see
+        existing_outputs()); listed in the manifest but not rewritten.
         'manifest' (bool, default True) — set False to publish the files without
         writing the directory's manifest.json, for a directory several per-file
         runs share (e.g. an image item's combined ocr/ — see image.generate()'s
@@ -263,6 +234,11 @@ def publish(item, subdir, local_outputs, command, params, *, type="silver", type
         outputs.append(filename)
         if source_bronze_path not in source_files:
             source_files.append(source_bronze_path)
+    for filename, source_bronze_path in opts.get("kept_outputs", []):
+        if filename not in outputs:
+            outputs.append(filename)
+        if source_bronze_path not in source_files:
+            source_files.append(source_bronze_path)
 
     manifest = None
     if opts.get("manifest", True):
@@ -274,6 +250,112 @@ def publish(item, subdir, local_outputs, command, params, *, type="silver", type
         )
     dest_dir = derivative_dir(item, subdir, type=type, type_opts=type_opts)
     return {"dir": dest_dir, "outputs": outputs, "manifest": manifest}
+
+
+def existing_outputs(item, subdir, opts={}):
+    """What a derivative directory already holds, so a derivatives run can skip
+    outputs published by an earlier run. One listing per directory.
+
+    With opts['force'], or when the stored manifest's params differ from
+    opts['params'] (e.g. new thumbnail widths), the directory counts as empty
+    so everything in it is regenerated.
+
+    :param digtk.lib.items.ItemLocation item: Resolved item location.
+    :param str subdir: Same 'subdir' publish() would be called with.
+    :param dict opts: 'force' (bool), 'params' (dict — keys that must match
+        the stored manifest's params for its outputs to count).
+    :returns: {"dir": str, "files": set[str] (published filenames, excluding
+        manifest.json), "manifest": dict|None}
+    :rtype: dict
+    """
+    dest_dir = derivative_dir(item, subdir)
+    empty = {"dir": dest_dir, "files": set(), "manifest": None}
+    if opts.get("force"):
+        return empty
+    try:
+        names = {entry.name for entry in fs.ls(dest_dir) if entry.kind == "file"}
+    except FileNotFoundError:
+        return empty
+
+    manifest = None
+    if "manifest.json" in names:
+        manifest = json.loads(fs.read(f"{dest_dir}/manifest.json"))
+        names.discard("manifest.json")
+    wanted = opts.get("params") or {}
+    if wanted:
+        stored = (manifest or {}).get("params") or {}
+        if any(stored.get(key) != value for key, value in wanted.items()):
+            return empty
+    return {"dir": dest_dir, "files": names, "manifest": manifest}
+
+
+def derivative_set_status(images, ocr_files, names, opts={}):
+    """Which parts of one source's image derivative set (thumbnails, tiled TIFF,
+    OCR-prep, OCR text layer) an earlier run already published. An images/
+    output only counts when its manifest entry exists too, since its sizes
+    are reused instead of re-probed.
+
+    :param dict images: existing_outputs() for the source's images/ directory.
+    :param set[str] ocr_files: Filenames already published in its ocr/ directory.
+    :param dict names: 'prep' (candidate OCR-prep filenames), 'ocr_layer'
+        (the djvu and stats filenames).
+    :param dict opts: 'required_keys' (list[str]) — other images/ manifest
+        keys a complete set must have (e.g. "extractDensity").
+    :returns: {"images", "thumbnails", "tiled", "ocr_layer" (bool), "prep"
+        (published filename or None), "orientation" (stored decision or None),
+        "complete" (bool)}
+    :rtype: dict
+    """
+    manifest = images["manifest"] or {}
+    thumbnails = all(f"{label}.jpg" in images["files"] and label in manifest for label in THUMBNAIL_SIZE_LABELS)
+    tiled = "tiled.tif" in images["files"] and "tiled" in manifest
+    prep = next((fn for fn in names["prep"] if fn in ocr_files), None)
+    ocr_layer = set(names["ocr_layer"]) <= ocr_files
+    orientation = (manifest.get("params") or {}).get("orientation")
+    required = ["ocr", *opts.get("required_keys", [])]
+    complete = (
+        thumbnails and tiled and bool(prep) and ocr_layer and orientation is not None
+        and all(key in manifest for key in required)
+    )
+    return {
+        "images": images, "thumbnails": thumbnails, "tiled": tiled, "prep": prep,
+        "ocr_layer": ocr_layer, "orientation": orientation, "complete": complete,
+    }
+
+
+def reused_orientation(status):
+    """An earlier run's orientation decision, when this run doesn't need a
+    fresh OCR pass (only the OCR text layer needs one).
+
+    :param dict status: derivative_set_status()'s return.
+    :returns: {"deskew": bool, "stats": dict|None}, or None when orientation
+        must be decided again.
+    :rtype: dict|None
+    """
+    stored = status["orientation"]
+    if not status["ocr_layer"] or not (stored or status["prep"]):
+        return None
+    deskew = stored["deskew_selected"] if stored else status["prep"].endswith("prep-deskew.jpg")
+    return {"deskew": deskew, "stats": (stored or {}).get("stats")}
+
+
+def stored_size(entry):
+    """A stored manifest size entry ({"width": str, "height": str}) as ints.
+
+    :param dict entry: A manifest "small"/"medium"/"large" entry.
+    :returns: {"width": int, "height": int}
+    :rtype: dict
+    """
+    return {"width": int(entry["size"]["width"]), "height": int(entry["size"]["height"])}
+
+
+def log_skip(prefix, label):
+    """Log that a derivative step was skipped because its outputs already exist.
+
+    :param str prefix: Log prefix, e.g. "[1/1] doc page 2".
+    :param str label: What was skipped, e.g. "tiled pyramid TIFF".
+    """
+    utils.log(f"{prefix}: {label} already generated, skipping")
 
 
 def pdf_ocr_prefix(bronze_binary_paths, pdf_path):

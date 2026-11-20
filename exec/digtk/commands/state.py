@@ -1,10 +1,10 @@
 """
-digtk state — the collection_state processing-state store (see
-digtk.models.collection_state and exec/digtk/sql/collection_state.sql).
-Mostly called by Dagster (dagster/lib/collection_state.py), not by hand.
+digtk state — the collection_registry processing-state store (see
+digtk.models.collection_registry and exec/digtk/sql/collection_registry.sql).
+Mostly called by Dagster (dagster/lib/collection_registry.py), not by hand.
 
 Subcommands:
-  init-pg            — apply the collection_state Postgres schema. Safe to run repeatedly.
+  init-pg            — apply the collection_registry Postgres schema. Safe to run repeatedly.
   enqueue-collection — queue an item run for every item in a collection's bronze
                        tree/
   enqueue-items      — queue an item run for specific item folders
@@ -23,21 +23,21 @@ import psycopg2
 import typer
 
 from digtk.lib import utils
-from digtk.models import cask_changes, collection_state
+from digtk.models import cask_changes, collection_registry
 
-app = typer.Typer(help="collection_state queue and job results.", no_args_is_help=True)
+app = typer.Typer(help="collection_registry queue and job results.", no_args_is_help=True)
 
 _ERRORS = (LookupError, OSError, RuntimeError, ValueError, psycopg2.Error)
 
 
 @app.command("init-pg")
 def init_pg():
-    """Apply the collection_state schema (creates the 'collection_state' schema,
+    """Apply the collection_registry schema (creates the 'collection_registry' schema,
     its tables and upsert_job_result() if they don't already exist)."""
     try:
-        collection_state.init_pg()
-        utils.log("Applied the collection_state schema.")
-        utils.result({"status": "success", "schema": "collection_state"})
+        collection_registry.init_pg()
+        utils.log("Applied the collection_registry schema.")
+        utils.result({"status": "success", "schema": "collection_registry"})
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -50,11 +50,19 @@ def enqueue_collection(
     batch: Annotated[str | None, typer.Option(
         help="Batch id recorded on every queued row (e.g. the launching Dagster run id).",
     )] = None,
+    force: Annotated[bool, typer.Option(
+        "--force", help="Queued runs regenerate derivatives that already exist.",
+    )] = False,
 ):
-    """Queue a showcase_process_item_job run for every item in the collection's bronze
+    """Queue a gold_dcs_process_item run for every item in the collection's bronze
     tree/."""
     try:
-        result = collection_state.enqueue_collection(collection_key, {"batch": batch} if batch else {})
+        opts = {}
+        if batch:
+            opts["batch"] = batch
+        if force:
+            opts["force"] = True
+        result = collection_registry.enqueue_collection(collection_key, opts)
         utils.log(
             f"{result['collection']}: {result['items']} item(s) ({result['added']} new), "
             f"{result['enqueued']} queued"
@@ -70,10 +78,10 @@ def enqueue_items(
     trigger: Annotated[str, typer.Option(help="Recorded on each row and as a run tag.")] = "items",
     batch: Annotated[str | None, typer.Option(help="Batch id recorded on every queued row.")] = None,
 ):
-    """Queue a showcase_process_item_job run for each item folder."""
+    """Queue a gold_dcs_process_item run for each item folder."""
     try:
         opts = {"trigger": trigger, **({"batch": batch} if batch else {})}
-        result = collection_state.enqueue_items(items, opts)
+        result = collection_registry.enqueue_items(items, opts)
         utils.log(f"{result['enqueued']} item run(s) queued")
         utils.result({"status": "success", **result})
     except _ERRORS as e:
@@ -91,7 +99,7 @@ def cask_changes_cmd(
     try:
         if cursor is None:
             utils.result({"status": "success", "process": [], "reindex": {}, "delete": {}, "cleanup": {}, "collections": [],
-                          "skipped": [], "deferred": 0, "cursor": cask_changes.start_cursor()})
+                          "removed": [], "skipped": [], "deferred": 0, "cursor": cask_changes.start_cursor()})
         result = cask_changes.changes(json.loads(cursor), {"settle_seconds": settle_seconds, "limit": limit})
         reindex = sum(len(v) for v in result["reindex"].values())
         delete = sum(len(v) for v in result["delete"].values())
@@ -99,7 +107,8 @@ def cask_changes_cmd(
         utils.log(
             f"{len(result['process'])} to process, {reindex} to reindex, {delete} to delete, "
             f"{cleanup} to clean up, "
-            f"{len(result['collections'])} collection(s), {result['deferred']} deferred"
+            f"{len(result['collections'])} collection(s), {len(result['removed'])} collection(s) removed, "
+            f"{result['deferred']} deferred"
         )
         utils.result({"status": "success", **result})
     except _ERRORS as e:
@@ -113,7 +122,7 @@ def pending(
 ):
     """List the oldest queued rows for a job, without removing them (see ack)."""
     try:
-        rows = collection_state.pending(job_name, limit)
+        rows = collection_registry.pending(job_name, limit)
         utils.result({"status": "success", "rows": rows})
     except _ERRORS as e:
         utils.error(str(e))
@@ -125,7 +134,7 @@ def ack(
 ):
     """Remove queued rows whose runs were submitted."""
     try:
-        removed = collection_state.ack(ids)
+        removed = collection_registry.ack(ids)
         utils.result({"status": "success", "removed": removed})
     except _ERRORS as e:
         utils.error(str(e))
@@ -145,7 +154,7 @@ def result(
         data = json.loads(result_json)
         if not isinstance(data, dict):
             raise ValueError("--result must be a JSON object")
-        row = collection_state.record_result(job_name, {
+        row = collection_registry.record_result(job_name, {
             "item": item, "collection": collection, "ark": ark, "result": data,
         })
         utils.result({"status": "success", "row": row})
@@ -161,7 +170,7 @@ def item_ark(
 ):
     """Print the ARK last recorded for an item folder (null if none)."""
     try:
-        utils.result({"status": "success", "item": collection_state.item_name(item), "ark": collection_state.item_ark(item)})
+        utils.result({"status": "success", "item": collection_registry.item_name(item), "ark": collection_registry.item_ark(item)})
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -171,7 +180,7 @@ def rollups_due():
     """List collections whose items have results newer than their last rollup
     and nothing still queued."""
     try:
-        utils.result({"status": "success", "collections": collection_state.rollups_due()})
+        utils.result({"status": "success", "collections": collection_registry.rollups_due()})
     except _ERRORS as e:
         utils.error(str(e))
 
@@ -183,9 +192,9 @@ def rollup(
     )],
 ):
     """Recompute a collection's item count and failed items, and record them as
-    its showcase_collection_rollup_job result."""
+    its gold_dcs_collection_rollup result."""
     try:
-        summary = collection_state.rollup(collection_key)
+        summary = collection_registry.rollup(collection_key)
         utils.log(
             f"{summary['collection']}: {summary['item_count']} item(s), {summary['succeeded']} succeeded, "
             f"{summary['failed']} failed, {summary['never_run']} not run"

@@ -342,6 +342,28 @@ class CaskBackend:
         self._raise_for_status(res)
         return self._parse_json_response(res, "move")
 
+    def copy(self, src_path, dest_path, opts={}):
+        """Copy a file or directory within CaskFS (cask: -> cask: only).
+
+        Wraps CaskFS's copy endpoint (POST /fs/copy). The destination references
+        the source's hash, so no bytes are transferred or duplicated.
+
+        :param str src_path: CaskFS-absolute path of the file or directory to copy.
+        :param str dest_path: CaskFS-absolute destination path.
+        :param dict opts: 'replace' (bool, default False — overwrite vs. fail if the
+            destination exists).
+        :returns: The written file record, or {'copied', 'errors'} for a directory.
+        :rtype: dict
+        :raises FileNotFoundError: If `src_path` does not exist.
+        :raises FileExistsError: If `dest_path` exists and 'replace' isn't set.
+        """
+        body = {"srcPath": src_path, "destPath": dest_path}
+        if opts.get("replace"):
+            body["replace"] = True
+        res = self._client.post(f"{self.base_url}/fs/copy", json=body)
+        self._raise_for_status(res)
+        return self._parse_json_response(res, "copy")
+
     def add_derivative_link(self, path, source_path, opts={}):
         """Record CaskFS derivative-link lineage: `path` was derived from `source_path`.
 

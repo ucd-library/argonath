@@ -52,6 +52,10 @@ class FakeCaskBackend:
         self.files[dest_path] = self.files.pop(src_path)
         return {"src_filepath": src_path, "dest_filepath": dest_path}
 
+    def copy(self, src_path, dest_path, opts={}):
+        self.files[dest_path] = self.files[src_path]
+        return {"filepath": dest_path, "opts": opts}
+
     def find_by_subject(self, subject, opts={}):
         return [f"/bronze/{subject}.jsonld.json"]
 
@@ -154,6 +158,29 @@ def test_move_rejects_crossing_backends(tmp_path, fake_cask):
         fs.move(str(tmp_path / "a.txt"), "cask:/bronze/a.txt")
     with pytest.raises(ValueError):
         fs.move("cask:/bronze/a.txt", str(tmp_path / "a.txt"))
+
+
+def test_copy_local_to_local(tmp_path):
+    src = str(tmp_path / "a.txt")
+    dest = str(tmp_path / "sub" / "b.txt")
+    fs.write(src, data=b"hi")
+    fs.copy(src, dest)
+    assert fs.read(src) == b"hi"
+    assert fs.read(dest) == b"hi"
+
+
+def test_copy_cask_to_cask_uses_cask_backend(fake_cask):
+    fake_cask.files["/bronze/a.txt"] = b"hi"
+    result = fs.copy("cask:/bronze/a.txt", "cask:/gold/a.txt", opts={"replace": True})
+    assert result == {"filepath": "/gold/a.txt", "opts": {"replace": True}}
+    assert fake_cask.files == {"/bronze/a.txt": b"hi", "/gold/a.txt": b"hi"}
+
+
+def test_copy_rejects_crossing_backends(tmp_path, fake_cask):
+    with pytest.raises(ValueError):
+        fs.copy(str(tmp_path / "a.txt"), "cask:/bronze/a.txt")
+    with pytest.raises(ValueError):
+        fs.copy("cask:/bronze/a.txt", str(tmp_path / "a.txt"))
 
 
 def test_move_cask_only_opts_rejected_for_local_path(tmp_path):

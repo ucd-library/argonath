@@ -2,7 +2,8 @@
 Build a collection's canonical collection.jsonld.json and promote it to gold.
 
 The record comes from the bronze collection root's tree/metadata.json and
-tree/identifiers.json, and is written to gold/[project]/[collection]/collection.jsonld.json.
+tree/identifiers.json, and is written to gold/[project]/collections/[collection]/collection.jsonld.json,
+beside the collection's item folders.
 Items link to it via their own isPartOf; the record has no hasPart back.
 """
 import json
@@ -35,11 +36,12 @@ def record_path(name, opts={}):
 
     :param str name: Collection name.
     :param dict opts: 'project' — see item_record._project().
-    :returns: e.g. 'cask:/gold/digital-dev/haeger/collection.jsonld.json'.
+    :returns: e.g. 'cask:/gold/digital-dev/collections/haeger/collection.jsonld.json'.
     :rtype: str
     """
     dest = derivative.dest_path(
-        type="gold", collection=name, rel_path=RECORD_FILENAME, opts={"app": item_record._project(opts)},
+        type="gold", collection=name, rel_path=RECORD_FILENAME,
+        opts={"app": item_record._project(opts)},
     )
     return f"cask:{dest}"
 

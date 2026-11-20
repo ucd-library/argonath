@@ -22,6 +22,7 @@ from digtk.lib.config import (
     AudioWaveformWidthOption,
     CaptionsLanguageOption,
     CaptionsModelOption,
+    ForceOption,
     ReportingCollectionOption,
     ReportingJobIdOption,
     TargetArgument,
@@ -76,6 +77,7 @@ def derivatives(
     format: AudioTranscodeFormatOption = CONFIG["audio"]["transcode_format"],
     language: CaptionsLanguageOption = CONFIG["captions"]["language"],
     model: CaptionsModelOption = CONFIG["captions"]["model"],
+    force: ForceOption = False,
     reporting_job_id: ReportingJobIdOption = None,
     reporting_collection: ReportingCollectionOption = None,
 ):
@@ -88,9 +90,11 @@ def derivatives(
         utils.log(f"Generating derivatives for {target}")
         with reporting.track(
             reporting_job_id, stage="derivatives", item_id=target, collection=reporting_collection,
-            options={"format": format, "language": language, "model": model},
+            options={"format": format, "language": language, "model": model, "force": force},
         ):
-            result = audio.derivatives(target, opts={"format": format, "language": language, "model": model})
+            result = audio.derivatives(target, opts={
+                "format": format, "language": language, "model": model, "force": force,
+            })
         utils.result(result)
     except _ERRORS as e:
         utils.error(str(e))

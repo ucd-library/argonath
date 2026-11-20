@@ -3,10 +3,9 @@ digtk.lib.derivative — write silver/gold/workspace derivative files into CaskF
 
 A thin wrapper around digtk.lib.fs: builds the CaskFS destination path for a
 derivative artifact (silver mirrors bronze's [group]/[collection]/[time]/ shape;
-gold is a flattened [app]/[collection]/ current-state view with no time dimension —
-reserved for access-controlled preservation/download products, nothing writes
-there yet, and its [app] segment predates docs/cask-conventions.md's current
-non-app-scoped Gold Layout;
+gold is a flattened, app-scoped [app]/collections/[collection]/ current-state view with no
+time dimension, holding item/collection records and promoted preservation/download
+binaries;
 workspace is a per-user [group]/[collection]/ view — same 'group' opt as silver,
 just no time dimension, since 'group' there is really the user's username — see
 docs/cask-conventions.md), writes its bytes, then records CaskFS derivative-link
@@ -29,6 +28,9 @@ from digtk.lib import fs
 
 TYPES = ("silver", "gold", "workspace")
 
+# Gold app folder holding collection imports
+GOLD_COLLECTIONS_DIR = "collections"
+
 
 def _clean_rel_path(rel_path):
     """Validate and normalize a caller-supplied path relative to a collection[/time] root.
@@ -46,6 +48,17 @@ def _clean_rel_path(rel_path):
     return cleaned
 
 
+def gold_collection_dir(*, app, collection):
+    """The CaskFS-absolute gold folder for one app's copy of a collection.
+
+    :param str app: Gold app/project, e.g. 'digital-dev'.
+    :param str collection: Collection name.
+    :returns: e.g. '/gold/digital-dev/collections/haeger'.
+    :rtype: str
+    """
+    return f"/gold/{app}/{GOLD_COLLECTIONS_DIR}/{collection}"
+
+
 def dest_path(*, type, collection, rel_path, opts={}):
     """Build the CaskFS-absolute destination path for a derivative file.
 
@@ -56,8 +69,8 @@ def dest_path(*, type, collection, rel_path, opts={}):
         inferred, since a derivative can be produced from more than one source.
     :param dict opts: 'group' (required when type='silver' or 'workspace' — for
         'workspace' this is the user's username, plumbed in by the caller), 'app'
-        (required when type='gold'), 'time' (silver only, defaults to 'latest' if
-        omitted — gold and workspace have no time dimension).
+        (required when type='gold'), 'time' (silver
+        only, defaults to 'latest' if omitted — gold and workspace have no time dimension).
     :returns: CaskFS-absolute path, e.g.
         '/silver/digital-collections/ucd-photos/latest/item-1/derivatives/thumb-256.jpg'.
     :rtype: str
@@ -80,7 +93,7 @@ def dest_path(*, type, collection, rel_path, opts={}):
         app = opts.get("app")
         if not app:
             raise ValueError("opts['app'] is required when type='gold'")
-        return f"/gold/{app}/{collection}/{rel_path}"
+        return f"{gold_collection_dir(app=app, collection=collection)}/{rel_path}"
 
     if opts.get("app"):
         raise ValueError(f"opts['app'] does not apply when type={type!r}")
@@ -115,7 +128,7 @@ def write_cask(*, type, collection, rel_path, data, source_files, opts={}):
     :param bytes data: Derivative file content.
     :param list[str] source_files: CaskFS paths ('cask:/'-prefixed) this derivative was
         produced from. Must be non-empty — a derivative always has at least one source.
-    :param dict opts: 'group'/'app'/'time' — see dest_path(). 'mime_type' (str, guessed
+    :param dict opts: 'group'/'app'/'edits'/'time' — see dest_path(). 'mime_type' (str, guessed
         from `rel_path` if omitted). 'replace' (bool, default False — overwrite vs. fail
         if the destination already exists). 'link_relation' (str, optional — forwarded to
         fs.add_derivative_link() as 'relation' for every source link; defaults server-side

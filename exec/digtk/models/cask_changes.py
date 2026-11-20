@@ -1,15 +1,17 @@
 """
 Turns CaskFS audit-log events under registered collections' bronze items
 into per-item work: process (derivatives and all), reindex (metadata only)
-or delete from the showcase index. Read by Dagster's bronze_cask_audit_sensor.
+or delete from the showcase index. Read by Dagster's bronze_collection_cask_audit.
 """
+import os
 from datetime import datetime, timezone
 
 from digtk.lib import cask_audit, fs, items
 from digtk.models import collection as collection_model
 from digtk.models.digital_website import item_record
 
-DEFAULT_SETTLE_SECONDS = 300
+# Quiet time before an item's changes are acted on. Shortened in test stacks.
+DEFAULT_SETTLE_SECONDS = int(os.environ.get("ARGONATH_CASK_AUDIT_SETTLE_SECONDS", "300"))
 
 # Files whose change needs no new derivatives.
 METADATA_FILES = {"metadata.json", "identifiers.json"}
@@ -30,13 +32,19 @@ def _cask_path(path):
 
 def watched_roots(opts={}):
     """Every active registered collection's items root and collection files.
+    Collections without this deployment's showcase publish tag are left out
+    (see digtk.models.collection.is_published()), so their bronze changes
+    never reach silver/gold or the showcase index.
 
-    :param dict opts: 'conn' (registry connection).
+    :param dict opts: 'conn' (registry connection), 'publish_tag' (overrides
+        the config setting).
     :returns: [{"key", "group", "name", "items_root", "collection_files"}].
     :rtype: list[dict]
     """
     roots = []
     for row in collection_model.list_active_collections(opts=opts):
+        if not collection_model.is_published(row, opts):
+            continue
         group, name = row["group_name"], row["name"]
         latest = f"/bronze/{group}/{name}/latest"
         roots.append({
@@ -53,9 +61,13 @@ def target_for(path, resource_type, roots):
     :param str path: CaskFS-absolute path from the audit row.
     :param str resource_type: 'file' or 'directory'.
     :param list[dict] roots: watched_roots()'s result.
-    :returns: {"kind": "item"|"collection", "key", "folder"?, "rel"?}, or None.
+    :returns: {"kind": "item"|"collection", "key", "folder"?, "rel"?}, or None
+        (also for ignored files, see digtk.lib.items.is_ignored_file()).
     :rtype: dict|None
     """
+    # OS clutter never triggers work
+    if resource_type == "file" and items.is_ignored_file(path):
+        return None
     for root in roots:
         if path in root["collection_files"]:
             return {"kind": "collection", "key": root["key"]}
@@ -162,7 +174,8 @@ def changes(cursor, opts={}):
         (datetime, for tests), 'conn' (CaskFS), 'registry_conn'.
     :returns: {"process": [folder], "reindex": {key: [folder]}, "delete": {key: [ark]},
         "cleanup": {key: [folder]} (every deleted folder, for its silver/gold),
-        "collections": [key], "skipped": [{"folder", "reason"}], "deferred": int, "cursor": dict}.
+        "collections": [key], "removed": [key] (collections gone from bronze),
+        "skipped": [{"folder", "reason"}], "deferred": int, "cursor": dict}.
     :rtype: dict
     """
     after = int(cursor.get("after", 0))
@@ -184,7 +197,18 @@ def changes(cursor, opts={}):
             arks_by_key[key] = set(collection_model.list_item_arks(root["name"], {"group": root["group"]}))
         return arks_by_key[key]
 
-    result = {"process": [], "reindex": {}, "delete": {}, "cleanup": {}, "collections": [], "skipped": [], "deferred": 0}
+    present_by_key = {}
+
+    def collection_present(key):
+        if key not in present_by_key:
+            root = next(r for r in roots if r["key"] == key)
+            present_by_key[key] = fs.exists(f"cask:/bronze/{root['group']}/{root['name']}")
+        return present_by_key[key]
+
+    result = {
+        "process": [], "reindex": {}, "delete": {}, "cleanup": {}, "collections": [], "removed": [],
+        "skipped": [], "deferred": 0,
+    }
     deferred_ids = []
     for gid, group in _group_events(events, roots).items():
         if done.get(gid, 0) >= group["last_id"]:
@@ -193,6 +217,11 @@ def changes(cursor, opts={}):
             deferred_ids.append(group["first_id"])
             continue
         done[gid] = group["last_id"]
+        # whole collection deleted, nothing per item
+        if not collection_present(group["key"]):
+            if group["key"] not in result["removed"]:
+                result["removed"].append(group["key"])
+            continue
         if group["kind"] == "collection":
             result["collections"].append(group["key"])
             continue
@@ -212,6 +241,7 @@ def changes(cursor, opts={}):
         new_after = min(deferred_ids) - 1
     else:
         new_after = max([after] + [e["audit_log_id"] for e in events])
+    result["removed"].sort()
     result["deferred"] = len(deferred_ids)
     result["cursor"] = {"after": new_after, "done": {g: i for g, i in done.items() if i > new_after}}
     return result

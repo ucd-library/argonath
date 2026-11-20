@@ -2,8 +2,7 @@
 
 How to run the root-level digtk tools (`ocr`, `accessibility`, `split-spreads`) from
 the CLI and from Dagster. It covers scans that don't have an ARK yet (staged in
-CaskFS workspace) and items that do (bronze/silver), and how to promote workspace
-results into silver once an item has been ingested.
+CaskFS workspace) and items that do (bronze/silver).
 
 The tools prepare their own inputs from the source files (orientation detection,
 OCR-prep images, PDF rasterization). None of them need `digtk showcase ... derivatives`
@@ -13,35 +12,44 @@ Layout").
 
 ## Quick start: local dev
 
-Runs the whole stack in Docker on your machine: Dagster at http://localhost:3000,
-CaskFS at http://localhost:3001 and the auth gateway at http://localhost:4000.
-For more detail, see [Setup](#setup).
+Runs the `digtk-dev` stack in Docker on your machine, using prebuilt images, so you
+don't build anything. Everything goes through the auth gateway at
+http://localhost:4000, including Dagster (`/dagster`) and CaskFS (`/cask`). The dagster
+containers live-mount your `argonath/` checkout, so digtk edits only need a restart.
+For more detail, see `argonath-deployment/compose/digtk-dev/README.md`. To build the
+full stack yourself instead, see [Local dev environment](#local-dev-environment).
 
-1. **Build the images** the first time, or after a full rebuild. Run this from
-   `argonath-deployment/`. It needs `cork-kube`. `--all` also builds project-anduin and
-   caskfs; leave it off to rebuild only argonath.
-
-   ```bash
-   ./cmds/build-local-dev.sh --all
-   ```
-
-2. **Start the stack** from `argonath-deployment/`. Always use these scripts instead of
-   bare `docker compose`, so the compose project is named `argonath`. Stop it with
-   `./cmds/down.sh`.
+1. **Set up the stack** the first time, after wiping volumes, or when the shared images
+   change. Run this from `argonath-deployment/`. It needs `gcloud` logged in with access
+   to the `argonath-508815` project, since it pulls the `.env.default` secret and the `:dev`
+   images from Artifact Registry. It's safe to re-run.
 
    ```bash
-   ./cmds/up.sh
+   gcloud auth login
+   ./cmds/digtk-dev/update.sh
    ```
 
-3. **Initialize it** on the first start, or after wiping volumes. It's safe to re-run.
-   It creates the CaskFS tables and admin roles and the `argo-local-dev` cask
-   environment, then logs digtk in. Pass a username to use one other than your OS user.
+   It authenticates with gcs and starts the stack and creates the CaskFS and digtk tables, with your OS user as a
+   cask admin. Then it creates the `digtk-dev` cask environment and opens a browser to
+   log digtk in.
+
+   `update.sh` overwrites `compose/digtk-dev/.env.default` on every run. Put your own
+   values, like `SAMWISE_API_KEY`, in `compose/digtk-dev/.env.secrets` instead. It
+   overrides `.env.default`, and `update.sh` never touches it.
+
+2. **Start and stop it** day to day, from `argonath-deployment/`. `start.sh` also logs
+   digtk in again. Always use these scripts instead of bare `docker compose`, so the
+   compose project is named `digtk-dev`.
 
    ```bash
-   ./cmds/init.sh
+   ./cmds/digtk-dev/start.sh
    ```
 
-4. **Switch back from the VM** (only if you've used [Quick start: argonath
+   ```bash
+   ./cmds/digtk-dev/stop.sh
+   ```
+
+3. **Switch back from the VM** (only if you've used [Quick start: argonath
    VM](#quick-start-argonath-vm) since). Run these from `argonath/exec`:
 
    ```bash
@@ -49,11 +57,11 @@ For more detail, see [Setup](#setup).
    ```
 
    ```bash
-   cask env default argo-local-dev
+   cask env default digtk-dev
    ```
 
    ```bash
-   DIGTK_GATEWAY_URL=http://localhost:4000 uv run digtk auth login --cask-env argo-local-dev
+   DIGTK_GATEWAY_URL=http://localhost:4000 uv run digtk auth login --cask-env digtk-dev
    ```
 
    ```bash
@@ -62,14 +70,14 @@ For more detail, see [Setup](#setup).
 
    `whoami` should show `http://localhost:4000/cask/api`.
 
-5. **Stage your files** in a CaskFS workspace folder, from `argonath/exec`. Add
+4. **Stage your files** in a CaskFS workspace folder, from `argonath/exec`. Add
    `--replace` to replace files already there.
 
    ```bash
    uv run digtk workspace add ../../workspace/<sourceFolderName> --folder <caskfsFolderName>
    ```
 
-6. **Run the steps**, in one of two ways:
+5. **Run the steps**, in one of two ways:
    - **Directly in your shell**, without Dagster. This needs `SAMWISE_API_KEY` and the
      imaging tools (see [Other requirements](#other-requirements)). Pick steps and
      options as in [CLI](#cli):
@@ -79,7 +87,7 @@ For more detail, see [Setup](#setup).
      ```
 
    - **Through local Dagster**, the same way as on the VM. Turn on
-     `workspace_partition_sync_sensor` under **Automation → Sensors** first. The full
+     `workspace_partition_sync` under **Automation → Sensors** first. The full
      list of steps and options is in
      [Quick start: argonath VM](#quick-start-argonath-vm), step 3.
 
@@ -87,7 +95,7 @@ For more detail, see [Setup](#setup).
      node ../ops/bin/argonath.js workspace run cask:/workspace/$USER/<caskfsFolderName> --steps all,vision,reuse-ocr,embed-fonts,validate --wait
      ```
 
-7. **Export the outputs:**
+6. **Export the outputs:**
 
    ```bash
    uv run digtk workspace pull cask:/workspace/$USER/<caskfsFolderName>/derivatives ../../workspace/<exportFolderName>
@@ -102,7 +110,7 @@ Launching needs the `execute` (or `admin`) role on the `argonath` Keycloak clien
 more detail, see [Launching from your laptop](#launching-from-your-laptop).
 
 1. **Log in.** Clear any local-dev settings first. Before going back to local dev, follow
-   step 4 of [Quick start: local dev](#quick-start-local-dev).
+   step 3 of [Quick start: local dev](#quick-start-local-dev).
 
    ```bash
    unset DIGTK_GATEWAY_URL CASK_API_URL CASK_API_KEY CASK_TRUSTED_USER
@@ -233,13 +241,15 @@ folders still goes through the `argo-local-dev` cask environment.
 ### Other requirements
 
 - **`SAMWISE_API_KEY`** is needed for vision OCR, alt text, split-detect, and
-  `tag-pdf --tables`. It's set in `compose/local-dev/.env` for the containers; export it
+  `tag-pdf --tables`. It's set in `compose/local-dev/.env` (or `compose/digtk-dev/.env.secrets`) for the containers; export it
   in your shell for the CLI. Use `digtk ocr tesseract --no-vision` to OCR without it.
 - **The `cask` CLI** must be installed and configured wherever you stage a local folder.
   Staging shells out to `cask cp`.
 - **Imaging tools** are needed if you run digtk on your own machine: `tesseract`,
   ImageMagick, poppler (`pdfinfo`), Ghostscript, and `verapdf` for tag-pdf (or pass
-  `--no-validate`). The worker image already has all of them.
+  `--no-validate`). The worker image already has all of them. Run `digtk doctor check`
+  to see which of these (plus `ffmpeg` and `whisper`, for video/audio/captions) are
+  installed on your machine, with an install link for anything missing.
 
 ## CLI
 
@@ -344,8 +354,8 @@ then on.
 digtk workspace run ./scans/report-7 --steps ocr,figures,tag-pdf --figures --tables
 ```
 
-In Dagster, the `figures` checkbox runs the step and tags the figures. The per-item job
-is `bronze_figures_job`.
+In Dagster, the `figures` checkbox runs the step and tags the figures, on
+`workspace_process` (staged scans) or `gold_dcs_process_item` (a bronze item).
 
 ### Handwriting: `--geometry qwen`
 
@@ -418,7 +428,7 @@ PDF. It's the `docs fromimages` workflow from the standalone digtk repo.
   the same options (`--tables`, `--correct` and the rest).
 - **Alt text:** a page's alt text from `alt-text` is used as its figure description.
 - **Outputs:** `tagged.pdf`, `searchable.pdf` and `text.txt` under
-  `accessibility/document/`. `workspace promote` copies them like any other output.
+  `accessibility/document/`.
 
 As a workspace step it's `pdf-build`. It runs once per folder (so `--file` runs skip
 it), after `ocr` so it can reuse that OCR:
@@ -577,23 +587,23 @@ The Dagster UI is at http://localhost:3000 in local dev.
 
 Job names start with a prefix so related jobs sort together:
 - `workspace_` for workspace folders
-- `bronze_` for the per-item tools on bronze ARK items
-- `showcase_` for the showcase/`pdc_` pipeline
+- `bronze_` for keeping bronze in sync with a collection's source
+- `gold_dcs_` for the showcase/`pdc_` pipeline
 
 They were renamed from:
 
 | Old | New |
 |---|---|
-| `process_workspace_job`, `promote_workspace_job` | `workspace_process_job`, `workspace_promote_job` |
-| `ocr_job`, `correct_ocr_job`, `alt_text_job`, `figures_job` | `bronze_ocr_job`, `bronze_correct_ocr_job`, `bronze_alt_text_job`, `bronze_figures_job` |
-| `tag_pdf_job`, `build_pdf_job` | `bronze_tag_pdf_job`, `bronze_build_pdf_job` |
-| `detect_spreads_job`, `apply_spreads_job` | `bronze_detect_spreads_job`, `bronze_apply_spreads_job` |
-| `process_collection_job`, `process_item_job`, `collection_rollup_job` | `showcase_process_collection_job`, `showcase_process_item_job`, `showcase_collection_rollup_job` |
-| `reindex_collection_job`, `apply_cask_changes_job`, `derivatives_job` | `showcase_reindex_collection_job`, `showcase_apply_cask_changes_job`, `showcase_derivatives_job` |
-| `delete_collection_index_job`, `delete_item_index_job` | `showcase_delete_collection_index_job`, `showcase_delete_item_index_job` |
+| `process_workspace_job` | `workspace_process` |
+| `ocr_job`, `correct_ocr_job`, `alt_text_job`, `figures_job` | `silver_ocr`, `silver_correct_ocr`, `silver_alt_text`, `silver_figures` (since removed) |
+| `tag_pdf_job`, `build_pdf_job` | `silver_tag_pdf`, `silver_build_pdf` (since removed) |
+| `detect_spreads_job`, `apply_spreads_job` | `silver_detect_spreads`, `silver_apply_spreads` (since removed) |
+| `process_collection_job`, `process_item_job`, `collection_rollup_job` | `gold_dcs_process_collection`, `gold_dcs_process_item`, `gold_dcs_collection_rollup` |
+| `reindex_collection_job`, `apply_cask_changes_job`, `derivatives_job` | `gold_dcs_reindex_collection`, `gold_dcs_apply_cask_changes`, `gold_dcs_derivatives` (since removed) |
+| `delete_collection_index_job`, `delete_item_index_job` | `gold_dcs_delete_collection_index`, `gold_dcs_delete_item_index` |
 
 Runs from before the rename stay under the old names in **Runs**. Filter by the old
-name to find them, but their re-execute buttons no longer work. The `collection_state`
+name to find them, but their re-execute buttons no longer work. The `collection_registry`
 queue still uses the original keys (`process_item_job`, `collection_rollup_job`).
 
 ### Workspace folders (no ARK)
@@ -609,12 +619,12 @@ queue still uses the original keys (`process_item_job`, `collection_rollup_job`)
    with one subfolder per item. The `source/` level is required. Without it, the
    sensor doesn't treat it as a workspace folder.
 
-2. **Get a partition.** `workspace_partition_sync_sensor` adds a
+2. **Get a partition.** `workspace_partition_sync` adds a
    `workspace/<user>/<folder>` entry (e.g. `workspace/jdoe/box-12`) to the
    `workspace` partitions every 2 minutes. It also removes entries whose workspace
    folder is gone. Turn the sensor on under **Automation → Sensors**, because sensors
    start off. Alternatively, add the partition by hand from the job's partition picker.
-3. **Run it.** Open `workspace_process_job` → **Launchpad**.
+3. **Run it.** Open `workspace_process` → **Launchpad**.
    1. Pick the partition (e.g. `workspace/jdoe/box-12`) in the **Partition** box at the
       top **first**, because choosing a partition reloads the config editor.
    2. Set the config, then click **Launch Run**. If it says **Launch backfill**, more
@@ -699,7 +709,7 @@ queue still uses the original keys (`process_item_job`, `collection_rollup_job`)
 
 ### Launching from your laptop
 
-`argonath workspace run` (the ops CLI in `ops/`) launches `workspace_process_job` for one
+`argonath workspace run` (the ops CLI in `ops/`) launches `workspace_process` for one
 workspace folder on the VM's Dagster, without SSH. This is the detailed reference for
 [Quick start: argonath VM](#quick-start-argonath-vm).
 
@@ -715,7 +725,7 @@ workspace folder on the VM's Dagster, without SSH. This is the detailed referenc
    uv run digtk workspace add ../../workspace/<sourceFolder> --folder <folderName> --user <casId>
    ```
 
-3. **Launch.** It waits for `workspace_partition_sync_sensor` to register the
+3. **Launch.** It waits for `workspace_partition_sync` to register the
    `workspace/<casId>/<folderName>` partition if it's new (up to about 3 minutes; the
    sensor must be on), starts the run, and prints its Dagster link. `--wait` polls until
    it finishes. Dagster's API can't add a partition used only by op jobs, which is why the
@@ -765,54 +775,54 @@ How `argonath` reaches Dagster:
   (`celery_job_executor()`), so launches from the CLI, sensors and the launchpad all
   reach the deployment's RabbitMQ. The launchpad no longer shows an `execution:` block.
 
-### Bronze items (with ARKs)
+### Bronze items
 
 - **Collection partitions** are keyed `bronze/<group>/<collection>` (e.g.
-  `bronze/preservica/haeger`). `collection_partition_sync_sensor` registers them for
+  `bronze/preservica/haeger`). `bronze_collection_partition_sync` registers them for
   anything added with `digtk collection add --root bronze` or `digtk preservica import`.
   Partitions under the older `<group>/<collection>` form aren't removed automatically;
   delete them in the UI once they're no longer needed.
-- **Item partitions** (ARKs) are registered by `reconcile_collection_job`.
-- **Per-item tool jobs:** `bronze_ocr_job`, `bronze_correct_ocr_job`, `bronze_alt_text_job`, `bronze_figures_job`,
-  `bronze_tag_pdf_job`, `bronze_build_pdf_job`, `bronze_detect_spreads_job`, and `bronze_apply_spreads_job`. Pick a (collection, item) partition and
-  set the asset config. They only depend on the item being ingested, and each one
-  records reporting under the Dagster run ID. `bronze_correct_ocr_job` needs `bronze_ocr_job`'s output.
-- **Webapp derivatives for a whole collection:** `showcase_process_collection_job` (derivatives
-  only).
-  - **Steps:** one step per image and per PDF file (`process_derivative_batch[...]`),
-    each running `digtk showcase image|pdf derivatives <ark> --file <bronze path>`.
-    Video and audio stay one step per item.
-  - **Finalize:** after every derivative step, a `finalize_batch[...]` step per item
-    (`digtk showcase finalize <ark>`) writes what combines all of an item's files: an
-    image item's `ocr/manifest.json` and the item's `associatedMedia`.
+- **Tools on a bronze item:** `gold_dcs_process_item` only builds the showcase
+  derivatives (including their OCR). It doesn't run the pike tool steps. To run those on
+  an item that has an ARK, use `digtk workspace run <ark> --steps ...` (see "Items that
+  already have an ARK" above). Alt text written that way is picked up by `build-item`
+  the next time the item is processed.
+- **Webapp derivatives for a whole collection:** `gold_dcs_process_collection` queues one
+  `gold_dcs_process_item` run per item in the collection's bronze `tree/`, the same path
+  `bronze_collection_cask_audit` uses for changed items (see below). The launch run itself
+  only queues, so it finishes in seconds.
+  - **Item runs:** `item_queue` launches them, at most `ARGONATH_MAX_ITEM_RUNS_IN_FLIGHT`
+    (default 20) at a time. Each fans out its own files: one step per image and per PDF file
+    (`digtk showcase image|pdf derivatives <item> --file <bronze path>`, video and audio one
+    step per item), then finalize, `build-item`, and the ES upsert. They're tagged
+    `argonath/trigger=collection` and `argonath/batch=<launch run id>`, so one launch's runs
+    can be filtered in the Runs screen.
+  - **Rollup:** once the queue is empty and none of the collection's item runs are in flight,
+    `gold_dcs_collection_rollup` records the rollup and rebuilds the collection doc. It fails
+    if any item's latest run failed.
   - **Source files:** each item's files come only from its own bronze `tree/` folder
-    (there's no fallback to `by-ref/`). An item whose folder has no media is reported
-    as an error, `[latest/tree/<item>] MISSING MEDIA: no image/PDF/video/audio files in
-    bronze latest/tree/<item>/`, and that item isn't finalized. Every other item still
-    processes, and the run ends failed.
-  - **Naming:** steps and Events use the file's (or item's) bronze path relative to the
-    partition, e.g. `latest/tree/mv-rapleytrail-formatted/Preservation/page_003.tif`.
-    Step names show it with `_` in place of `/` and `.`.
-  - **Batching:** `max_steps` (on `fan_out_derivative_tasks`; `0` turns batching off)
-    caps both the derivative and finalize fan-outs, the same way as in the workspace job
-    above.
-  - **Failures:** an item with a failed file step isn't finalized. Every other item
-    still is, and `check_derivative_failures` marks the run failed. Re-run the
-    partition, or the failed file by hand, then finalize that item:
-
-    ```bash
-    digtk showcase image derivatives <ark> --file <bronze path>
-    ```
-
-    ```bash
-    digtk showcase finalize <ark>
-    ```
+    (there's no fallback to `by-ref/`). An item whose folder has no media fails its run with
+    `MISSING MEDIA: no image/PDF/video/audio files in bronze latest/tree/<item>/`.
+  - **Batching:** `max_steps` on each item run (default from `ItemRunConfig`; `0` turns
+    batching off) caps how many derivative steps one item fans out to.
+  - **Skipping existing derivatives:** each derivative step skips outputs an earlier run
+    already published and only builds what's missing (e.g. `page 2: tiled pyramid TIFF
+    already generated, skipping`). A file whose outputs are all there isn't downloaded.
+    New thumbnail widths, audio format or video resolutions count as missing. This also
+    applies to `bronze_collection_cask_audit` runs. To rebuild everything, set `force: true`
+    on the `gold_dcs_process_collection` launchpad (`ops.enqueue_collection_items.config.force`)
+    or on `gold_dcs_process_item` (`ops.pdc_plan_item.config.force`). From the CLI, pass
+    `--force` to `digtk showcase <format> derivatives`.
+  - **Failures:** a failed item only fails its own run. Re-run it with
+    `gold_dcs_process_item` (set `ops.pdc_plan_item.config.item` to its bronze folder), or
+    launch `gold_dcs_process_collection` again. Re-launching replaces rows still waiting in the
+    queue, so queued items don't run twice.
 
 - **What the index reads:** an item's ES doc is built from its gold `item.jsonld.json`
   (descriptive metadata, media nodes, and the bronze folder named in the gold
   `manifest.json`) plus silver (renditions, captions, OCR). Indexing never reads bronze.
   Only `--rebuild` / `rebuild` does, because it runs `build-item` to rebuild gold first.
-- **Showcase search index for a whole collection:** `showcase_reindex_collection_job` sends every
+- **Showcase search index for a whole collection:** `gold_dcs_reindex_collection` sends every
   item with a gold record to Elasticsearch with the `_bulk` API. It doesn't make
   derivatives. With `rebuild`, it lists the collection's bronze items instead and
   rebuilds each gold record first. The prune still compares ES with bronze.
@@ -825,20 +835,20 @@ How `argonath` reaches Dagster:
     batch failed. It also refuses to run when bronze lists no items, or when it would
     delete more than half of the indexed items. Set `force_prune` to override.
   - **Collection doc:** `pdc_index_collection` then refreshes `itemCount` and the image,
-    the same step `showcase_collection_rollup_job` ends with.
-- **Automatic updates from the CaskFS audit log:** `bronze_cask_audit_sensor` (every
+    the same step `gold_dcs_collection_rollup` ends with.
+- **Automatic updates from the CaskFS audit log:** `bronze_collection_cask_audit` (every
   5 minutes; turn it on in the UI) is the only sensor that reacts to bronze `tree/`
   changes. It reads `caskfs.audit_log` straight from Postgres for writes, deletes and
   moves under each active collection's bronze items root. Once an item has had no new
   events for 5 minutes, the sensor handles it:
   - **New item, or binaries changed (`process`):** the item is queued in
-    `collection_state.job_queue` (trigger `cask-audit`). `item_queue_sensor` launches one
-    `showcase_process_item_job` run per item, at most `ARGONATH_MAX_ITEM_RUNS_IN_FLIGHT` (default
+    `collection_registry.job_queue` (trigger `cask-audit`). `item_queue` launches one
+    `gold_dcs_process_item` run per item, at most `ARGONATH_MAX_ITEM_RUNS_IN_FLIGHT` (default
     20) at a time. Each run fans out its own files: derivatives, finalize, `build-item`,
     then the ES upsert. Once a collection's queue is empty and none of its item runs are
-    in flight, `collection_rollup_sensor` launches `showcase_collection_rollup_job`, which records
+    in flight, `gold_dcs_collection_rollup_trigger` launches `gold_dcs_collection_rollup`, which records
     the rollup and rebuilds the collection doc. It fails if any item's latest run failed.
-  - Everything else launches one `showcase_apply_cask_changes_job` run per changed collection:
+  - Everything else launches one `gold_dcs_apply_cask_changes` run per changed collection:
   - **Only `metadata.json`, `identifiers.json` or `*.jsonld.json` changed (`reindex`):**
     `build-item` and the ES upsert, with no derivatives.
   - **Folder deleted (`delete` + `cleanup`):** its ES docs are deleted (using the ARK
@@ -847,10 +857,10 @@ How `argonath` reaches Dagster:
     file count and recorded as an `argonath_fanout_cleanup` event.
   - **Folder renamed:** processed at its new path. Its ES doc is kept, since the ARK is
     the same, but the old path's silver and gold are removed. The doc's images point at
-    the old silver files until the new path's `showcase_process_item_job` run finishes.
+    the old silver files until the new path's `gold_dcs_process_item` run finishes.
   - **Collection `tree/metadata.json` or `tree/identifiers.json` changed:** the run has
     empty lists and only rebuilds the collection doc.
-  - Every `showcase_apply_cask_changes_job` run ends by rebuilding and reindexing the collection doc.
+  - Every `gold_dcs_apply_cask_changes` run ends by rebuilding and reindexing the collection doc.
   - To preview a cleanup by hand:
     `digtk showcase clean-item <bronze item folder> --dry-run`.
   - Preservica syncs feed it too, through the `tree/` writes and deletes they make.
@@ -858,23 +868,40 @@ How `argonath` reaches Dagster:
     point at CaskFS's database; each falls back to the `DIGTK_REPORTING_PG_*` value.
     CaskFS must run with `CASKFS_AUDIT_ENABLED=true`.
   - Only registered collections are watched, so onboard a new one with
-    `showcase_process_collection_job` first.
-  - The other jobs (`showcase_reindex_collection_job`, the delete jobs) are manual only.
-    `showcase_process_item_job` and `showcase_collection_rollup_job` can also be launched by hand.
+    `gold_dcs_process_collection` first.
+  - The other jobs (`gold_dcs_reindex_collection`, the delete jobs) are manual only.
+    `gold_dcs_process_item` and `gold_dcs_collection_rollup` can also be launched by hand.
 - **Items removed by a Preservica sync:** when a synced folder (SO) no longer lists a
   child that Preservica knew about (it has a `by-ref/` entry), the tree rebuild deletes
-  that child's `tree/` entry. `by-ref/` is kept. `bronze_cask_audit_sensor` then sees the
-  delete and removes its ES docs.
+  that child's `tree/` entry, then its `by-ref/` folder (for a subfolder, every `by-ref/`
+  folder under it). A child that another folder's `children.json` still lists has moved,
+  so its `by-ref/` is kept. `bronze_collection_cask_audit` then sees the delete and removes
+  its ES docs.
   - To remove an item, remove it in Preservica and sync its parent folder. In the
     launchpad, `preservica_changed` names the parent with `type: SO`, not the item.
   - Items added directly in bronze `tree/` (no `by-ref/` entry yet) are never deleted by a
     sync, whether or not their `metadata.json` has a `preservica.ref`.
   - The full bronze-vs-ES diff (`es prune`) only runs by hand or in
-    `showcase_reindex_collection_job`.
-- **Removing from the search index:** `showcase_delete_collection_index_job` (collection partition)
-  deletes the collection doc, its items and their pages. `showcase_delete_item_index_job` (config
+    `gold_dcs_reindex_collection`.
+- **Removing from the search index:** `gold_dcs_delete_collection_index` (collection partition)
+  deletes the collection doc, its items and their pages. `gold_dcs_delete_item_index` (config
   `ark`) deletes one item and refreshes its collection doc. Both touch ES only, so an
   item that's still in bronze comes back on the next reindex.
+- **Publishing and unpublishing:** a deployment publishes into its own gold project
+  (`DIGTK_SHOWCASE_GOLD_PROJECT`) and its own ES. Publishing runs
+  `gold_dcs_reindex_collection` with `rebuild` on, which rebuilds each item record (and its
+  promoted download files), reindexes, prunes and rebuilds the collection record. Items with no
+  silver website derivatives (`digtk showcase es missing-silver <key>`) are queued for
+  `gold_dcs_process_item` runs instead, and the rollup refreshes the collection doc once
+  they finish.
+  `gold_dcs_unpublish_collection` deletes the collection from ES, then deletes its gold
+  folder. With `purge_silver` it also deletes the items' silver website derivatives
+  (`public-frontend-derivatives/`, `captions/`, `ocr/`), then any silver folders left with no
+  files (the collection's whole silver folder when nothing else is there); other silver work is kept. Silver is
+  shared by every gold project, so the purge is refused (and the run fails after removing gold)
+  while another project still has the collection. Publishing again regenerates the purged
+  derivatives through item runs. Bronze and
+  the collection registry are left alone, so the next collection run publishes it again.
 - **The same from a terminal:**
 
   | Task | digtk (runs directly) | argonath (launches the Dagster job) |
@@ -883,108 +910,12 @@ How `argonath` reaches Dagster:
   | Prune only | `digtk showcase es prune <key> [--dry-run] [--force]` | n/a |
   | Delete a collection | `digtk showcase es delete-collection <key>` | `argonath index delete-collection <key> [--wait]` |
   | Delete an item | `digtk showcase es delete <ark>` | `argonath index delete-item <ark> [--collection <key>] [--wait]` |
+  | Publish a collection | `digtk showcase es bulk-upsert <key> --rebuild` | `argonath publish <collection> --group <group> [--wait]` |
+  | Unpublish a collection | `digtk showcase es delete-collection <key>`, then `digtk showcase unpublish-collection <key> [--purge-silver] [--dry-run]` | `argonath unpublish <collection> --group <group> [--purge-silver] [--wait]` |
+  | List collections / items | `digtk collection list` / `digtk collection items --collection <name>` | `argonath list collections --group <group>` / `argonath list items <collection> --group <group>` |
 
   `<key>` is `bronze/<group>/<collection>`. For which Dagster `argonath` talks to, see
   [Launching from your laptop](#launching-from-your-laptop).
-
-## Promoting workspace results to silver
-
-Once scans processed in workspace have been ingested to bronze under an ARK, you can
-copy the finished outputs into silver instead of regenerating them.
-
-1. **Ingest the originals to bronze** as usual, so the item resolves under an ARK. The
-   bronze filenames must match the ones in the workspace `source/` folder.
-2. **Preview the copy:**
-
-   ```bash
-   digtk workspace promote cask:/workspace/jdoe/box-12/source/folder-3 --ark ark:/424242/d3gq6r65h --dry-run
-   ```
-
-3. **Promote:**
-
-   ```bash
-   digtk workspace promote cask:/workspace/jdoe/box-12/source/folder-3 --ark ark:/424242/d3gq6r65h
-   ```
-
-What promote does:
-
-- It copies `text/`, `accessibility/`, and `split-spreads/` into the ARK's silver
-  location unchanged, with no OCR or vision calls re-run.
-- It re-points lineage at the same-named bronze binaries.
-- It refuses to run if a workspace file has no same-named bronze binary.
-- It refuses to overwrite existing silver outputs unless you pass `--replace`.
-
-### From the Dagster UI
-
-Open `workspace_promote_job` → **Launchpad**, pick the workspace partition (e.g.
-`workspace/jdoe/box-12`), and fill in the ARK. The config editor opens pre-filled with every
-field, `ark` empty and `dry_run: true`. Use the full ARK, e.g. the `@id` from the
-item's bronze sidecar. Promote works out the silver location from where that ARK
-lives in bronze. For the usual case, where the workspace folder is a single
-item, that's all you need:
-
-```yaml
-ops:
-  promote_workspace_items:
-    config:
-      ark: ark:/424242/d3gq6r65h
-      dry_run: true
-```
-
-For a workspace folder that holds several items, list each item folder under `source/` with
-its own ARK:
-
-```yaml
-ops:
-  promote_workspace_items:
-    config:
-      items:
-        - source: folder-3
-          ark: ark:/424242/d3gq6r65h
-        - source: folder-4
-          ark: ark:/424242/d7abc1234
-      dry_run: true
-```
-
-For a batch whose item folders are named after their ARK ids (e.g.
-`source/d3bv7b33r` is `ark:/87293/d3bv7b33r`), skip the list and derive every ARK
-from the folder names:
-
-```yaml
-ops:
-  promote_workspace_items:
-    config:
-      ark_from_folder: true
-      naan: '87293'
-      dry_run: true
-```
-
-- **The NAAN** (Name Assigning Authority Number) is the number after `ark:/`. It
-  identifies the organization that issued the ARKs. It's required here, and there's
-  no default, because a wrong NAAN produces ARKs that don't exist.
-- **Which folders:** every item folder in the partition is promoted as
-  `ark:/<naan>/<folder name>`. For nested folders, the last part of the path is used.
-- **Overrides:** a folder whose name isn't its ARK can still be listed under `items`,
-  and that entry takes precedence.
-- **Files directly in `source/`** have no folder name, so they're skipped with a
-  warning.
-- **The end-of-run summary** reports how many items are ready (or promoted) and how
-  many failed.
-
-1. Launch with `dry_run: true` (the default). The event log lists every silver file
-   each item would be copied to. A folder whose name isn't a real ARK shows as
-   `promote: FAILED -> ...` and the others continue.
-2. Launch again with `dry_run: false` to copy.
-
-Each entry runs as its own `digtk workspace promote`. An entry that fails (no bronze
-item for the ARK, mismatched filenames, or outputs already in silver) is logged as
-`promote: FAILED -> ...` and the rest continue. The run only fails if every entry
-failed. Set `replace: true` to overwrite outputs already in silver.
-
-**Alternative:** re-run the steps on the ARK instead (see
-[Items that already have an ARK](#items-that-already-have-an-ark)). This repeats the
-OCR and vision calls, but alt text then gets the catalog metadata that the workspace
-run didn't have.
 
 ## Tesseract timeouts
 

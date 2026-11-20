@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  listPartitions, listRuns, resolveConnection, runUrl, triggerJob, waitForPartition,
+  listPartitions, listRuns, listRunsByTags, listSensors, resolveConnection, startSensor, runUrl, triggerJob, waitForPartition,
 } from '../lib/dagster.js';
 
 let dir;
@@ -19,8 +19,8 @@ function respond(body, init = {}) {
 
 function partitionsBody(keys) {
   return { data: { repositoryOrError: { __typename: 'Repository', partitionSets: [
-    { pipelineName: 'bronze_ocr_job', partitionsOrError: { __typename: 'Partitions', results: [] } },
-    { pipelineName: 'workspace_process_job', partitionsOrError: {
+    { pipelineName: 'silver_ocr', partitionsOrError: { __typename: 'Partitions', results: [] } },
+    { pipelineName: 'workspace_process', partitionsOrError: {
       __typename: 'Partitions', results: keys.map(name => ({ name })) } },
   ] } } };
 }
@@ -73,6 +73,48 @@ describe('resolveConnection', () => {
 });
 
 describe('graphql calls', () => {
+  it('lists sensors and starts one', async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      const { query, variables } = JSON.parse(init.body);
+      if (query.includes('startSensor')) {
+        expect(variables.selector).toEqual({
+          repositoryLocationName: 'defs.py', repositoryName: '__repository__', sensorName: 'bronze_collection_cask_audit',
+        });
+        return respond({ data: { startSensor: { __typename: 'Sensor', sensorState: { status: 'RUNNING' } } } });
+      }
+      return respond({ data: { sensorsOrError: { __typename: 'Sensors', results: [
+        { name: 'bronze_collection_cask_audit', minIntervalSeconds: 30, sensorState: { status: 'STOPPED' } },
+      ] } } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(await listSensors()).toEqual([{ name: 'bronze_collection_cask_audit', status: 'STOPPED', minIntervalSeconds: 30 }]);
+    expect(await startSensor('bronze_collection_cask_audit')).toBe('RUNNING');
+  });
+
+  it('reports a sensor start error', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => respond({
+      data: { startSensor: { __typename: 'SensorNotFoundError', message: 'no such sensor' } },
+    })));
+    await expect(startSensor('nope')).rejects.toThrow('no such sensor');
+  });
+
+  it('filters runs by tags and status', async () => {
+    const fetchMock = vi.fn(async () => respond({
+      data: { runsOrError: { results: [{ runId: 'r9', status: 'FAILURE', tags: [] }] } },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const runs = await listRunsByTags({ 'argonath/collection': 'bronze/preservica/e2e' }, { statuses: ['FAILURE'] });
+
+    expect(runs.map(r => r.runId)).toEqual(['r9']);
+    const { variables } = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(variables.filter).toEqual({
+      tags: [{ key: 'argonath/collection', value: 'bronze/preservica/e2e' }], statuses: ['FAILURE'],
+    });
+    expect(variables.limit).toBe(100);
+  });
+
   it('launches with the partition tag and auth header', async () => {
     writeCreds('https://argonath.library.ucdavis.edu/cask/api');
     const fetchMock = vi.fn(async () => respond({
@@ -80,7 +122,7 @@ describe('graphql calls', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const run = await triggerJob('workspace_process_job', {
+    const run = await triggerJob('workspace_process', {
       partitionKey: 'workspace/jdoe/box-12', config: { ops: {} },
     });
 
@@ -91,7 +133,7 @@ describe('graphql calls', () => {
     expect(init.headers.Authorization).toBe('Bearer tok-123');
     const params = JSON.parse(init.body).variables.executionParams;
     expect(params.selector).toEqual({
-      repositoryLocationName: 'defs.py', repositoryName: '__repository__', jobName: 'workspace_process_job',
+      repositoryLocationName: 'defs.py', repositoryName: '__repository__', jobName: 'workspace_process',
     });
     expect(params.executionMetadata.tags).toEqual([{ key: 'dagster/partition', value: 'workspace/jdoe/box-12' }]);
   });
@@ -100,21 +142,21 @@ describe('graphql calls', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('', {
       status: 302, headers: { Location: '/auth/login' },
     })));
-    await expect(triggerJob('workspace_process_job')).rejects.toThrow(/digtk auth login/);
+    await expect(triggerJob('workspace_process')).rejects.toThrow(/digtk auth login/);
   });
 
   it('reports launch errors', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => respond({
       data: { launchRun: { __typename: 'RunConfigValidationInvalid', errors: [{ message: 'bad field' }] } },
     })));
-    await expect(triggerJob('workspace_process_job')).rejects.toThrow('RunConfigValidationInvalid: bad field');
+    await expect(triggerJob('workspace_process')).rejects.toThrow('RunConfigValidationInvalid: bad field');
   });
 
   it('lists a job\'s partitions', async () => {
     const fetchMock = vi.fn(async () => respond(partitionsBody(['workspace/jdoe/box-12'])));
     vi.stubGlobal('fetch', fetchMock);
 
-    expect(await listPartitions('workspace_process_job')).toEqual(['workspace/jdoe/box-12']);
+    expect(await listPartitions('workspace_process')).toEqual(['workspace/jdoe/box-12']);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).variables).toEqual({
       sel: { repositoryLocationName: 'defs.py', repositoryName: '__repository__' },
     });
@@ -124,7 +166,7 @@ describe('graphql calls', () => {
   it('returns at once when the partition exists', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => respond(partitionsBody(['workspace/jdoe/box-12']))));
     const onWait = vi.fn();
-    expect(await waitForPartition('workspace_process_job', 'workspace/jdoe/box-12', { onWait })).toBe(true);
+    expect(await waitForPartition('workspace_process', 'workspace/jdoe/box-12', { onWait })).toBe(true);
     expect(onWait).not.toHaveBeenCalled();
   });
 
@@ -136,7 +178,7 @@ describe('graphql calls', () => {
     vi.stubGlobal('fetch', fetchMock);
     const onWait = vi.fn();
 
-    const existed = await waitForPartition('workspace_process_job', 'workspace/jdoe/box-12', {
+    const existed = await waitForPartition('workspace_process', 'workspace/jdoe/box-12', {
       intervalMs: 1, timeoutMs: 1000, onWait,
     });
 
@@ -147,7 +189,7 @@ describe('graphql calls', () => {
 
   it('gives up when the partition never appears', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => respond(partitionsBody([]))));
-    await expect(waitForPartition('workspace_process_job', 'workspace/jdoe/box-12', {
+    await expect(waitForPartition('workspace_process', 'workspace/jdoe/box-12', {
       intervalMs: 1, timeoutMs: 5,
     })).rejects.toThrow('never appeared');
   });
@@ -156,14 +198,14 @@ describe('graphql calls', () => {
     vi.stubGlobal('fetch', vi.fn(async () => respond(
       { data: null, errors: [{ message: "Field 'x' is not defined" }] }, { status: 500 },
     )));
-    await expect(triggerJob('workspace_process_job')).rejects.toThrow("Field 'x' is not defined");
+    await expect(triggerJob('workspace_process')).rejects.toThrow("Field 'x' is not defined");
   });
 
   it('filters runs by job name', async () => {
     const fetchMock = vi.fn(async () => respond({ data: { runsOrError: { results: [{ runId: 'r1' }] } } }));
     vi.stubGlobal('fetch', fetchMock);
-    expect(await listRuns('workspace_process_job')).toEqual([{ runId: 'r1' }]);
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body).variables).toEqual({ filter: { pipelineName: 'workspace_process_job' } });
+    expect(await listRuns('workspace_process')).toEqual([{ runId: 'r1' }]);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).variables).toEqual({ filter: { pipelineName: 'workspace_process' } });
   });
 
   it('links to the run in the UI', () => {
