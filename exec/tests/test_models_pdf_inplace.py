@@ -85,6 +85,49 @@ def test_retagging_replaces_old_marks(tmp_path):
         assert ops.count("BDC") + ops.count("BMC") == ops.count("EMC")
 
 
+def _with_empty_shows(src, dest):
+    """Add an empty `() Tj` text object after every text object, as Google Slides' PDF export does."""
+    with pikepdf.open(src) as pdf:
+        page = pdf.pages[0]
+        font = next(iter(page.obj.Resources.Font.keys()))
+        out = []
+        for operands, op in pikepdf.parse_content_stream(page):
+            out.append((operands, op))
+            if str(op) == "ET":
+                out += [
+                    ([], pikepdf.Operator("BT")),
+                    ([pikepdf.Name(font), 11], pikepdf.Operator("Tf")),
+                    ([1, 0, 0, 1, 400, 400], pikepdf.Operator("Tm")),
+                    ([pikepdf.String("")], pikepdf.Operator("Tj")),
+                    ([], pikepdf.Operator("ET")),
+                ]
+        page.obj.Contents = pdf.make_stream(pikepdf.unparse_content_stream(out))
+        pdf.save(dest)
+    return dest
+
+
+def test_empty_text_operators_do_not_shift_the_text(tmp_path):
+    src = _with_empty_shows(_born_digital(tmp_path / "born.pdf"), str(tmp_path / "slides.pdf"))
+    dest = tmp_path / "tagged.pdf"
+
+    stats = pdf_inplace.tag_pdf_inplace(src, str(dest), "Report", {"layouts": [HEADING_LAYOUT], "paragraphs": True})
+
+    assert stats["unmatched_spans"] == 0
+    assert stats["words"] == 13 and stats["lines"] == 3
+    assert stats["headings"] == 1 and stats["paragraphs"] == 1
+    with pikepdf.open(str(dest)) as pdf:
+        tags, stack = [], []
+        for operands, op in pikepdf.parse_content_stream(pdf.pages[0]):
+            if str(op) in ("BDC", "BMC"):
+                stack.append(str(operands[0]))
+            elif str(op) == "EMC":
+                stack.pop()
+            elif str(op) in ("Tj", "TJ"):
+                tags.append((stack[-1], pdf_inplace._shows_glyphs(str(op), operands)))
+        # every real line is tagged; only the empty operators are artifacts
+        assert tags == [("/P", True), ("/Artifact", False)] * 3
+
+
 def test_text_in_a_form_xobject_is_inlined(tmp_path):
     inner = _born_digital(tmp_path / "inner.pdf")
     outer = pymupdf.open()
